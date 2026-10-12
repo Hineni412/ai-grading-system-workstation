@@ -276,7 +276,7 @@ def render_personal_report(repositories, session_id: int, student_id: int, repor
     group = copy.deepcopy(group, {id(s): s for s in group.students})
     student = copy.deepcopy(student)
     released = originals_state(context["root"], session_id) in {"clearing", "cleared"}
-    kwargs = dict(regions=context["regions"], data_root=context["root"])
+    kwargs = dict(regions=context["regions"], data_root=context["root"], include_full=True)
     if released:
         shots = {}
     elif online:

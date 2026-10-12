@@ -120,7 +120,7 @@ def get_personal_report_shot(session_id: int, student_id: int, shot_key: str,
     if student is None:
         raise ApiError(404, "personal_report_shot_not_found", "没有这张作答图")
     specs = lost_question_shot_specs(db, context["data"], student,
-        regions=context["regions"], data_root=root)
+        regions=context["regions"], data_root=root, include_full=True)
     spec = next((s for s in specs if s["key"] == shot_key), None)
     if spec is None:
         raise ApiError(404, "personal_report_shot_not_found", "没有这张作答图")

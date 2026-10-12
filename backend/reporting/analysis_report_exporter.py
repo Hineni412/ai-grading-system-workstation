@@ -480,11 +480,12 @@ def lost_question_shot_specs(
     regions: list[dict[str, Any]] | None,
     data_root: Path | None,
     paper_context: dict[str, Any] | None = None,
+    include_full: bool = False,
 ) -> list[dict[str, Any]]:
-    """为丢分大题生成全部截图；同题多图以序号区分，缺图不阻断报告。"""
+    """默认取失分题截图；报告阅读可取满分题，不扩大模型用图范围。"""
     if not regions:
         return []
-    lost_records = [record for record in student.records if record.lost]
+    lost_records = [record for record in student.records if record.lost or include_full]
     if not lost_records:
         return []
 
@@ -531,14 +532,14 @@ def lost_question_shot_specs(
 
 
 
-def capture_lost_question_shots(repositories, data, student, *, regions, data_root, paper_context=None):
+def capture_lost_question_shots(repositories, data, student, *, regions, data_root, paper_context=None, include_full=False):
     from backend.files.session_originals import originals_state
     if data_root is not None and originals_state(data_root, data.session_id) in {"clearing", "cleared"}:
         return {}
     shots = {}
     used_bytes = 0
     for spec in lost_question_shot_specs(repositories, data, student, regions=regions,
-                                       data_root=data_root, paper_context=paper_context):
+                                       data_root=data_root, paper_context=paper_context, include_full=include_full):
         data_uri = _crop_region_data_uri(spec["image_path"], spec["region"])
         if data_uri is None:
             continue
@@ -737,8 +738,9 @@ padding:0 8px;margin:2px 4px 2px 0;font-size:12px;color:var(--ink)}
 .qd-fb{font-size:13.5px;margin-top:8px}
 .errline{font-size:12.5px;color:var(--warn);margin-top:5px}
 .qmore-btn{margin-top:10px;border:1px solid var(--accent);color:var(--accent);background:#fff;
-border-radius:8px;padding:5px 14px;font-size:13px;cursor:pointer;font-family:inherit}
+border-radius:8px;padding:5px 14px;min-height:44px;font-size:14px;cursor:pointer;font-family:inherit}
 .qmore{margin-top:10px;border-top:1px dashed var(--line);padding-top:10px}
+.qdetail-box:has(> .qmore:not([hidden])) > .qd-fb{display:none}
 /* 共用题干/截图/分析 */
 .stem{white-space:normal;overflow-wrap:anywhere;font-size:13.5px;color:var(--ink)}
 .stem table{border-collapse:collapse;width:100%;margin:8px 0}
@@ -748,10 +750,21 @@ border-radius:8px;padding:5px 14px;font-size:13px;cursor:pointer;font-family:inh
 .shot{border:1px solid var(--line);border-radius:8px;padding:8px;margin:10px 0 2px;background:#fcfcfd}
 .shot img{max-width:100%;display:block;margin:0 auto;border-radius:4px}
 .shot .cap{font-size:11.5px;color:var(--muted);margin-top:6px;text-align:center}
-.shot-evidence{margin-top:10px;border-top:1px dashed var(--line);padding-top:8px}
-.shot-evidence>summary,.question-stem>summary{cursor:pointer;font-size:13px;color:var(--accent)}
+.question-stem>summary{cursor:pointer;font-size:13px;color:var(--accent)}
 .shot-reference{font-size:12.5px;margin-top:8px}
 .shot-reference a{color:var(--accent)}
+.shot-reference button{border:0;padding:0;background:none;color:var(--accent);font:inherit;cursor:pointer;text-decoration:underline}
+.shot-preview{margin-top:12px}
+.shot-preview-title{font-size:12.5px;color:var(--muted);margin-bottom:6px}
+.shot-enlarge{display:block;max-width:100%;margin:auto;border:0;padding:0;background:none;cursor:zoom-in}
+.shot-enlarge:focus-visible{outline:2px solid var(--accent);outline-offset:4px}
+.report-print-only{display:none}
+.shot-viewer{max-width:96vw;max-height:96vh;padding:12px;border:1px solid var(--line);border-radius:8px}
+.shot-viewer::backdrop{background:rgba(0,0,0,.65)}
+.shot-viewer-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:8px;font-size:14px}
+.shot-viewer-head button{font:inherit;padding:6px 12px;min-height:44px;border:1px solid var(--line);border-radius:6px;background:#fff;cursor:pointer}
+.shot-viewer-scroll{max-width:calc(96vw - 28px);max-height:calc(96vh - 70px);overflow:auto}
+.shot-viewer-scroll img{display:block;max-width:none;width:auto;height:auto}
 .objective-answers{margin:8px 0}
 .question-stem{margin-top:8px}
 .question-stem .stem{margin-top:6px}
@@ -859,10 +872,11 @@ footer{font-size:12px;color:var(--muted);padding:6px 4px;line-height:1.8}
  details:not([open])>*:not(summary){display:block}
  details::details-content{content-visibility:visible}
  #qpanel{display:none!important}
+ .report-print-only{display:block}
+ .shot-viewer{display:none!important}
  .qcell{outline:none!important}
  .shot img{max-height:95mm;width:auto;object-fit:contain}
  .shot-reference{display:none}
- .shot-evidence>summary{color:var(--ink);font-weight:600}
  .qcard.objective{padding:8px 12px;margin:8px 0}
  .qcard.objective .head{margin-bottom:4px}
  .qcard.objective .qpart+.qpart{margin-top:8px;padding-top:8px}
@@ -887,9 +901,29 @@ _PERSONAL_GRID_JS = """
     });
   }
   if (!panel) return;
-  function showQuestion(q, toggle){
-    var btn = Array.from(document.querySelectorAll('.qcell')).find(function(b){return b.dataset.q === q;});
+  function hydrateShots(root){
+    if(!root) return;
+    root.querySelectorAll('[data-shot-group]').forEach(function(slot){
+      if(slot.dataset.loaded) return;
+      var source = document.getElementById(slot.dataset.shotGroup);
+      if(!source) return;
+      Array.from(source.childNodes).forEach(function(node){slot.appendChild(node.cloneNode(true));});
+      slot.dataset.loaded = 'true';
+    });
+  }
+  function expandMore(){
+    var more = panel.querySelector('.qmore');
+    if(!more) return;
+    more.hidden = false; hydrateShots(more);
+    more.querySelectorAll('details').forEach(function(el){el.open=true;});
+    panel.querySelector('.qmore-btn').textContent='收起题目、作答和解法';
+  }
+  function showQuestion(q, toggle, openMore){
+    var cells = Array.from(document.querySelectorAll('.qcell'));
+    var btn = cells.find(function(b){return b.dataset.q === q;})
+      || cells.find(function(b){return b.dataset.q.indexOf(q + '(') === 0;});
     if(!btn) return false;
+    q = btn.dataset.q;
     if(toggle && openQ === q){
       panel.hidden = true; panel.innerHTML=''; openQ = null;
       btn.setAttribute('aria-expanded','false'); return false;
@@ -900,6 +934,7 @@ _PERSONAL_GRID_JS = """
     panel.hidden=false; openQ=q; renderMath(panel);
     document.querySelectorAll('.qcell[aria-expanded="true"]').forEach(function(b){b.setAttribute('aria-expanded','false');});
     btn.setAttribute('aria-expanded','true');
+    if(openMore) expandMore();
     return true;
   }
   document.querySelectorAll('.qcell').forEach(function(btn){
@@ -909,31 +944,32 @@ _PERSONAL_GRID_JS = """
   });
   document.querySelectorAll('[data-open-q]').forEach(function(btn){
     btn.addEventListener('click', function(){
-      if(showQuestion(btn.dataset.openQ, false)){
+      if(showQuestion(btn.dataset.openQ, false, btn.hasAttribute('data-open-more'))){
         panel.focus({preventScroll:true});
         panel.scrollIntoView({block:'start',behavior:'smooth'});
       }
     });
   });
+  var viewer = document.getElementById('report-shot-viewer');
   document.addEventListener('click', function(e){
-    var link = e.target.closest('[data-evidence-target]');
-    if(!link) return;
-    var evidence = document.getElementById(link.dataset.evidenceTarget);
-    if(!evidence) return;
-    e.preventDefault();
-    for(var node = evidence; node; node = node.parentElement){
-      if(node.tagName === 'DETAILS') node.open = true;
+    var shot = e.target.closest('.shot-enlarge');
+    if(shot && viewer){
+      var img = shot.querySelector('img');
+      var enlarged = document.createElement('img');
+      enlarged.src=img.src; enlarged.alt=img.alt;
+      viewer.querySelector('.shot-viewer-scroll').replaceChildren(enlarged);
+      viewer.showModal();
     }
-    evidence.scrollIntoView({block:'start',behavior:'smooth'});
-    evidence.querySelector('summary').focus({preventScroll:true});
+    if(e.target.closest('[data-close-shot]') && viewer) viewer.close();
   });
+  if(viewer) viewer.addEventListener('click',function(e){if(e.target===viewer) viewer.close();});
   panel.addEventListener('click', function(e){
     var t = e.target.closest('.qmore-btn');
     if(!t) return;
     var m = panel.querySelector('.qmore');
     if(!m) return;
-    m.hidden = !m.hidden;
-    t.textContent = m.hidden ? '看原卷和解法' : '收起原卷和解法';
+    if(m.hidden) expandMore();
+    else {m.hidden=true;t.textContent='看题目、作答和解法';}
   });
 })();
 """
@@ -1843,6 +1879,7 @@ def _personal_review_link(question_id: str) -> str:
 _PERSONAL_KEYBOARD_JS = """
 document.addEventListener('keydown', function(event) {
   if (!['Escape', 'ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+  if (document.querySelector('#report-shot-viewer[open]')) return;
   if (event.key !== 'Escape' && event.target.closest('input, textarea, select, [contenteditable="true"]')) return;
   event.preventDefault();
   window.parent.postMessage({type: 'personal-report:key', key: event.key}, location.origin);
@@ -1959,21 +1996,35 @@ def _shots_html(
     parts = []
     for key, group in _shots_for_parent(shots, parent):
         label = group["label"] or title
-        if not inline or (shown_groups is not None and key in shown_groups):
-            parts.append(f'<div class="shot-reference"><a href="#{esc(key)}" data-evidence-target="{esc(key)}">'
-                         f'查看作答截图 · {esc(label)}</a></div>')
+        if not inline:
+            parts.append(f'<div class="shot-reference"><button type="button" data-open-q="{esc(parent)}" data-open-more>'
+                         f'查看作答与解法 · {esc(label)}</button></div>')
+            continue
+        if shown_groups is not None and key in shown_groups:
             continue
         if shown_groups is not None:
             shown_groups.add(key)
+            evidence = _shot_sources_html({key: group}, hidden=False)
+        else:
+            evidence = f'<div data-shot-group="{esc(key)}"></div>'
+        parts.append(f'<div class="shot-preview"><div class="shot-preview-title">作答截图 · {esc(label)} · 点击放大</div>'
+                     f'{evidence}</div>')
+    return "".join(parts)
+
+
+def _shot_sources_html(shots: dict[str, dict[str, Any]], *, hidden: bool = True) -> str:
+    sources = []
+    for key, group in shots.items():
+        label = group["label"]
         images = "".join(
-            f'<div class="shot"><img src="{esc(shot.get("src") or shot["data_uri"])}" alt="{esc(label)}作答截图">'
+            f'<div class="shot"><button type="button" class="shot-enlarge" aria-label="放大{esc(label)}作答截图">'
+            f'<img src="{esc(shot.get("src") or shot["data_uri"])}" alt="{esc(label)}作答截图"></button>'
             f'<div class="cap">{esc(shot.get("caption") or "学生作答（原卷截图）")}</div></div>'
             for shot in group["items"]
         )
         note = '<div class="note">区域只部分重叠，保留各张截图，避免遗漏边缘作答。</div>' if group["objective"] and len(group["items"]) > 1 else ""
-        parts.append(f'<details class="shot-evidence" id="{esc(key)}"><summary>作答截图 · {esc(label)}</summary>'
-                     f'{note}{images}</details>')
-    return "".join(parts)
+        sources.append(f'<div{" hidden" if hidden else ""} id="{esc(key)}" data-shot-source>{note}{images}</div>')
+    return "".join(sources)
 
 
 def _objective_answers_html(record: StudentQuestionRecord, info: QuestionInfo | None) -> str:
@@ -2029,13 +2080,18 @@ def _analysis_or_fallback_html(
     show_comment: bool = True,
 ) -> str:
     """AI 叙述项为空或没有可展示内容时退化为老师批语/参考答案，不显示生成失败提示。"""
+    rendered = ""
     if analysis:
         rendered = _question_analysis_html(analysis)
-        if AI_FAILED_NOTE not in rendered:
-            return rendered
-    return _grading_fallback_html(
-        record, info, show_answer=show_answer, show_comment=show_comment
-    )
+        if AI_FAILED_NOTE in rendered:
+            rendered = ""
+    if not rendered:
+        rendered = _grading_fallback_html(
+            record, info, show_answer=show_answer, show_comment=show_comment
+        )
+    if info is not None and info.reference_analysis and not _narrative_items(analysis, "solution_steps"):
+        rendered += f'<div class="solution"><b>参考解法</b>{_report_paragraphs(info.reference_analysis)}</div>'
+    return rendered
 
 
 def _stem_block_html(info: QuestionInfo | None, fallback: str, title: str) -> str:
@@ -2067,6 +2123,8 @@ def _question_detail_template(
     shots: dict[str, dict[str, Any]],
     errors: list[dict[str, Any]] | None = None,
     review_links: bool = False,
+    step_diagnosis: dict[str, Any] | None = None,
+    originals_released: bool = False,
 ) -> str:
     """答题一览方格对应的隐藏详情片段（<template>，点击方格原位展开）。"""
     parent = parent_question_id(record.question_id)
@@ -2095,33 +2153,35 @@ def _question_detail_template(
     if points_labels:
         tags = "".join(f'<span class="pt-tag">{esc(t)}</span>' for t in points_labels)
         body.append(f'<div class="qd-points">考这些：{tags}</div>')
+    objective = _objective_question(info)
+    if objective:
+        body.append(_objective_answers_html(record, info))
+    feedback = _narrative_text((analysis or {}).get("feedback"))
+    if record.lost and feedback:
+        body.append(f'<div class="qd-fb">{_report_paragraphs(feedback)}</div>')
+    more = ['<div class="qmore" hidden>']
+    fallback = ((info.question_text or info.stem_summary) if info is not None else "") or title
+    more.append(_stem_block_html(info, fallback, _question_display_label(parent)))
+    evidence = _shots_html(shots, parent, title, inline=True)
+    more.append(evidence or ('<div class="note">原卷已释放，无法显示作答图；分数与批语不受影响。</div>'
+                            if originals_released else '<div class="note">未找到本题作答截图；分数与批语保留。</div>'))
+    kv = []
+    if not objective:
+        answer = record.student_answer or ("未作答" if _personal_cell_status(record) == "blank" else "未记录")
+        kv.append(f'<dt>学生作答</dt><dd>{_report_inline_math(answer)}</dd>')
+    comment = _real_teacher_comment(record)
+    if comment:
+        kv.append(f'<dt>老师批语</dt><dd>{_report_inline_math(comment)}</dd>')
     if record.lost:
-        objective = _objective_question(info)
-        if objective:
-            body.append(_objective_answers_html(record, info))
-            body.append(_shots_html(shots, parent, title))
-        feedback = _narrative_text((analysis or {}).get("feedback"))
-        if analysis and feedback:
-            body.append(f'<div class="qd-fb">{_report_paragraphs(feedback)}</div>')
-        more = ['<div class="qmore" hidden>']
-        fallback = (
-            (info.question_text or info.stem_summary) if info is not None else ""
-        ) or title
-        parent_title = _question_display_label(parent)
-        more.append(_stem_block_html(info, fallback, parent_title))
-        if not objective:
-            more.append(_shots_html(shots, parent, parent_title))
-        kv = []
-        if record.student_answer and not objective:
-            kv.append(f"<dt>学生作答</dt><dd>{_report_inline_math(record.student_answer)}</dd>")
-        elif not objective and _personal_cell_status(record) == "blank":
-            kv.append("<dt>学生作答</dt><dd>未作答</dd>")
-        if kv:
-            more.append(f'<dl class="kv">{"".join(kv)}</dl>')
-        more.append(_analysis_or_fallback_html(record, info, analysis, show_answer=not objective))
-        more.append("</div>")
-        body.append('<button type="button" class="qmore-btn">看原卷和解法</button>')
-        body.append("".join(more))
+        kv.append(_step_diagnosis_html(step_diagnosis))
+    if kv:
+        more.append(f'<dl class="kv">{"".join(kv)}</dl>')
+    if analysis and analysis.get("solution_source") == "reference" and not (info and info.reference_analysis):
+        analysis = {**analysis, "solution_source": "ai"}
+    more.append(_analysis_or_fallback_html(record, info, analysis, show_answer=not objective, show_comment=False))
+    more.append("</div>")
+    body.append('<button type="button" class="qmore-btn">看题目、作答和解法</button>')
+    body.append("".join(more))
     body.append("</div>")
     return "".join(body)
 
@@ -2603,6 +2663,7 @@ def _render_personal_html(
             f'<template data-q="{esc(record.question_id)}">'
             + _question_detail_template(
                 record, info, labels, analysis, shots, errors=question_errors(record.question_id), review_links=review_links,
+                step_diagnosis=(step_diagnoses or {}).get(record.question_id), originals_released=originals_released,
             )
             + "</template>"
         )
@@ -2864,7 +2925,10 @@ def _render_personal_html(
         student, info_by_qid, analysis_by_qid, shots, error_map=error_map, review_links=review_links,
         step_diagnoses=step_diagnoses,
     )
-    card_f = f'<div class="card">{appendix}</div>' if appendix else ""
+    card_f = f'<div class="card report-print-only"><h2>失分题详解</h2>{appendix}</div>' if appendix else ""
+    printed_parents = {parent_question_id(record.question_id) for record in student.records if record.lost}
+    remaining_sources = {key: group for key, group in shots.items()
+                         if not any(parent in printed_parents for parent in group["parents"])}
 
     released_note = '<div class="card">原卷已释放，无法显示作答图；分数与批语不受影响</div>' if originals_released else ""
     pending_ai_note = (
@@ -2902,6 +2966,11 @@ def _render_personal_html(
 <p>班级对比只用匿名统计。{time_label}：{esc(generated_at)}。</p>
 </footer>
 </div>
+{_shot_sources_html(remaining_sources)}
+<dialog class="shot-viewer" id="report-shot-viewer">
+<div class="shot-viewer-head"><span>原尺寸作答截图，可滚动查看</span><button type="button" data-close-shot>关闭截图</button></div>
+<div class="shot-viewer-scroll"></div>
+</dialog>
 <script>{_PERSONAL_KATEX_JS}{_PERSONAL_GRID_JS}{_PERSONAL_PRINT_JS}{review_script}{keyboard_script}</script>
 </body>
 </html>
@@ -3361,11 +3430,15 @@ class AnalysisReportGenerator:
                         )
                     from backend.files.session_originals import originals_state
                     try:
+                        display_shots = capture_lost_question_shots(
+                            self.repositories, data, student, regions=regions,
+                            data_root=self.data_root, include_full=True,
+                        )
                         html_text = _render_personal_html(
                             data,
                             student,
                             narrative,
-                            shots,
+                            display_shots,
                             history=histories.get(student.student_id, []),
                             error_map=error_maps.get(student.student_id),
                             error_history=error_history,
