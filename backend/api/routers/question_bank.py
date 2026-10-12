@@ -132,6 +132,7 @@ from question_bank.services.question_write_service import (
 )
 from question_bank.services.taxonomy_review_service import (
     TaxonomyReviewApplicationNotFound,
+    TaxonomyReviewRequestConflict,
     TaxonomyReviewSelectionInvalid,
     TaxonomyReviewService,
     TaxonomyReviewUndoConflict,
@@ -1111,7 +1112,7 @@ def apply_taxonomy_suggestion_batch(
         payload = review_service.apply_suggestion_batch(
             run,
             base_revision=body.base_revision,
-            request_token=uuid.uuid4().hex,
+            request_token=body.request_token.lower(),
             policy_version=body.policy_version,
             accepted_manual_decisions=[
                 item.model_dump() for item in body.accepted_manual_decisions
@@ -1126,6 +1127,8 @@ def apply_taxonomy_suggestion_batch(
             "Taxonomy state changed; refresh and retry",
             {"current_revision": exc.current_revision},
         ) from exc
+    except TaxonomyReviewRequestConflict as exc:
+        raise ApiError(409, "taxonomy_review_request_conflict", "Request token was reused") from exc
     except (TaxonomyReviewSelectionInvalid, TaxonomyReviewInvalid, ValueError) as exc:
         raise ApiError(422, "taxonomy_review_invalid", "Taxonomy batch is invalid") from exc
     except (TaxonomyStorageError, OSError, TimeoutError, RuntimeError) as exc:
@@ -1165,7 +1168,7 @@ def undo_taxonomy_review_operation(
         payload = service.undo_operation(
             operation_id=operation_id,
             expected_revision=body.expected_revision,
-            request_token=uuid.uuid4().hex,
+            request_token=body.request_token.lower(),
         )
     except TaxonomyReviewApplicationNotFound as exc:
         raise ApiError(404, "taxonomy_review_operation_not_found", "Operation not found") from exc
@@ -1197,7 +1200,7 @@ def review_taxonomy_proposal(
             ],
             question_ids=body.question_ids,
             expected_revision=body.expected_revision,
-            request_token=uuid.uuid4().hex,
+            request_token=body.request_token.lower(),
         )
     except TaxonomyRevisionConflict as exc:
         raise ApiError(
@@ -1218,6 +1221,12 @@ def review_taxonomy_proposal(
             422,
             "taxonomy_target_term_not_found",
             "Taxonomy merge target is invalid",
+        ) from exc
+    except TaxonomyReviewRequestConflict as exc:
+        raise ApiError(
+            409,
+            "taxonomy_review_request_conflict",
+            "This review request token was already used for another decision",
         ) from exc
     except (TaxonomyReviewSelectionInvalid, TaxonomyReviewInvalid, ValueError) as exc:
         raise ApiError(
@@ -1242,7 +1251,7 @@ def retry_taxonomy_review_application(
     try:
         payload = service.retry_application(
             application_token=body.application_token.lower(),
-            request_token=uuid.uuid4().hex,
+            request_token=body.request_token.lower(),
             question_ids=body.question_ids,
         )
     except TaxonomyReviewApplicationNotFound as exc:
@@ -1250,6 +1259,12 @@ def retry_taxonomy_review_application(
             404,
             "taxonomy_review_application_not_found",
             "Taxonomy review application not found",
+        ) from exc
+    except TaxonomyReviewRequestConflict as exc:
+        raise ApiError(
+            409,
+            "taxonomy_review_request_conflict",
+            "This review request token was already used for another decision",
         ) from exc
     except (TaxonomyReviewSelectionInvalid, ValueError) as exc:
         raise ApiError(

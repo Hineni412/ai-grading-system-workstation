@@ -458,7 +458,7 @@ def test_start_requires_current_frozen_preflight_and_pending_issue_confirmation(
         )
         assert started.status_code == 202
         assert started.json()["payload"]["grading_mode"] == "ai"
-        assert "exams_dir" not in started.json()["payload"]
+        assert "exams_dir" in started.json()["payload"]
 
         from backend.scan_grading.grading_run_store import GradingRunStore
 

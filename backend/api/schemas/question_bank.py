@@ -815,6 +815,7 @@ class TaxonomyProposalReviewRequest(_QuestionBankModel):
         max_length=500,
     )
     expected_revision: int = Field(ge=0)
+    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
 
 
 class TaxonomyProposalApplicationFailure(_QuestionBankModel):
@@ -858,6 +859,7 @@ class TaxonomyProposalReviewResponse(_QuestionBankModel):
 
 class TaxonomyProposalApplicationRetryRequest(_QuestionBankModel):
     application_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
+    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
     question_ids: list[int] | None = Field(
         default=None,
         min_length=1,
@@ -973,6 +975,7 @@ class TaxonomySuggestionBatchManualDecision(_QuestionBankModel):
 
 class TaxonomySuggestionBatchApplyRequest(_QuestionBankModel):
     base_revision: int = Field(ge=0)
+    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
     policy_version: str = Field(default="strict-exact-v1", max_length=80)
     accepted_manual_decisions: list[TaxonomySuggestionBatchManualDecision] = Field(
         default_factory=list,
@@ -1009,6 +1012,7 @@ class TaxonomyReviewOperationResponse(_QuestionBankModel):
 
 class TaxonomyReviewOperationUndoRequest(_QuestionBankModel):
     expected_revision: int = Field(ge=0)
+    request_token: str = Field(pattern=r"^[0-9a-fA-F]{32}$")
 
 
 class SkillCandidateRunCreateRequest(_QuestionBankModel):
