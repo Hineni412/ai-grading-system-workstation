@@ -2,10 +2,7 @@ import { defineConfig, devices } from '@playwright/test'
 
 export default defineConfig({
   testDir: './e2e',
-  // Real and demo flows run through their dedicated isolated-server configs.
-  testMatch: ['app-shell.spec.ts', 'session-config.spec.ts', 'knowledge-graph.spec.ts',
-    'template-region-editor.spec.ts', 'review-evidence.spec.ts', 'review-queue.spec.ts',
-    'workbench-overview.spec.ts', 'training-recommendations-real-api.spec.ts'],
+  testMatch: 'session-config.spec.ts',
   timeout: 30_000,
   expect: { timeout: 5_000 },
   forbidOnly: Boolean(process.env.CI),

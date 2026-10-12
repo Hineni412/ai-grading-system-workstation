@@ -1,1058 +1,49 @@
 from __future__ import annotations
-
 import json
 import hashlib
-import pickle
 import re
-import sqlite3
 import subprocess
 import sys
 from types import SimpleNamespace
-import warnings
 from pathlib import Path
-
 import pytest
-
-
-warnings.filterwarnings(
-    "ignore",
-    message="Using `httpx` with `starlette.testclient` is deprecated.*",
-)
-
-
-def test_commit_notification_refreshes_temporary_diagnosis_without_table_hashes(tmp_path, monkeypatch):
-    from backend.jobs.store import JobStore
-    grade, bank = tmp_path/'grading.db', tmp_path/'question-bank.db'
-    with sqlite3.connect(grade) as writer:
-        writer.execute('CREATE TABLE jobs(id INTEGER PRIMARY KEY AUTOINCREMENT,status TEXT,progress REAL,stage TEXT,detail TEXT,updated_at TEXT)')
-        writer.execute("INSERT INTO jobs VALUES(1,'running',0,'TEST','','')")
-        writer.execute('CREATE TABLE exam_marker(value TEXT)')
-        writer.execute("INSERT INTO exam_marker VALUES('original')")
-    with sqlite3.connect(bank) as writer:
-        writer.execute('CREATE TABLE marker(value TEXT)')
-    service = DiagnosisProfileService.__new__(DiagnosisProfileService)
-    service.grading_db_path, service.question_bank_db_path = grade, bank
-    service.question_bank_connection, service.cache_identity = None, None
-    service.data_root = tmp_path
-    original_connect = sqlite3.connect
-    class MetadataOnlyConnection(sqlite3.Connection):
-        def serialize(self, *args, **kwargs):
-            pytest.fail('Temporary cache validation serialized the database')
-        def execute(self, sql, parameters=()):
-            text = sql.strip().upper()
-            if text.startswith('SELECT') and 'SQLITE_MASTER' not in text:
-                pytest.fail('Temporary cache validation read business table bodies')
-            return super().execute(sql, parameters)
-    def metadata_connection(*args, **kwargs):
-        return original_connect(*args, **dict(kwargs, factory=MetadataOnlyConnection))
-    monkeypatch.setattr(sqlite3, 'connect', metadata_connection)
-    request = dict(scope={'mode':'all'}, exam_scope={'mode':'selected','session_ids':[1]})
-    key = service.tag_profile_cache_key(**request)
-    entry = (pickle.dumps({'TEST':True}), pickle.dumps({}))
-    service._save_local_profile(key, entry)
-    job = JobStore.__new__(JobStore)
-    job.db_path = grade
-    job.update_progress(1, progress=.5, stage='TEST')
-    key = service.tag_profile_cache_key(**request)
-    service._save_local_profile(key, entry)
-    assert service._read_local_profile(key) == entry
-    with sqlite3.connect(grade) as writer:
-        writer.execute("INSERT INTO jobs(status) VALUES('queued')")
-    key = service.tag_profile_cache_key(**request)
-    service._save_local_profile(key, entry)
-    assert service._read_local_profile(key) == entry
-    with sqlite3.connect(grade) as writer:
-        writer.execute("UPDATE exam_marker SET value='changed'")
-    assert service.tag_profile_cache_key(**request) != key
-    assert service._read_local_profile(key) is None
-
-
-def test_persistent_entry_replaces_old_memory_versions_and_caps_large_payload(tmp_path, monkeypatch):
-    import integration.persistent_entries as entries
-    store = entries.PersistentEntryStore(tmp_path/'entries', max_entries=2, max_bytes=256*1024)
-    payload = b'TEST' * (16*1024)
-    for version in range(64):
-        store.put('same-request', version, payload)
-        assert store.get('same-request', version) == payload
-        assert len(store._snapshots) == 1
-    assert store.get('same-request', -1) is None
-    store.put('other', 1, payload)
-    store.get('other', 1)
-    store.put('third', 1, payload)
-    assert all(Path(state[0]).is_file() for state in store._snapshots)
-    assert store._snapshot_bytes <= store._snapshot_max_bytes
-    monkeypatch.setattr(entries, '_SNAPSHOT_MAX_BYTES', 1024)
-    small = entries.PersistentEntryStore(tmp_path/'small', max_entries=2, max_bytes=256*1024)
-    small.put('large', 1, payload)
-    assert small.get('large', 1) == payload
-    assert not small._snapshots and small._snapshot_bytes == 0
-    assert not small._saved and small._saved_bytes == 0
-
 from fastapi.testclient import TestClient
-
 from backend.repositories.db_manager import DBManager
 from integration.diagnosis_profile_service import DiagnosisProfileService
 from question_bank.database.schema import connect, initialize_database
-from question_bank.services.source_question_link_service import (
-    SourceQuestionLinkService,
-)
+from question_bank.services.source_question_link_service import SourceQuestionLinkService
 
 
-def test_training_display_hides_scores_without_mutating_frozen_draft():
-    from copy import deepcopy
-    from backend.api.app import create_app
-    from backend.api.routers.training import _public_training_mapping
-
-    draft = {'source_revision': 'a' * 64, 'selected_items': [
-        {'question_number': '1', 'question_text': '（8分）小明跑了5分钟。',
-         'answer_text': '（8分）答案为2。'},
-        {'question_number': '1', 'question_text': '（8分）小明跑了5分钟。'},
-        {'question_number': '2', 'question_text': '（8分）小明跑了5分钟。'},
-    ], 'nested': ({'error_message': 'TEST-error'}, {'secret': 'TEST-secret'},
-                  {'source_file': 'TEST-source', 'keep': 1}, {},
-                  {'value': 'C%3A%5Cprivate%5Ctest.txt'},
-                  {'latex': r'\frac{1}{2}', 'url': '/api/training/diagnosis'})}
-    before = deepcopy(draft)
-    public = _public_training_mapping(draft)
-    assert public['selected_items'][0]['question_text'] == '小明跑了5分钟。'
-    assert public['selected_items'][0]['answer_text'] == '（8分）答案为2。'
-    assert public['source_revision'] == draft['source_revision']
-    assert public['nested'] == [{'error_message': 'TEST-error'}, {'secret': 'TEST-secret'},
-                                {'source_file': 'TEST-source', 'keep': 1}, {},
-                                {'value': 'C%3A%5Cprivate%5Ctest.txt'},
-                                {'latex': r'\frac{1}{2}', 'url': '/api/training/diagnosis'}]
-    assert draft == before
-    public['selected_items'][0]['answer_text'] = 'TEST-public-edit'
-    public['nested'][1]['keep'] = 2
-    assert draft == before
+import fitz
 
 
-@pytest.mark.parametrize('purpose,mode,expected', [('training', 'individual', 0),
-    ('handout', 'shared', 0), ('handout', 'individual', 2)])
-def test_create_draft_consolidation_cap_is_only_for_personal_handout(purpose, mode, expected):
-    from backend.api.app import create_app
-    from backend.api.routers.training import create_personalized_recommendation_draft
-    from backend.api.schemas.training import PersonalizedRecommendationCreateRequest
-    from copy import deepcopy
-    captured = []
-    students = [{'student_id': 'TEST-with-evidence', 'weak_points': [{'knowledge_key': 'kp_test'}]},
-                {'student_id': 'TEST-without-weakness', 'weak_points': []}]
-    class Profiles:
-        def build_profiles(self, **_):
-            return {'students': deepcopy(students)}
-        def graded_activities(self, ids):
-            assert ids == ['TEST-with-evidence', 'TEST-without-weakness']
-            return []
-    class Module:
-        def resolve_target_names(self, names):
-            return ()
-        def create(self, **request):
-            captured.append(request)
-            return {'draft_id': 'd' * 64, 'revision': 1, 'config': request['config'].to_dict(),
-                'status': 'draft', 'result_version': 'a' * 64, 'source_version': 'b' * 64,
-                'engine_version': 'TEST-engine', 'students': [], 'warnings': [], 'history': []}
-    body = PersonalizedRecommendationCreateRequest(purpose=purpose,
-        paper_mode=mode, question_count=10, max_consolidation_questions=2, max_unmeasured_questions=0,
-        scope_keys=['kp_bnu24_math_g7_lower_4'], target_keys=[],
-        scope={'mode': 'all'}, exam_scope={'mode': 'current', 'session_ids': [1]})
-    create_personalized_recommendation_draft(body, Profiles(), Module())
-    request = captured[0]
-    assert request['config'].max_consolidation_questions == expected
-    assert [student['student_id'] for student in request['diagnosis']['students']] == (
-        ['TEST-with-evidence', 'TEST-without-weakness'] if expected else ['TEST-with-evidence'])
+from question_bank.personalized_papers import CreatePaperCommand, PersonalizedPaperModule
+from question_bank.personalized_papers.latex_render import LatexRenderError
+from question_bank.recommendation.personalized import PersonalizedRecommendationConfig, PersonalizedRecommendationModule
+from tests.training.test_personalized_recommendation import NOW, SK_PARENTS, _diagnosis, _install_release_with_skills, _seed_recommendation_sources
+from typing import Any
+from question_bank.solution_evidence import CoreResolution
 
 
-def _clear_profile_memory():
-    from integration import diagnosis_profile_service as profiles
-    from integration.data_generation import reset_commit_generations
-    with profiles._TAG_PROFILE_CACHE_LOCK:
-        profiles._TAG_PROFILE_CACHE.clear()
-    profiles._MASTERY_INPUT_RESULTS.clear()
-    from backend.api.app import create_app
-    from backend.api.routers.training import _DIAGNOSIS_RESPONSE_CACHE
-    _DIAGNOSIS_RESPONSE_CACHE.clear()
-    reset_commit_generations()
-
-
-def test_saved_profiles_survive_new_process_and_wal_checkpoint(training_services, monkeypatch):
-    service = training_services
-    scope, exams = {"mode": "all"}, {"mode": "current", "session_ids": [14]}
-    with sqlite3.connect(service.grading_db_path) as writer:
-        writer.execute("PRAGMA journal_mode=WAL")
-        writer.execute("PRAGMA wal_autocheckpoint=0")
-        writer.execute("UPDATE students SET name='合成学生龘' WHERE id=12")
-        writer.commit()
-        service.persist_snapshots = True
-        expected = service.build_profiles(scope=scope, exam_scope=exams)
-        class_profile = service.build_profiles(scope={"mode":"class", "class_id":"八年级1班"}, exam_scope=exams)
-        assert len(class_profile['students']) == 2
-        assert list(service._local_profile_path().glob('*.entry'))
-        digest = hashlib.sha256(pickle.dumps((expected, service.latest_aggregated_mastery))).hexdigest()
-        from backend.api.routers.training import _diagnosis_response_bytes
-        public_digest = hashlib.sha256(_diagnosis_response_bytes(service, scope=scope, exam_scope=exams)).hexdigest()
-        writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        assert service.build_profiles(scope=scope, exam_scope=exams) == expected
-        assert service.build_profiles(scope={"mode":"class", "class_id":"八年级1班"}, exam_scope=exams) == class_profile
-        assert hashlib.sha256(_diagnosis_response_bytes(service, scope=scope, exam_scope=exams)).hexdigest() == public_digest
-        # 任务表在版本化模式下不属于 results 域：jobs 进度写入不影响诊断缓存。
-        jobs_key = service.tag_profile_cache_key(scope=scope, exam_scope=exams)
-        writer.execute("INSERT INTO jobs(job_type, status) VALUES('TEST-job','running')")
-        writer.commit()
-        assert service.tag_profile_cache_key(scope=scope, exam_scope=exams) == jobs_key
-        assert service.build_profiles(scope=scope, exam_scope=exams) == expected
-        assert service._local_profile_signature(jobs_key) is not None
-    _clear_profile_memory()
-    restored = DiagnosisProfileService(service.grading_db_path, service.question_bank_db_path)
-    key = restored.tag_profile_cache_key(scope=scope, exam_scope=exams)
-    with monkeypatch.context() as patch:
-        loads = []
-        original_load = pickle.load
-        def counted_load(*args, **kwargs):
-            loads.append(True)
-            return original_load(*args, **kwargs)
-        patch.setattr(pickle, 'load', counted_load)
-        entry_path = restored._local_profile_entry_path(key)
-        first = restored._read_local_profile(key)
-        assert first is not None and restored._read_local_profile(key) == first
-        assert loads == [True]
-        saved_bytes = entry_path.read_bytes()
-        # STOP without an object is corrupt pickle data without a large fake length.
-        entry_path.write_bytes(b'\x80\x04.')
-        assert restored._read_local_profile(key) is None
-        replacement = entry_path.with_suffix('.TEST-replacement')
-        replacement.write_bytes(saved_bytes)
-        replacement.replace(entry_path)
-        assert restored._read_local_profile(key) == first
-        assert len(loads) == 3
-    # A new interpreter has neither memory results nor process-local commit
-    # counters. Fail if it attempts any full diagnosis/model recalculation.
-    script = """
-import hashlib,json,pickle,sys
 from backend.api.app import create_app
-from backend.api.routers.training import _diagnosis_response_bytes
-from integration.diagnosis_profile_service import DiagnosisProfileService
-s=DiagnosisProfileService(sys.argv[1],sys.argv[2])
-def fail(**kwargs): raise AssertionError('recomputed saved diagnosis')
-s._compute_tag_profiles=fail
-d=s.build_profiles(scope={'mode':'all'},exam_scope={'mode':'current','session_ids':[14]})
-c=s.build_profiles(scope={'mode':'class','class_ids':['八年级1班']},exam_scope={'mode':'current','session_ids':[14]})
-assert len(c['students'])==2
-s.build_profiles=fail
-public=_diagnosis_response_bytes(s,scope={'mode':'all'},exam_scope={'mode':'current','session_ids':[14]})
-print(json.dumps({'digest':hashlib.sha256(pickle.dumps((d,s.latest_aggregated_mastery))).hexdigest(),'students':len(d['students']),'public_digest':hashlib.sha256(public).hexdigest()}))
-"""
-    result = subprocess.run([sys.executable, "-c", script, str(service.grading_db_path),
-                             str(service.question_bank_db_path)], capture_output=True, text=True, timeout=30)
-    assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {"digest": digest, "students": 2, "public_digest": public_digest}
+from backend.api.dependencies import get_data_root, get_job_manager, get_question_bank_db_path, get_training_criterion_module
+from backend.jobs.manager import JobManager
+from backend.jobs.store import JobStore
+
+from question_bank.training_criteria import TrainingCriterionModule
 
 
-@pytest.mark.parametrize("change", ["teacher_score", "training_record", "knowledge", "cause", "corrupt"])
-def test_local_profiles_refresh_changed_inputs_and_corrupt_cache(training_services, monkeypatch, change):
-    from integration import diagnosis_profile_service as profiles
-    service = training_services
-    scope, exams = {"mode": "all"}, {"mode": "current", "session_ids": [14]}
-    service.persist_snapshots = True
-    before = service.build_profiles(scope=scope, exam_scope=exams)
-    from backend.api.routers.training import _diagnosis_response_bytes, _public_training_mapping
-    from backend.api.schemas.training import TrainingDiagnosisResponse
-    expected_public = TrainingDiagnosisResponse.model_validate(_public_training_mapping(
-        {k: v for k, v in before.items() if not k.startswith('_')})).model_dump(mode='json', exclude_none=True)
-    assert json.loads(_diagnosis_response_bytes(service, scope=scope, exam_scope=exams)) == expected_public
-    saved_key = service.tag_profile_cache_key(scope=scope, exam_scope=exams)
-    assert service._local_profile_entry_path(saved_key).is_file()
-    _clear_profile_memory()
-    if change == "teacher_score":
-        with sqlite3.connect(service.grading_db_path) as writer:
-            writer.execute("UPDATE session_details SET score_awarded=10 WHERE result_id=14001 AND question_id='Q1'")
-            writer.execute("UPDATE session_results SET student_score=15 WHERE id=14001")
-    elif change == "training_record":
-        with sqlite3.connect(service.question_bank_db_path) as writer:
-            # A committed training-side change must not reuse an earlier result,
-            # including when checkpointing folds it into the main file.
-            writer.execute("INSERT INTO training_tasks(task_code,status) VALUES('TEST-local-profile-refresh','completed')")
-    elif change == "knowledge":
-        with sqlite3.connect(service.question_bank_db_path) as writer:
-            writer.execute("UPDATE question_tags SET tag_value='合成更新主题' WHERE question_id=101 AND tag_type='knowledge_point'")
-    elif change == "cause":
-        cause = service.data_root / "reports/.class_analysis/14.json"
-        cause.parent.mkdir(parents=True, exist_ok=True)
-        cause.write_text('{}', encoding='utf-8')
-    else:
-        service._local_profile_entry_path(saved_key).write_bytes(b"TEST-truncated-snapshot")
-    fresh = DiagnosisProfileService(service.grading_db_path, service.question_bank_db_path)
-    compute = fresh._compute_tag_profiles
-    calls = []
-    def tracked(**kwargs):
-        calls.append(True)
-        return compute(**kwargs)
-    monkeypatch.setattr(fresh, "_compute_tag_profiles", tracked)
-    after = fresh.build_profiles(scope=scope, exam_scope=exams)
-    assert calls == [True]
-    public_after = TrainingDiagnosisResponse.model_validate(_public_training_mapping(
-        {k: v for k, v in after.items() if not k.startswith('_')})).model_dump(mode='json', exclude_none=True)
-    assert json.loads(_diagnosis_response_bytes(fresh, scope=scope, exam_scope=exams)) == public_after
-    if change == "teacher_score":
-        assert next(s for s in after['students'] if s['student_id'] == '12')['score_rate'] == pytest.approx(.75)
-        assert after != before
-    if change == "knowledge":
-        assert after != before
+from backend.training_assessment import AssessmentReviewConflict, AssessmentUsage, TrainingPaperOutcome
+from dataclasses import replace
+from io import BytesIO
 
+import cv2
 
-def test_local_profiles_reuse_within_a_week_and_refresh_next_week(training_services, monkeypatch):
-    from datetime import UTC, datetime as real_datetime
-    from integration import diagnosis_profile_service as profiles
-    service = training_services
-    scope, exams = {"mode": "all"}, {"mode": "current", "session_ids": [14]}
-    service.persist_snapshots = True
+import numpy
 
-    class FrozenClock:
-        # 2025-01-06 12:00 UTC is Monday 20:00 Beijing; 01-08 is Wednesday.
-        current = real_datetime(2025, 1, 6, 12, tzinfo=UTC)
-        @classmethod
-        def now(cls, tz=None):
-            return cls.current if tz is None else cls.current.astimezone(tz)
-        fromisoformat = real_datetime.fromisoformat
-        combine = real_datetime.combine
-        strptime = real_datetime.strptime
+from question_bank.personalized_papers import FreezePaperCommand
 
-    monkeypatch.setattr(profiles, "datetime", FrozenClock)
-    before = service.build_profiles(scope=scope, exam_scope=exams)
-    _clear_profile_memory()
-    FrozenClock.current = real_datetime(2025, 1, 8, 4, tzinfo=UTC)
-    fresh = DiagnosisProfileService(service.grading_db_path, service.question_bank_db_path)
-    monkeypatch.setattr(
-        fresh, "_compute_tag_profiles",
-        lambda *args, **kwargs: pytest.fail("same-week profile recomputed"),
-    )
-    wednesday = fresh.build_profiles(scope=scope, exam_scope=exams)
-    assert wednesday == before
-    # 周三重新计算的结果与周一一致：周内日期不是输入。
-    checker = DiagnosisProfileService(service.grading_db_path, service.question_bank_db_path)
-    uncached = checker._compute_tag_profiles(
-        scope=profiles._normalized_profile_scope(scope, exams),
-        exam_scope=exams,
-    )[0]
-    assert uncached == before
-    FrozenClock.current = real_datetime(2025, 1, 13, 4, tzinfo=UTC)  # next Monday
-    calls = []
-    real = DiagnosisProfileService._compute_tag_profiles
-    def tracked(self, **kwargs):
-        calls.append(True)
-        return real(self, **kwargs)
-    monkeypatch.setattr(
-        DiagnosisProfileService, "_compute_tag_profiles", tracked,
-    )
-    monday = DiagnosisProfileService(service.grading_db_path, service.question_bank_db_path)
-    monday.build_profiles(scope=scope, exam_scope=exams)
-    assert calls == [True]
-
-
-def test_session_error_cause_index_reuses_unchanged_sessions(training_services, monkeypatch):
-    import integration.persistent_entries as persistent_entries
-    from integration import diagnosis_profile_service as profiles
-    service = training_services
-    (service.data_root / "reports").mkdir(exist_ok=True)
-    with sqlite3.connect(service.grading_db_path) as writer:
-        writer.execute(
-            "INSERT INTO grading_sessions (id, session_name, rubric_path,"
-            " answer_key_path, status, is_deleted)"
-            " VALUES (15, '另一场考试', '', '', 'completed', 0)")
-        writer.execute(
-            "INSERT INTO exam_papers (id, session_id, front_image, back_image,"
-            " student_id, match_status, processing_status)"
-            " VALUES (1501, 15, '', '', 15, 'matched', 'graded')")
-        writer.execute(
-            "INSERT INTO session_results (id, session_id, student_id, paper_id,"
-            " total_score, student_score, needs_human_review, raw_json)"
-            " VALUES (15001, 15, 15, 1501, 20, 12, 0, '{}')")
-        writer.execute(
-            "INSERT INTO session_details (result_id, question_id, score_awarded,"
-            " knowledge_ids, secondary_errors_json)"
-            " VALUES (15001, 'Q1', 7, '[\"UNKNOWN\"]', '[]')")
-        writer.commit()
-
-    first = service._error_cause_index([14, 15])
-    assert service._error_cause_index([14, 15]) == first
-
-    # 只有改了分的场次重新校验；未动的场次继续复用。
-    with sqlite3.connect(service.grading_db_path) as writer:
-        writer.execute(
-            "UPDATE session_details SET score_awarded=4"
-            " WHERE result_id=14001 AND question_id='Q2'")
-        writer.commit()
-    rescored = service._error_cause_index([14, 15])
-    assert {key: rows for key, rows in rescored.items() if key[0] == 15} == {
-        key: rows for key, rows in first.items() if key[0] == 15}
-
-    # 班级归因状态文件也是输入；它变化时同样只重算对应场次。
-    state_file = service.data_root / "reports" / ".class_analysis" / "14.json"
-    state_file.parent.mkdir(parents=True, exist_ok=True)
-    state_file.write_text('{"TEST-state": 1}', encoding='utf-8')
-    service._error_cause_index([14, 15])
-
-    # 缓存结果与不经缓存的计算一致。
-    monkeypatch.setattr(profiles.DiagnosisProfileService,
-                        "_session_error_change_stamp", lambda self, sid: None)
-    uncached = service._error_cause_index([14, 15])
-    monkeypatch.undo()
-    assert uncached == service._error_cause_index([14, 15])
-
-    # 模拟重启：清掉进程内记忆与共享条目库，两个场次都从磁盘复用。
-    with profiles._SESSION_ERROR_LOCK:
-        profiles._SESSION_ERROR_MEMO.clear()
-    with persistent_entries._STORES_LOCK:
-        persistent_entries._STORES.clear()
-    restarted = DiagnosisProfileService(
-        service.grading_db_path, service.question_bank_db_path)
-    assert restarted._error_cause_index([14, 15]) == uncached
-
-
-def test_materialized_session_errors_keep_current_loss_and_legacy_fallback(training_services, monkeypatch):
-    from backend import class_analysis
-    service = training_services
-    reports_dir = service.data_root / "reports"
-    state_file = reports_dir / ".class_analysis" / "14.json"
-    state_file.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(service.grading_db_path) as writer:
-        writer.execute("INSERT INTO session_details (result_id,question_id,score_awarded,knowledge_ids,secondary_errors_json) "
-                       "VALUES (14001,'Q3',0,?,'[]')", (json.dumps(["UNKNOWN"]),))
-        writer.execute("INSERT INTO teacher_score_locks (session_id,scan_batch_id,student_id,question_id,"
-                       "score_awarded,max_score,deduction_reason,source_target_type,source_target_id,revision) "
-                       "VALUES (14,'TEST-batch',12,'Q1',6,10,'TEST-final','manual',1,1)")
-    state = {"cause_analysis": {"questions": {key: {} for key in ("Q1", "Q2", "Q3")}},
-             "error_records": {key: {"records": [
-                 {"student_id": 12, "question_id": key, "kind": "error", "category": "概念理解",
-                  "pattern": "TEST-first", "step_id": "TEST-S1", "skill_keys": ["sk_TEST-saved"]},
-                 {"student_id": 12, "question_id": key, "kind": "process", "category": "过程与依据",
-                  "pattern": "TEST-second", "step_id": "TEST-S2"},
-                 {"student_id": 15, "question_id": key, "kind": "error", "category": "概念理解",
-                  "pattern": "TEST-other-student"},
-             ]} for key in ("Q1", "Q2", "Q3")}}
-    state_file.write_text(json.dumps(state), encoding="utf-8")
-    original = class_analysis.session_error_records
-
-    def light_result():
-        expected = original(service.db, 14, reports_dir, data_root=service.data_root)
-        before = state_file.read_bytes()
-        with monkeypatch.context() as patch:
-            patch.setattr(class_analysis, "assemble_cause_data", lambda *args, **kwargs: pytest.fail("materialized records rebuilt cause inputs"))
-            actual = service._read_session_error_records(14, reports_dir)
-        assert actual == expected
-        assert list(actual) == list(expected)
-        assert all(list(actual[key]) == list(expected[key]) for key in actual)
-        assert state_file.read_bytes() == before
-        return actual
-
-    first = light_result()
-    assert set(first) == {12}
-    assert list(first[12]) == ["Q1", "Q3"]
-    assert [row["pattern"] for row in first[12]["Q1"]] == ["TEST-first", "TEST-second"]
-    assert first[12]["Q1"][0]["skill_keys"] == ["sk_TEST-saved"]
-    assert first[12]["Q1"][0]["score"] == 6
-    assert first[12]["Q1"][0]["max_score"] == 10
-    assert first[12]["Q1"][0]["lost_points"] == 4
-    data = class_analysis.assemble_cause_data(service.db, 14, data_root=service.data_root)
-    source = next(item for item in class_analysis.build_cause_inputs(data) if item["question_id"] == "Q1")
-    legacy = json.loads(json.dumps(state))
-    del legacy["error_records"]["Q1"]
-    legacy["cause_analysis"]["questions"]["Q1"] = {"input": source, "result": class_analysis.normalize_cause_result({"groups": [
-        {"kind": "error", "category": "概念理解", "reason": "TEST-legacy",
-         "manifestation": "TEST-legacy-fact", "evidence_ids": [item["id"] for item in source["evidence"]]}]}, source)}
-    malformed = json.loads(json.dumps(state))
-    malformed["error_records"]["Q1"]["records"] = {"TEST": "bad records"}
-    for saved in (legacy, malformed, {}):
-        state_file.write_text(json.dumps(saved), encoding="utf-8")
-        expected = original(service.db, 14, reports_dir, data_root=service.data_root)
-        before = state_file.read_bytes()
-        assert service._read_session_error_records(14, reports_dir) == expected
-        assert state_file.read_bytes() == before
-        if saved is legacy:
-            assert expected[12]["Q1"][0]["pattern"] == "TEST-legacy"
-    state_file.write_text(json.dumps(state), encoding="utf-8")
-    with sqlite3.connect(service.grading_db_path) as writer:
-        writer.execute("UPDATE session_details SET score_awarded=10 WHERE result_id=14001 AND question_id='Q1'")
-        writer.execute("UPDATE teacher_score_locks SET score_awarded=10 WHERE session_id=14 AND question_id='Q1'")
-    assert list(light_result()[12]) == ["Q3"]
-    with sqlite3.connect(service.grading_db_path) as writer:
-        writer.execute("DELETE FROM session_details WHERE result_id=14001 AND question_id='Q3'")
-    assert light_result() == {}
-    state_file.write_text('{"error_records": ["TEST-bad structure"]}', encoding="utf-8")
-    assert service._read_session_error_records(14, reports_dir) == original(service.db, 14, reports_dir, data_root=service.data_root)
-
-
-def test_session_error_cache_tracks_the_captured_snapshot(training_services):
-    # A commit landing between snapshot capture and the fingerprint call must
-    # not register the old snapshot's row hash under the new generation.
-    from backend.api.read_connections import request_read_context
-    service = training_services
-    (service.data_root / "reports").mkdir(exist_ok=True)
-    paths = SimpleNamespace(db_path=service.grading_db_path,
-                            qb_db_path=service.question_bank_db_path,
-                            data_root=service.data_root)
-    with request_read_context(paths) as ctx:
-        with sqlite3.connect(service.grading_db_path) as writer:
-            writer.execute(
-                "UPDATE session_details SET score_awarded=4"
-                " WHERE result_id=14001 AND question_id='Q2'")
-            writer.commit()
-        stale_fingerprint = ctx.diagnosis_service._session_error_change_stamp(14)
-        ctx.diagnosis_service._error_cause_index([14])
-
-    # A fresh read context sees the new generation: the fingerprint differs,
-    # the session is recomputed, and the output matches a live computation.
-    with request_read_context(paths) as ctx:
-        fresh_fingerprint = ctx.diagnosis_service._session_error_change_stamp(14)
-        assert fresh_fingerprint != stale_fingerprint
-        recomputed = ctx.diagnosis_service._error_cause_index([14])
-    assert recomputed == service._error_cause_index([14])
-
-
-def test_idle_prewarm_saves_local_profiles_without_blocking_grading(training_services, monkeypatch):
-    # Production starts this worker after the app has registered its routers.
-    # Preserve that startup order when this test is selected on its own.
-    import backend.api.app
-    from integration.training_prewarm import TrainingPrewarmWorker, clear_recent_requests, record_request
-    clear_recent_requests()
-    service = training_services
-    paths = SimpleNamespace(db_path=service.grading_db_path, qb_db_path=service.question_bank_db_path,
-                            data_root=service.data_root)
-    jobs = SimpleNamespace(active=True)
-    jobs.list = lambda **kwargs: ([{'status': 'running'}] if jobs.active else [], 0)
-    worker = TrainingPrewarmWorker(paths, jobs, foreground_quiet_seconds=0)
-    operation = lambda: worker._compute("diagnosis", {"mode":"all"}, {"mode":"current","session_ids":[14]}, {})
-    monkeypatch.setattr(worker, "_refresh_plan", lambda: [operation])
-    assert not worker.tick()
-    assert not service._local_profile_path().exists()
-    jobs.active = False
-    assert worker.tick()
-    assert worker.batches[-1][0] == 1
-    assert not worker.tick()
-    # A newly visited scope also needs persistence without waiting for a write.
-    record_request('grouped_diagnosis', scope={'mode': 'all'},
-        exam_scope={'mode': 'current', 'session_ids': [14]}, params={'grouping': {'TEST': 1}})
-    jobs.active = True
-    assert not worker.tick()
-    jobs.active = False
-    assert worker.tick() and worker.batches[-1][0] == 1
-    assert not worker.tick()
-    clear_recent_requests()
-    # Startup prepares the same complete default group request as the page.
-    planned = []
-    monkeypatch.setattr(worker, '_class_names', lambda: ['TEST-class-1', 'TEST-class-2'])
-    assert [scope['mode'] for scope in worker._startup_scopes()] == ['class', 'class', 'all']
-    monkeypatch.setattr(worker, '_latest_volume_id', lambda: 'bnu24-math-g8-upper')
-    monkeypatch.setattr(worker, '_startup_scopes', lambda: [{'mode': 'all', 'student_ids': []}])
-    monkeypatch.setattr(worker, '_compute', lambda *args: planned.append(args))
-    for task in worker._startup_tasks(set()):
-        task()
-    kinds = [item[0] for item in planned]
-    # Per-class exam evidence replaces the old assistant default body, which
-    # the current panel never sends.
-    assert kinds == ['diagnosis', 'overview', 'graph', 'grouped_diagnosis',
-                     'assembly_exam', 'assembly_exam']
-    display_options = {'include_student_detail': True, 'response_mode': 'display_shared'}
-    assert planned[0][3] == display_options
-    group_params = next(item[3] for item in planned if item[0] == 'grouped_diagnosis')
-    assert {key: group_params[key] for key in display_options} == display_options
-    group_request = group_params['grouping']
-    seen = set()
-    startup_tasks = worker._startup_tasks(seen)
-    assert len(startup_tasks) == len(planned)
-    assert worker._tasks_for('grouped_diagnosis', planned[3][1], planned[3][2], group_params, seen) == []
-    full_group_params = {**group_params, 'response_mode': 'full'}
-    assert len(worker._tasks_for('grouped_diagnosis', planned[3][1], planned[3][2], full_group_params, seen)) == 2
-    assert worker._tasks_for('grouped_diagnosis', planned[3][1], planned[3][2],
-                             {'grouping': group_request}, seen) == []
-    assert group_request['scope_keys'] == ['kp_bnu24_math_g8_upper_1']
-    assert (group_request['question_count'], group_request['difficulty_max'],
-            group_request['max_written_questions'], group_request['recent_activity_count']) == (10, 8, 2, 3)
-    exam_params = [item[3] for item in planned if item[0] == 'assembly_exam']
-    assert exam_params == [{'class_ids': ['TEST-class-1'], 'curriculum_volume_id': 'bnu24-math-g8-upper'},
-                           {'class_ids': ['TEST-class-2'], 'curriculum_volume_id': 'bnu24-math-g8-upper'}]
-    assert service._local_profile_path().exists()
-    _clear_profile_memory()
-    monkeypatch.setattr(DiagnosisProfileService, "_compute_tag_profiles",
-        lambda *args, **kwargs: pytest.fail("prewarm recomputed saved profile"))
-    worker._startup_done = False
-    assert worker.tick()
-    assert worker.batches[-1][0] == 1
-
-
-@pytest.mark.parametrize('response_options', [
-    {}, {'include_student_detail': False}, {'response_mode': 'display'},
-    {'response_mode': 'display', 'include_student_detail': False},
-    {'response_mode': 'display_shared'},
-    {'response_mode': 'display_shared', 'include_student_detail': False},
-])
-@pytest.mark.parametrize('grouped', [False, True])
-def test_prewarm_replays_requested_diagnosis_bytes(
-    training_client, training_services, monkeypatch, response_options, grouped,
-):
-    from datetime import UTC, datetime
-    from backend.api.routers import training as router
-    from integration import training_prewarm as prewarm
-    from question_bank.recommendation import personalized
-
-    prewarm.clear_recent_requests()
-    service = training_services
-    paths = SimpleNamespace(db_path=service.grading_db_path, qb_db_path=service.question_bank_db_path,
-                            data_root=service.data_root)
-    module = SimpleNamespace(db_path=service.question_bank_db_path,
-        current_knowledge=SimpleNamespace(release_id='TEST-prewarm-release'),
-        clock=lambda: datetime(2026, 10, 8, tzinfo=UTC),
-        chapter_groups=lambda **kwargs: {'groups': [], 'selection': None, 'unassigned': [],
-                                        'warnings': ['TEST-prewarm-group']})
-    training_client.app.dependency_overrides[router._grouping_module] = lambda: module
-    monkeypatch.setattr(personalized, 'PersonalizedRecommendationModule', lambda **kwargs: module)
-    body = {'scope': {'mode': 'student', 'student_ids': ['12']},
-            'exam_scope': {'mode': 'current', 'session_ids': [14]}, **response_options}
-    if grouped:
-        body['grouping'] = {'scope_keys': ['kp_TEST-prewarm']}
-    expected = training_client.post('/api/training/diagnosis', json=body)
-    assert expected.status_code == 200, expected.text
-    options = {'include_student_detail': True, 'response_mode': 'full', **response_options}
-    recorded = prewarm.recent_requests()
-    assert recorded[0]['kinds']['diagnosis'] == options
-    if grouped:
-        assert {key: recorded[0]['kinds']['grouped_diagnosis'][key] for key in options} == options
-
-    _clear_profile_memory()
-    router._GROUPING_RESULT_CACHE.clear()
-    worker = prewarm.TrainingPrewarmWorker(paths, None, foreground_quiet_seconds=0)
-    worker._startup_done = True
-    monkeypatch.setattr(worker, '_warm_question_bank', lambda generation: None)
-    generation = prewarm._recent_generation()
-    for task in worker._refresh_plan():
-        task()
-    assert prewarm.recent_requests() == recorded
-    assert prewarm._recent_generation() == generation
-
-    monkeypatch.setattr(DiagnosisProfileService, 'build_profiles',
-                        lambda *args, **kwargs: pytest.fail('prewarmed response rebuilt profiles'))
-    monkeypatch.setattr(router, '_build_grouped_diagnosis',
-                        lambda *args, **kwargs: pytest.fail('prewarmed response rebuilt grouping'))
-    repeated = training_client.post('/api/training/diagnosis', json=body)
-    assert repeated.status_code == 200, repeated.text
-    assert repeated.content == expected.content
-    _clear_profile_memory()
-    restored = training_client.post('/api/training/diagnosis', json=body)
-    assert restored.status_code == 200, restored.text
-    assert restored.content == expected.content
-    prewarm.clear_recent_requests()
-
-
-def test_prewarm_yields_to_foreground_requests(training_services, monkeypatch):
-    import threading
-    from integration.training_prewarm import (
-        TrainingPrewarmWorker, clear_recent_requests, foreground_request,
-    )
-    clear_recent_requests()
-    service = training_services
-    paths = SimpleNamespace(db_path=service.grading_db_path, qb_db_path=service.question_bank_db_path,
-                            data_root=service.data_root)
-    jobs = SimpleNamespace(list=lambda **kwargs: ([], 0), is_shutdown=False)
-    ran = []
-    worker = TrainingPrewarmWorker(paths, jobs, foreground_quiet_seconds=30)
-    monkeypatch.setattr(worker, '_refresh_plan', lambda: [lambda: ran.append(True)])
-    finished = []
-    with foreground_request():
-        thread = threading.Thread(target=lambda: finished.append(worker.tick()), daemon=True)
-        thread.start()
-        thread.join(timeout=3)
-        assert thread.is_alive() and ran == []
-    worker._stop.set()
-    thread.join(timeout=5)
-    assert ran == [] and finished == [True] and worker.batches[-1][0] == 0
-    # With the quiet window disabled the same plan runs immediately.
-    worker = TrainingPrewarmWorker(paths, jobs, foreground_quiet_seconds=0)
-    monkeypatch.setattr(worker, '_refresh_plan', lambda: [lambda: ran.append(True)])
-    assert worker.tick() and ran == [True]
-
-
-def test_recent_requests_round_trip_and_prioritize_latest_scope(training_services, monkeypatch):
-    from integration import training_prewarm as prewarm
-    from integration.training_prewarm import (
-        TrainingPrewarmWorker, clear_recent_requests, recent_requests,
-        record_request, record_target,
-    )
-    clear_recent_requests()
-    service = training_services
-    paths = SimpleNamespace(db_path=service.grading_db_path, qb_db_path=service.question_bank_db_path,
-                            data_root=service.data_root)
-    jobs = SimpleNamespace(list=lambda **kwargs: ([], 0), is_shutdown=False)
-    scope = {'mode': 'class', 'class_ids': ['八年级1班'], 'use_historical_fallback': False}
-    exams = {'mode': 'manual', 'session_ids': [14], 'curriculum_volume_id': 'bnu24-math-g8-upper'}
-    record_request('assistant', scope=scope, exam_scope=exams, params={
-        'class_ids': ['八年级1班'], 'session_ids': [14],
-        'curriculum_volume_id': 'bnu24-math-g8-upper', 'difficulty_max': 8,
-        'purpose': 'handout'})
-    generation = prewarm._recent_generation()
-    # Prefetch-style target recording must not restart the refresh loop.
-    record_target('assistant', scope=scope, exam_scope=exams, target_keys=['sk_a'])
-    record_target('assistant', scope=scope, exam_scope=exams, target_keys=None)
-    assert prewarm._recent_generation() == generation
-    record_request('diagnosis', scope={'mode': 'all'},
-        exam_scope={'mode': 'current', 'session_ids': [14]}, params={})
-    latest_scope = {'mode': 'all'}
-    latest_exams = {'mode': 'current', 'session_ids': [14]}
-    record_request('overview', scope=latest_scope, exam_scope=latest_exams,
-                   params={'volume_id': 'bnu24-math-g8-upper'})
-    grouping_params = {'grouping': {'scope_keys': ['kp_bnu24_math_g8_upper_2'],
-                                   'question_count': 8, 'max_written_questions': 1}}
-    record_request('grouped_diagnosis', scope=latest_scope, exam_scope=latest_exams,
-                   params=grouping_params)
-    worker = TrainingPrewarmWorker(paths, jobs, foreground_quiet_seconds=0)
-    worker._persist_recents()
-    recents_file = service.data_root / 'reports' / '.training_diagnosis' / 'recent_requests.json'
-    assert recents_file.is_file()
-    clear_recent_requests()
-    assert recent_requests() == []
-    worker = TrainingPrewarmWorker(paths, jobs, foreground_quiet_seconds=0)
-    worker._load_recents()
-    entries = recent_requests()
-    assert [entry['targets'].get('assistant') for entry in entries] == [[('sk_a',), None], None]
-    planned = []
-    monkeypatch.setattr(worker, '_compute', lambda *args: planned.append(args))
-    monkeypatch.setattr(worker, '_warm_question_bank', lambda generation: planned.append(('browse',)))
-    monkeypatch.setattr(worker, '_latest_volume_id', lambda: 'bnu24-math-g8-upper')
-    monkeypatch.setattr(worker, '_class_names', lambda: [])
-    monkeypatch.setattr(worker, '_startup_scopes', lambda: [])
-    for task in worker._refresh_plan():
-        task()
-    # Complete grouping wins over the same scope's overview and generic browse
-    # preparation, even though its request kind was recorded afterwards.
-    assert [item[0] for item in planned] == ['diagnosis', 'grouped_diagnosis', 'overview',
-        'browse', 'diagnosis', 'assembly_exam', 'assistant', 'assistant']
-    full_options = {'include_student_detail': True, 'response_mode': 'full'}
-    assert planned[0][3] == full_options
-    assert planned[1] == ('grouped_diagnosis', latest_scope, latest_exams,
-                          {**grouping_params, **full_options})
-    # Switching back to a stored scope schedules it first after startup too;
-    # repeated visits without changing scope or parameters do not add batches.
-    worker._startup_done = True
-    assistant_params = entries[0]['kinds']['assistant']
-    generation = prewarm._recent_generation()
-    record_request('assistant', scope=scope, exam_scope=exams, params=assistant_params)
-    assert prewarm._recent_generation() == generation + 1
-    record_request('assistant', scope=scope, exam_scope=exams, params=assistant_params)
-    assert prewarm._recent_generation() == generation + 1
-    planned.clear()
-    for task in worker._refresh_plan():
-        task()
-    assert [item[0] for item in planned] == ['diagnosis', 'assembly_exam', 'assistant',
-        'assistant', 'browse', 'diagnosis', 'grouped_diagnosis', 'overview']
-    assert planned[0][1:3] == (scope, exams)
-    clear_recent_requests()
-    # Requests arriving during startup precede disk history in priority. A
-    # live duplicate retains its current parameters instead of the saved ones.
-    startup_scope = {'mode': 'class', 'class_ids': ['TEST-startup']}
-    record_request('diagnosis', scope=startup_scope, exam_scope=exams, params={})
-    current_params = {**assistant_params, 'difficulty_max': 6}
-    record_request('assistant', scope=scope, exam_scope=exams, params=current_params)
-    live_entries = recent_requests()
-    worker._load_recents()
-    entries = recent_requests()
-    assert [entry['scope'] for entry in entries] == [latest_scope, startup_scope, scope]
-    assert entries[-2:] == live_entries
-    assert entries[-1]['kinds']['assistant'] == current_params
-    assert 'targets' not in entries[-1]
-    # Restoring additional older records must not evict any of the eight live
-    # scopes already accepted while the worker was waiting to start.
-    for index in range(6):
-        record_request('diagnosis', scope={'mode': 'class', 'class_ids': [f'TEST-live-{index}']},
-                       exam_scope=exams, params={})
-    live_entries = recent_requests()
-    assert len(live_entries) == 8
-    worker._load_recents()
-    assert recent_requests() == live_entries
-    clear_recent_requests()
-
-
-@pytest.mark.parametrize('change_during', ['wait', 'task'])
-def test_prewarm_replans_between_tasks_when_foreground_scope_changes(
-    training_services, monkeypatch, change_during,
-):
-    from integration import training_prewarm as prewarm
-    from integration.data_generation import commit_generation
-
-    prewarm.clear_recent_requests()
-    service = training_services
-    paths = SimpleNamespace(db_path=service.grading_db_path, qb_db_path=service.question_bank_db_path,
-                            data_root=service.data_root)
-    worker = prewarm.TrainingPrewarmWorker(paths, None, foreground_quiet_seconds=0)
-    worker._startup_done = worker._recents_loaded = True
-    worker._seen_qb_browse_generation = commit_generation(paths.qb_db_path)
-    exams = {'mode': 'current', 'session_ids': [14]}
-    old_scope, new_scope = {'mode': 'all'}, {'mode': 'class', 'class_ids': ['TEST-new']}
-    params = {'grouping': {'scope_keys': ['kp_bnu24_math_g8_upper_2']}}
-    prewarm.record_request('grouped_diagnosis', scope=old_scope, exam_scope=exams, params=params)
-    changed = []
-    ran = []
-
-    def change_scope():
-        if not changed:
-            prewarm.record_request('grouped_diagnosis', scope=new_scope, exam_scope=exams, params=params)
-            changed.append(True)
-
-    def wait_for_idle():
-        if change_during == 'wait':
-            change_scope()
-        return True
-
-    def compute(kind, scope, exam_scope, params):
-        ran.append((kind, scope))
-        if change_during == 'task':
-            change_scope()
-
-    monkeypatch.setattr(worker, '_wait_for_idle', wait_for_idle)
-    monkeypatch.setattr(worker, '_compute', compute)
-    assert worker.tick()
-    assert ran == ([] if change_during == 'wait' else [('diagnosis', old_scope)])
-    assert worker._seen_recent_generation is None
-    ran.clear()
-    assert worker.tick()
-    assert ran[:2] == [('diagnosis', new_scope), ('grouped_diagnosis', new_scope)]
-    assert worker._seen_recent_generation == prewarm._recent_generation()
-    prewarm.clear_recent_requests()
-
-
-def test_prewarm_replay_does_not_record_itself_or_hide_foreground_visits(training_services, monkeypatch):
-    import threading
-    from backend.api.routers import training as router
-    from integration import training_prewarm as prewarm
-    from question_bank.recommendation import personalized
-
-    prewarm.clear_recent_requests()
-    service = training_services
-    paths = SimpleNamespace(db_path=service.grading_db_path, qb_db_path=service.question_bank_db_path,
-                            data_root=service.data_root)
-    worker = prewarm.TrainingPrewarmWorker(paths, None, foreground_quiet_seconds=0)
-    old_scope, current_scope = {'mode': 'all'}, {'mode': 'class', 'class_ids': ['TEST-current']}
-    exams = {'mode': 'current', 'session_ids': [14]}
-    prewarm.record_request('diagnosis', scope=current_scope, exam_scope=exams, params={})
-    before = prewarm.recent_requests()
-    generation = prewarm._recent_generation()
-    fail = []
-
-    def replay(*args, **kwargs):
-        prewarm.record_request('grouped_diagnosis', scope=old_scope, exam_scope=exams, params={'TEST': 1})
-        prewarm.record_target('assistant', scope=old_scope, exam_scope=exams, target_keys=['TEST-target'])
-        if fail:
-            raise RuntimeError('TEST-replay-failure')
-        # A true foreground request on another thread must still be recorded.
-        thread = threading.Thread(target=lambda: prewarm.record_request(
-            'overview', scope=current_scope, exam_scope=exams, params={'volume_id': 'TEST-volume'}))
-        thread.start()
-        thread.join(timeout=5)
-        assert not thread.is_alive()
-
-    monkeypatch.setattr(router, '_grouped_diagnosis_response_bytes', replay)
-    monkeypatch.setattr(personalized, 'PersonalizedRecommendationModule', lambda **kwargs: None)
-    params = {'grouping': {'scope_keys': ['kp_TEST-chapter']}}
-    worker._compute('grouped_diagnosis', old_scope, exams, params)
-    entries = prewarm.recent_requests()
-    assert len(entries) == len(before) == 1
-    assert entries[0]['scope'] == current_scope
-    assert set(entries[0]['kinds']) == {'diagnosis', 'overview'}
-    assert 'targets' not in entries[0]
-    assert prewarm._recent_generation() == generation + 1
-    fail.append(True)
-    with pytest.raises(RuntimeError, match='TEST-replay-failure'):
-        worker._compute('grouped_diagnosis', old_scope, exams, params)
-    assert prewarm.recent_requests() == entries
-    # Failure restores this thread's normal foreground recording as well.
-    prewarm.record_request('diagnosis', scope=old_scope, exam_scope=exams, params={})
-    assert prewarm.recent_requests()[-1]['scope'] == old_scope
-    assert prewarm._recent_generation() == generation + 2
-    prewarm.clear_recent_requests()
-
-
-def test_prewarm_reuses_the_foreground_assistant_cache_keys(training_services, monkeypatch):
-    from tests.current_knowledge_support import install_current_knowledge
-    from backend.api.read_connections import request_read_context
-    from backend.api.routers import assembly as router
-    from integration.diagnosis_profile_service import DiagnosisProfileService
-    from integration.training_prewarm import TrainingPrewarmWorker, clear_recent_requests
-    from question_bank.recommendation.personalized import PersonalizedRecommendationModule
-    from question_bank.services.assembly_workspace_service import AssemblyWorkspaceService
-    from question_bank.services.question_read_service import QuestionBankReadService
-
-    clear_recent_requests()
-    service = training_services
-    install_current_knowledge(service.question_bank_db_path)
-    paths = SimpleNamespace(db_path=service.grading_db_path, qb_db_path=service.question_bank_db_path,
-                            data_root=service.data_root)
-    # The cache keys do not depend on the shortlist outcome; the fixture bank
-    # cannot resolve this volume's evidence scope for a real one.
-    monkeypatch.setattr(router, 'shortlist_candidates', lambda **kwargs: {
-        'student_count': 0, 'weaknesses': [], 'candidates': [], 'candidate_total': 0})
-    calls = []
-    real_compute = router.compute_assistant_candidates
-    monkeypatch.setattr(router, 'compute_assistant_candidates',
-        lambda **kwargs: (calls.append(kwargs), real_compute(**kwargs))[1])
-    memory_keys, persistent_keys, entry_paths = [], [], []
-    original_get = router._ASSISTANT_CACHE.get_or_compute
-    monkeypatch.setattr(router._ASSISTANT_CACHE, 'get_or_compute',
-        lambda key, compute: (memory_keys.append(key), original_get(key, compute))[1])
-    original_read = DiagnosisProfileService.read_persistent_result
-    original_save = DiagnosisProfileService.save_persistent_result
-    def track(action):
-        def wrapper(self, key, entry=None):
-            persistent_keys.append((action, key))
-            if 'assistant-shortlist-persist' in str(key):
-                entry_paths.append(self._local_profile_entry_path(key))
-            return (original_read(self, key) if action == 'read'
-                    else original_save(self, key, entry))
-        return wrapper
-    monkeypatch.setattr(DiagnosisProfileService, 'read_persistent_result', track('read'))
-    monkeypatch.setattr(DiagnosisProfileService, 'save_persistent_result', track('save'))
-
-    with request_read_context(paths) as ctx:
-        router.compute_assistant_candidates(
-            diagnosis_service=ctx.diagnosis_service,
-            read_service=QuestionBankReadService(paths.qb_db_path, data_root=paths.data_root),
-            recommendations=PersonalizedRecommendationModule(
-                db_path=paths.qb_db_path, data_root=paths.data_root,
-                semester_mastery=ctx.diagnosis_service.semester_mastery),
-            workspace=AssemblyWorkspaceService(paths.data_root),
-            class_ids=['八年级1班'], session_ids=[14], target_keys=['sk_probe'],
-            curriculum_volume_id='bnu24-math-g8-upper',
-            # Int inputs must hash to the same entry file as the float values
-            # the recorded params become after the JSON round trip.
-            difficulty_min=1, difficulty_max=8,
-            recent_activity_count=0, purpose='handout')
-    assert calls[-1]['recent_activity_count'] == 0
-    router._ASSISTANT_CACHE.clear()
-    jobs = SimpleNamespace(list=lambda **kwargs: ([], 0), is_shutdown=False)
-    worker = TrainingPrewarmWorker(paths, jobs, foreground_quiet_seconds=0)
-    worker._persist_recents()
-    clear_recent_requests()
-    worker = TrainingPrewarmWorker(paths, jobs, foreground_quiet_seconds=0)
-    worker._load_recents()
-    monkeypatch.setattr(worker, '_startup_tasks', lambda seen: [])
-    for task in worker._refresh_plan():
-        try:
-            task()
-        except Exception:
-            pass  # The worker itself also ignores per-task failures.
-    # The prewarm's per-target task looked up exactly the foreground keys, and
-    # the foreground-written persistent entry answered it; both refer to the
-    # same entry file despite the int/float round trip, and a recorded 0 for
-    # recent_activity_count is replayed as 0 rather than the default.
-    assert memory_keys[0] == memory_keys[-1]
-    saves = [key for action, key in persistent_keys if action == 'save']
-    reads = [key for action, key in persistent_keys if action == 'read']
-    assert saves and reads and reads[-1] == saves[0]
-    assert len(set(entry_paths)) == 1
-    assert calls[-1]['recent_activity_count'] == 0
-    assert calls[-1]['target_keys'] == ['sk_probe']
-
-
-def test_local_profile_entries_evict_oldest_beyond_caps(training_services, monkeypatch):
-    import os
-    import time
-    from integration import diagnosis_profile_service as profiles
-    service = training_services
-    base = service.tag_profile_cache_key(scope={'mode': 'all'},
-                                       exam_scope={'mode': 'current', 'session_ids': [14]})
-    paths = []
-    for index in range(3):
-        key = (*base, f'TEST-evict-{index}')
-        service._save_local_profile(key, (pickle.dumps({'index': index}), pickle.dumps({})))
-        paths.append(service._local_profile_entry_path(key))
-    # Real timestamps: Windows clamps invalid nanosecond mtimes to one value.
-    for index, path in enumerate(paths):
-        moment = time.time_ns() - (len(paths) - index) * 10**9
-        os.utime(path, ns=(moment, moment))
-    monkeypatch.setattr(profiles, '_LOCAL_PROFILE_MAX_ENTRIES', 2)
-    key = (*base, 'TEST-evict-newest')
-    service._save_local_profile(key, (pickle.dumps({'index': 3}), pickle.dumps({})))
-    paths.append(service._local_profile_entry_path(key))
-    assert not paths[0].exists() and not paths[1].exists()
-    assert paths[2].exists() and paths[3].exists()
-    assert len(list(service._local_profile_path().glob('*.entry'))) == 2
-
-
-def test_semester_mastery_reuses_model_inputs_but_keeps_source_changes(training_services, monkeypatch):
-    from datetime import datetime, UTC
-    from tests.current_knowledge_support import install_current_knowledge
-    from integration import diagnosis_profile_service as profiles
-    from question_bank.mastery.model import week_of
-    install_current_knowledge(training_services.question_bank_db_path)
-    _clear_profile_memory()
-    occurred = datetime(2026, 9, 7, tzinfo=UTC)
-    observation = dict(student='12', item=(14, 'Q1'), qkey=(14, 'Q1'), activity=('exam', 14),
-        session=14, source='exam', occurred_at=occurred, week=week_of(occurred), d=3.1, y=.6,
-        links={'kp_alg_linear_equation': 1.})
-    profile = {'exam_scope': {'mode': 'semester', 'curriculum_volume_id': 'bnu24-math-g8-upper'},
-               '_mastery_population': True, '_mastery_observations': [observation]}
-    calculate = profiles.CurrentMasteryCalculator.calculate
-    calls = []
-    def tracked(self, *args, **kwargs):
-        calls.append(True)
-        return calculate(self, *args, **kwargs)
-    monkeypatch.setattr(profiles.CurrentMasteryCalculator, 'calculate', tracked)
-    # Request grading snapshots use different temporary paths. The original
-    # namespace still permits identical model inputs to share a result.
-    from backend.api.read_connections import request_read_context
-    paths = SimpleNamespace(db_path=training_services.grading_db_path, qb_db_path=training_services.question_bank_db_path)
-    training_services.data_root = training_services.question_bank_db_path.parent.parent
-    with request_read_context(paths) as ctx:
-        before = ctx.diagnosis_service.semester_mastery(profile)
-    before = training_services.semester_mastery(profile)
-    assert before
-    with sqlite3.connect(training_services.grading_db_path) as writer:
-        writer.execute("UPDATE session_details SET deduction_reason='TEST-description-only' WHERE result_id=14001 AND question_id='Q1'")
-    after = training_services.semester_mastery(profile)
-    assert after == before
-    after.clear()
-    assert training_services.semester_mastery(profile) == before
-    with sqlite3.connect(training_services.grading_db_path) as writer:
-        writer.execute("UPDATE session_details SET score_awarded=10 WHERE result_id=14001 AND question_id='Q1'")
-    changed = {**profile, '_mastery_observations': [{**observation, 'y': 1.}]}
-    scored = training_services.semester_mastery(changed)
-    assert scored != before
-    with sqlite3.connect(training_services.question_bank_db_path) as writer:
-        writer.execute("INSERT INTO training_tasks(task_code,status) VALUES('TEST-mastery-input-version','completed')")
-    training_services.semester_mastery(changed)
-    assert calls == [True, True, True]
-    from dataclasses import replace
-    training_services.semester_mastery(changed, parameters=replace(profiles.CURRENT_MASTERY_PARAMETERS, sigma_theta=.9))
-    assert calls == [True, True, True, True]
-    from datetime import timedelta
-    # The mastery input is keyed by Beijing week; +7 days always differs.
-    training_services.semester_mastery(changed, as_of=datetime.now(UTC) + timedelta(days=7))
-    assert len(calls) == 5
-    training_services.semester_mastery(changed, exclude_training_evidence_ids=frozenset({'TEST-excluded-evidence'}))
-    assert len(calls) == 6
-
-
-def test_local_snapshot_save_failure_preserves_profile_result(training_services, monkeypatch):
-    from integration import diagnosis_profile_service as profiles
-    service = training_services
-    service.persist_snapshots = True
-    monkeypatch.setattr(profiles.os, "replace", lambda *args: (_ for _ in ()).throw(PermissionError("TEST disk unavailable")))
-    result = service.build_profiles(scope={"mode":"all"}, exam_scope={"mode":"current","session_ids":[14]})
-    assert len(result['students']) == 2
-    entries_dir = service._local_profile_path()
-    assert not entries_dir.exists() or not list(entries_dir.iterdir())
-
-
-def test_source_changed_during_preparation_does_not_publish_stale_snapshot(training_services, monkeypatch):
-    service = training_services
-    service.persist_snapshots = True
-    original = service._compute_tag_profiles
-    def changed_after_read(**kwargs):
-        result = original(**kwargs)
-        with sqlite3.connect(service.grading_db_path) as writer:
-            writer.execute("UPDATE students SET name='TEST-after-read' WHERE id=12")
-        return result
-    monkeypatch.setattr(service, "_compute_tag_profiles", changed_after_read)
-    result = service.build_profiles(scope={"mode":"all"}, exam_scope={"mode":"current","session_ids":[14]})
-    assert next(s for s in result['students'] if s['student_id']=='12')['student_name'] != 'TEST-after-read'
-    entries_dir = service._local_profile_path()
-    assert not entries_dir.exists() or not list(entries_dir.iterdir())
+from question_bank.training_submissions import CreateScanBatchCommand, IngestUploadCommand, TrainingSubmissionModule
 
 
 @pytest.fixture
@@ -1199,17 +190,13 @@ def training_services(tmp_path: Path) -> DiagnosisProfileService:
 @pytest.fixture
 def training_client(training_services) -> TestClient:
     from backend.api.app import create_app
-    from backend.api.dependencies import (
-        get_diagnosis_profile_service,
-        get_request_diagnosis_profile_service,
-    )
+    from backend.api.dependencies import get_diagnosis_profile_service, get_request_diagnosis_profile_service
 
     diagnosis = training_services
     app = create_app()
     app.dependency_overrides[get_diagnosis_profile_service] = lambda: diagnosis
     app.dependency_overrides[get_request_diagnosis_profile_service] = lambda: diagnosis
     return TestClient(app)
-
 
 
 def _expand_shared_display(payload):
@@ -1228,152 +215,6 @@ def _expand_shared_display(payload):
             'students': [{**student, 'weak_points': [expand(point) for point in student['weak_points']]}
                          for student in payload['students']],
             'group_weak_points': [expand(point) for point in payload['group_weak_points']]}
-
-
-def test_shared_display_preserves_complete_values_order_and_unobserved_points(training_services):
-    from copy import deepcopy
-    from backend.api.routers.training import _diagnosis_display, _public_training_mapping, _validated_diagnosis_json
-    from backend.api.schemas.training import TrainingDisplaySharedDiagnosisResponse
-    source = training_services.build_profiles(scope={'mode': 'student', 'student_ids': ['12']},
-        exam_scope={'mode': 'current', 'session_ids': [14]})
-    original = deepcopy(source)
-    base = {**deepcopy(source['students'][0]['weak_points'][0]), 'mastery': .4, 'tier': 'weak'}
-    unobserved = {**base, 'knowledge_key': 'TEST-unobserved', 'mastery': None, 'tier': 'insufficient',
-                  'observation_count': 0, 'evidence_count': 0, 'source_question_refs': []}
-    variants = [{**base, 'mastery': .5}, {**base, 'observation_count': base.get('observation_count', 0) + 1},
-                {**base, 'tier': 'stable'}, {**base, 'parent_knowledge_key': 'TEST-parent'},
-                {**base, 'knowledge_point': 'TEST-changed label'},
-                {**base, 'evidence_count': base['evidence_count'] + 1},
-                {**base, 'source_question_refs': [*base['source_question_refs'],
-                                                 deepcopy(base['source_question_refs'][0])]}]
-    other = {**base, 'mastery': .8, 'tier': 'stable',
-             'observation_count': base.get('observation_count', 0) + 7,
-             'evidence_count': base['evidence_count'] + 9, 'source_question_refs': []}
-    student = source['students'][0]
-    source['students'] = [{**student, 'weak_points': [base, unobserved, base, *variants]},
-                          {**student, 'student_id': 'TEST-other', 'weak_points': [unobserved, other]}]
-    source['group_weak_points'] = [variants[1], base, unobserved]
-    source['grouping'] = {'TEST-nested': {'local_path': 'C:/TEST-private', 'retained': 'TEST-public'}}
-    before = deepcopy(source)
-    public = _public_training_mapping({key: value for key, value in source.items() if not key.startswith('_')},
-                                      reject_nonfinite=True)
-    display_bytes = _validated_diagnosis_json(public, response_mode='display')
-    display = json.loads(display_bytes)
-    encoded = _validated_diagnosis_json(public, response_mode='display_shared')
-    shared = json.loads(encoded)
-    expanded = _expand_shared_display(shared)
-    assert expanded == display
-    assert json.dumps(expanded, ensure_ascii=False, allow_nan=False,
-                      separators=(',', ':')).encode('utf-8') == display_bytes
-    assert [point[0] for point in shared['students'][0]['weak_points']] == [0, 1, 0, 0, 0, 0, 2, 3, 0, 0]
-    assert [point[0] for point in shared['students'][1]['weak_points']] == [1, 0]
-    assert [point[0] for point in shared['group_weak_points']] == [0, 0, 1]
-    assert len(shared['weak_point_catalog']) == 4
-    assert all(set(point) <= {'knowledge_key', 'knowledge_point', 'parent_knowledge_key'}
-               for point in shared['weak_point_catalog'])
-    assert shared['students'][0]['weak_points'][1] == [1, None, 'insufficient', 0, 0, 0]
-    assert 'mastery' not in expanded['students'][0]['weak_points'][1]
-    assert b'TEST-private' in encoded and b'local_path' in encoded
-    assert source == before
-    assert original['students'][0]['weak_points'] != before['students'][0]['weak_points']
-    pair = {**public, 'students': [{**student, 'weak_points': [base]},
-                                  {**student, 'student_id': 'TEST-other', 'weak_points': [other]}],
-            'group_weak_points': []}
-    pair_shared = json.loads(_validated_diagnosis_json(pair, response_mode='display_shared'))
-    assert len(pair_shared['weak_point_catalog']) == 1
-    assert _expand_shared_display(pair_shared) == json.loads(_validated_diagnosis_json(pair, response_mode='display'))
-    invalid_points = [[index, .4, 'weak', 1, 1, 1]
-                      for index in [-1, 1.5, True, '0', len(shared['weak_point_catalog'])]]
-    invalid_points += [[0, value, 'weak', 1, 1, 1]
-                       for value in [float('nan'), float('inf'), 'NaN', 'Infinity', '0.4', -.1, 1.1, True]]
-    invalid_points += [[0, .4, 'unknown', 1, 1, 1], [0, .4, 'weak', 1, 1],
-                       [0, .4, 'weak', 1, 1, 1, 1], 0]
-    for position in (3, 4, 5):
-        for value in (-1, 1.5, True, '1'):
-            point = [0, .4, 'weak', 1, 1, 1]
-            point[position] = value
-            invalid_points.append(point)
-    for point in invalid_points:
-        invalid = deepcopy(shared)
-        invalid['students'][0]['weak_points'] = [point]
-        with pytest.raises(ValueError):
-            TrainingDisplaySharedDiagnosisResponse.model_validate(invalid)
-        invalid['students'][0]['weak_points'] = []
-        invalid['group_weak_points'] = [point]
-        with pytest.raises(ValueError):
-            TrainingDisplaySharedDiagnosisResponse.model_validate(invalid)
-    for value in [float('nan'), float('inf'), 'NaN', 'Infinity']:
-        invalid = deepcopy(public)
-        invalid['students'][0]['weak_points'][0]['mastery'] = value
-        with pytest.raises(ValueError):
-            _validated_diagnosis_json(_public_training_mapping(invalid, reject_nonfinite=True),
-                                     response_mode='display_shared')
-    empty = {**public, 'students': [], 'group_weak_points': []}
-    empty_display = json.loads(_validated_diagnosis_json(empty, response_mode='display'))
-    empty_shared = json.loads(_validated_diagnosis_json(empty, response_mode='display_shared'))
-    assert empty_shared['weak_point_catalog'] == []
-    assert _expand_shared_display(empty_shared) == empty_display
-    ordered_point = {'tier': 'weak', 'knowledge_point': 'TEST-order', 'evidence_count': 3,
-                     'mastery': .25, 'knowledge_key': 'TEST-order-key', 'observation_count': 2,
-                     'source_question_refs': []}
-    ordered = {**public, 'students': [{**student, 'weak_points': [ordered_point]}],
-               'knowledge_catalog': [{'node_kind': 'skill', 'knowledge_point': 'TEST-order',
-                                      'TEST-hidden': 'unused', 'knowledge_key': 'TEST-order-key'}]}
-    projected = _diagnosis_display(ordered)
-    assert list(projected['students'][0]['weak_points'][0]) == [
-        'tier', 'knowledge_point', 'evidence_count', 'mastery', 'knowledge_key',
-        'observation_count', 'source_reference_count']
-    assert list(projected['knowledge_catalog'][0]) == ['node_kind', 'knowledge_point', 'knowledge_key']
-    missing_refs = deepcopy(ordered)
-    del missing_refs['students'][0]['weak_points'][0]['source_question_refs']
-    with pytest.raises(KeyError, match='source_question_refs'):
-        _diagnosis_display(missing_refs)
-    hidden_nonfinite = deepcopy(public)
-    hidden_nonfinite['students'][0]['weak_points'][0]['diagnostic_hint'] = {'TEST-hidden': float('nan')}
-    with pytest.raises(ValueError, match='non-finite diagnosis number'):
-        _validated_diagnosis_json(_public_training_mapping(hidden_nonfinite, reject_nonfinite=True),
-                                 response_mode='display_shared')
-
-
-def test_shared_display_cache_rebuilds_corrupt_json_indices_and_private_fields(training_services):
-    from copy import deepcopy
-    import gzip
-    from backend.api.routers import training as router
-    service = training_services
-    service.persist_snapshots = True
-    scope = {'mode': 'student', 'student_ids': ['12']}
-    exams = {'mode': 'current', 'session_ids': [14]}
-    expected = router._diagnosis_response_bytes(service, scope=scope, exam_scope=exams,
-                                                response_mode='display_shared')
-    payload = json.loads(expected)
-    key = (*service.tag_profile_cache_key(scope=scope, exam_scope=exams),
-           'api-diagnosis-json', None, True, 'display_shared')
-    invalid_index = deepcopy(payload)
-    invalid_index['students'][0]['weak_points'][0][0] = len(payload['weak_point_catalog'])
-    bad_number = deepcopy(payload)
-    bad_number['students'][0]['weak_points'][0][1] = 'NaN'
-    coerced_number = deepcopy(payload)
-    coerced_number['students'][0]['weak_points'][0][1] = '0.4'
-    boolean_count = deepcopy(payload)
-    boolean_count['students'][0]['weak_points'][0][4] = True
-    invalid_length = deepcopy(payload)
-    invalid_length['group_weak_points'] = [[0, .4, 'weak', 1, 1]]
-    old_shared = deepcopy(payload)
-    old_shared['weak_point_catalog'] = _expand_shared_display(payload)['students'][0]['weak_points']
-    old_shared['students'][0]['weak_points'] = list(range(len(old_shared['weak_point_catalog'])))
-    old_shared['group_weak_points'] = []
-    invalid_metadata = deepcopy(payload)
-    invalid_metadata['weak_point_catalog'][0]['knowledge_point'] = 123
-    values = [b'not-json', json.dumps({'response_mode': 'display'}).encode(),
-              json.dumps(invalid_index).encode(),
-              json.dumps(bad_number).encode(), json.dumps(coerced_number).encode(),
-              json.dumps(boolean_count).encode(), json.dumps(invalid_length).encode(),
-              json.dumps(old_shared).encode(), json.dumps(invalid_metadata).encode()]
-    for encoded in values:
-        service._save_local_profile(key, (pickle.dumps({'json_gzip': gzip.compress(encoded)}), pickle.dumps({})))
-        router._DIAGNOSIS_RESPONSE_CACHE.clear()
-        assert router._diagnosis_response_bytes(service, scope=scope, exam_scope=exams,
-                                                response_mode='display_shared') == expected
 
 
 def test_training_diagnosis_uses_question_tag_identity(
@@ -1599,352 +440,1260 @@ print(hashlib.sha256(result).hexdigest())
     assert grouped_calls == [10, 8, 8]
 
 
-def _display_store_root(service) -> Path:
-    return Path(service.data_root) / 'reports' / '.training_diagnosis' / 'last_display'
+def part_assessment_mastery__insert_feature_rows(conn, question_id, parts, *, fingerprint=None):
+    """Write active formula difficulty rows: [(part_id, difficulty), ...]."""
+    from question_bank.services.standard_difficulty import _legacy_question_content_fingerprint
+
+    if fingerprint is None:
+        row = conn.execute(
+            "SELECT * FROM questions WHERE id=?", (int(question_id),)
+        ).fetchone()
+        fingerprint = _legacy_question_content_fingerprint(dict(row))
+    for part_id, difficulty in parts:
+        conn.execute(
+            """INSERT INTO question_part_difficulty_features
+               (question_id, part_id, features_json, formula_difficulty,
+                formula_version, source_content_hash, is_active)
+               VALUES (?,?,?,?,?,?,1)""",
+            (
+                int(question_id),
+                str(part_id),
+                json.dumps({"evidence": "合成难度依据"}),
+                float(difficulty),
+                "std-difficulty-v1",
+                fingerprint,
+            ),
+        )
 
 
-def _display_store(service):
-    from integration.persistent_entries import persistent_entry_store
+@pytest.fixture()
+def part_assessment_mastery_refined_training_source(tmp_path):
+    from copy import deepcopy
+    from question_bank.database.schema import initialize_database, connect
+    from question_bank.solution_evidence.contracts import CoreResolution, QuestionSolutionEvidence
+    from question_bank.solution_evidence.repository import SolutionEvidenceRepository
+    from question_bank.solution_evidence.part_assessments import load_profiles
+    from question_bank.training_criteria import QuestionAnalysisInputLoader, TrainingCriterionModule
+    from question_bank.training_criteria.analysis import solution_evidence_source_content_hash, training_criteria_from_solution_evidence
+    from tests.training.test_personalized_recommendation import _install_release_with_skills as _install_release_with_skills
+    from tests.test_api_training_routes import solution_evidence_semantics__evidence_payload as _evidence_payload
 
-    return persistent_entry_store(
-        _display_store_root(service), max_entries=128, max_bytes=256 * 1024 * 1024)
-
-
-def _last_display_saved(service, endpoint: str, request_key: dict) -> bytes | None:
-    import gzip as gzip_module
-
-    saved = _display_store(service).get(
-        (endpoint, json.dumps(dict(request_key), sort_keys=True,
-                               ensure_ascii=False, default=str)), 'last')
-    return None if saved is None else gzip_module.decompress(saved)
-
-
-def test_training_diagnosis_display_refresh_round_trip(training_client, training_services, monkeypatch):
-    """诊断：先回上次结果并标记刷新，后台算完后同一请求回实时结果。"""
-    import time
-
-    from backend.api.routers import training as router
-    from backend.api.schemas.training import TrainingDiagnosisRequest
-    from integration import display_refresh
-
-    body = {
-        'scope': {'mode': 'student', 'student_ids': ['12']},
-        'exam_scope': {'mode': 'current', 'session_ids': [14]},
-    }
-    first = training_client.post('/api/training/diagnosis', json=body)
-    assert first.status_code == 200, first.text
-    assert 'x-data-refreshing' not in first.headers
-    # 逐字节对齐旧的同步路径输出。
-    expected = router._diagnosis_response_bytes(
-        training_services, scope=body['scope'], exam_scope=body['exam_scope'],
-        include_student_detail=True, response_mode='full')
-    assert first.content == expected
-
-    request = TrainingDiagnosisRequest.model_validate(body)
-    request_key = {
-        'scope': request.scope.model_dump(exclude_none=True),
-        'exam_scope': request.exam_scope.model_dump(exclude_none=True),
-        'include_student_detail': True,
-        'response_mode': 'full',
-    }
-    marker = b'{"TEST_marker":"fresh"}'
-    original = router._compute_diagnosis_bytes
-    calls: list[int] = []
-
-    def slow_then_marker(paths, **kwargs):
-        if not calls:
-            calls.append(1)
-            time.sleep(1.6)
-            return marker
-        return original(paths, **kwargs)
-
-    monkeypatch.setattr(router, '_compute_diagnosis_bytes', slow_then_marker)
-    stale = training_client.post('/api/training/diagnosis', json=body)
-    assert stale.status_code == 200
-    assert stale.headers['x-data-refreshing'] == '1'
-    assert stale.content == first.content
-    assert display_refresh.wait_idle(10)
-    assert _last_display_saved(training_services, 'training-diagnosis', request_key) == marker
-
-    fresh = training_client.post('/api/training/diagnosis', json=body)
-    assert fresh.status_code == 200
-    assert 'x-data-refreshing' not in fresh.headers
-    assert fresh.content == first.content
-
-
-def test_training_diagnosis_display_modes_share_refresh_bytes(training_client, training_services):
-    """display / display_shared 与摘要输出同样逐字节对齐。"""
-    from backend.api.routers.training import _diagnosis_response_bytes
-
-    base = {
-        'scope': {'mode': 'student', 'student_ids': ['12']},
-        'exam_scope': {'mode': 'current', 'session_ids': [14]},
-    }
-    for extra, options in [
-        ({'include_student_detail': False},
-         {'include_student_detail': False, 'response_mode': 'full'}),
-        ({'response_mode': 'display'},
-         {'include_student_detail': True, 'response_mode': 'display'}),
-        ({'response_mode': 'display_shared'},
-         {'include_student_detail': True, 'response_mode': 'display_shared'}),
-    ]:
-        response = training_client.post('/api/training/diagnosis', json={**base, **extra})
-        assert response.status_code == 200, response.text
-        assert 'x-data-refreshing' not in response.headers
-        assert response.content == _diagnosis_response_bytes(
-            training_services, scope=base['scope'], exam_scope=base['exam_scope'],
-            **options)
-
-
-def test_training_grouped_diagnosis_display_refresh(training_client, training_services, monkeypatch):
-    """分组诊断也走上次结果 + 后台重算路径。"""
-    import time
-    from datetime import UTC, datetime
-
-    from backend.api.routers import training as router
-    from backend.api.schemas.training import TrainingDiagnosisRequest
-    from integration import display_refresh
-
-    module = SimpleNamespace(
-        db_path=training_services.question_bank_db_path,
-        current_knowledge=SimpleNamespace(release_id='TEST-release'),
-        clock=lambda: datetime(2026, 10, 3, tzinfo=UTC),
-        chapter_groups=lambda **kwargs: {
-            'groups': [], 'selection': None, 'unassigned': [],
-            'warnings': ['TEST-grouped-refresh'],
-        })
-    training_client.app.dependency_overrides[router._grouping_module] = lambda: module
-    try:
-        body = {
-            'scope': {'mode': 'student', 'student_ids': ['12']},
-            'exam_scope': {'mode': 'current', 'session_ids': [14]},
-            'grouping': {
-                'scope_keys': ['kp_test_scope'],
-                'curriculum_volume_id': 'bnu24-math-g8-upper',
-                'question_count': 10, 'difficulty_max': 8,
-                'exclude_current_exam_originals': True,
-            },
-        }
-        first = training_client.post('/api/training/diagnosis', json=body)
-        assert first.status_code == 200, first.text
-        assert 'x-data-refreshing' not in first.headers
-        request = TrainingDiagnosisRequest.model_validate(body)
-        expected = router._grouped_diagnosis_response_bytes(
-            training_services, module,
-            scope=request.scope.model_dump(exclude_none=True),
-            exam_scope=request.exam_scope.model_dump(exclude_none=True),
-            grouping=request.grouping)
-        assert first.content == expected
-
-        calls: list[int] = []
-        original = router._compute_grouped_diagnosis_bytes
-
-        def slow(paths, grouping_module, **kwargs):
-            calls.append(1)
-            if len(calls) == 1:
-                time.sleep(1.6)
-            return original(paths, grouping_module, **kwargs)
-
-        monkeypatch.setattr(router, '_compute_grouped_diagnosis_bytes', slow)
-        stale = training_client.post('/api/training/diagnosis', json=body)
-        assert stale.status_code == 200
-        assert stale.headers['x-data-refreshing'] == '1'
-        assert stale.content == first.content
-        assert display_refresh.wait_idle(10)
-        fresh = training_client.post('/api/training/diagnosis', json=body)
-        assert fresh.status_code == 200
-        assert 'x-data-refreshing' not in fresh.headers
-        assert fresh.content == first.content
-    finally:
-        training_client.app.dependency_overrides.pop(router._grouping_module, None)
-
-
-def test_training_overview_display_refresh(training_client, training_services, monkeypatch):
-    """学情总览：字节一致 + 旧结果刷新标记。"""
-    import time
-
-    from backend.api.routers import training as router
-    from backend.api.schemas.training import TrainingOverviewRequest
-    from backend.api.schemas.training import TrainingOverviewResponse
-    from integration import display_refresh
-    from integration.mastery_overview import overview_payload
-
-    body = {
-        'scope': {'mode': 'all', 'use_historical_fallback': True},
-        'exam_scope': {
-            'mode': 'semester',
-            'curriculum_volume_id': 'bnu24-math-g8-upper',
-            'session_ids': [14],
+    root = tmp_path / "data"
+    path = root / "databases" / "question_bank.db"
+    initialize_database(path)
+    _install_release_with_skills(
+        path,
+        revision=3,
+        skill_parents={
+            "sk_alg_linear_equation": "kp_bnu24_math_g7_upper_5_2_1",
+            "sk_geo_triangle_congruence": "kp_bnu24_math_g7_lower_4_3_9",
+            "sk_geo_construction": "kp_bnu24_math_g7_lower_4_3_4",
+            "sk_fun_linear": "kp_bnu24_math_g8_upper_4_2_2",
         },
-    }
-    first = training_client.post('/api/training/overview', json=body)
-    assert first.status_code == 200, first.text
-    assert 'x-data-refreshing' not in first.headers
-    expected_model = TrainingOverviewResponse.model_validate(overview_payload(
-        training_services,
-        scope={'mode': 'all', 'use_historical_fallback': True},
-        exam_scope={'mode': 'semester', 'curriculum_volume_id': 'bnu24-math-g8-upper',
-                    'session_ids': [14]},
-        volume_id='bnu24-math-g8-upper'))
-    assert first.content == json.dumps(
-        expected_model.model_dump(mode='json', by_alias=True),
-        ensure_ascii=False, allow_nan=False, separators=(',', ':')).encode('utf-8')
+    )
+    with connect(path) as conn:
+        conn.execute(
+            "INSERT INTO papers(id,title,import_status) VALUES(1,'合成试卷','ready')"
+        )
+        conn.execute(
+            "INSERT INTO questions(id,paper_id,question_number,question_type,question_text,answer_text,difficulty) VALUES(1,1,'1','解答题','合成第一问及第二问','合成答案',2)"
+        )
+        conn.execute(
+            "INSERT INTO question_tags(question_id,tag_type,tag_value,source) VALUES(1,'knowledge_point','kp_geo_construction','synthetic')"
+        )
+        conn.execute(
+            "INSERT INTO grading_question_links(grading_session_id,source_question_id,bank_question_id,link_method,status) VALUES('1','Q1',1,'manual','confirmed')"
+        )
+    from question_bank.services.rich_content_service import save_question_rich_content
 
-    calls: list[int] = []
-    original = router._compute_overview_bytes
+    save_question_rich_content(
+        1,
+        root=root / "question_bank" / "rich_content",
+        question_blocks=[{"type": "text", "text": "合成题目的完整排版正文"}],
+    )
+    question = QuestionAnalysisInputLoader(db_path=path, data_root=root).load((1,))[0]
 
-    def slow(paths, **kwargs):
-        calls.append(1)
-        if len(calls) == 1:
-            time.sleep(1.6)
-        return original(paths, **kwargs)
+    class Resolver:
+        def resolve(self, key):
+            return CoreResolution(
+                status="resolved", stable_keys=(key,), reason="synthetic"
+            )
 
-    monkeypatch.setattr(router, '_compute_overview_bytes', slow)
-    stale = training_client.post('/api/training/overview', json=body)
-    assert stale.status_code == 200
-    assert stale.headers['x-data-refreshing'] == '1'
-    assert stale.content == first.content
-    assert display_refresh.wait_idle(10)
-    fresh = training_client.post('/api/training/overview', json=body)
-    assert 'x-data-refreshing' not in fresh.headers
-    assert fresh.content == first.content
-
-
-def test_training_diagnosis_refresh_errors(training_client, training_services, monkeypatch):
-    """后台失败不丢旧结果；同步失败保持 422 语义。"""
-    import time
-
-    from backend.api.routers import training as router
-    from backend.api.schemas.training import TrainingDiagnosisRequest
-    from integration import display_refresh
-
-    body = {
-        'scope': {'mode': 'student', 'student_ids': ['12']},
-        'exam_scope': {'mode': 'current', 'session_ids': [14]},
-    }
-    first = training_client.post('/api/training/diagnosis', json=body)
-    assert first.status_code == 200, first.text
-
-    def failing(*_args, **_kwargs):
-        time.sleep(1.6)
-        raise ValueError('TEST-refresh-failed')
-
-    monkeypatch.setattr(router, '_compute_diagnosis_bytes', failing)
-    stale = training_client.post('/api/training/diagnosis', json=body)
-    assert stale.status_code == 200
-    assert stale.headers['x-data-refreshing'] == '1'
-    assert stale.content == first.content
-    assert display_refresh.wait_idle(10)
-    request = TrainingDiagnosisRequest.model_validate(body)
-    assert _last_display_saved(training_services, 'training-diagnosis', {
-        'scope': request.scope.model_dump(exclude_none=True),
-        'exam_scope': request.exam_scope.model_dump(exclude_none=True),
-        'include_student_detail': True,
-        'response_mode': 'full',
-    }) == first.content
-
-    monkeypatch.setattr(router, '_compute_diagnosis_bytes',
-                        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                            ValueError('TEST-broken')))
-    broken = training_client.post('/api/training/diagnosis', json={
-        'scope': {'mode': 'student', 'student_ids': ['15']},
-        'exam_scope': {'mode': 'current', 'session_ids': [14]},
-    })
-    assert broken.status_code == 422
-    assert broken.json()['error']['code'] == 'training_scope_invalid'
+    raw = _evidence_payload(1)
+    raw["parts"][0]["evidence_points"][0]["fine_term_links"] = [
+        {
+            "fine_term_id": "sk_alg_linear_equation",
+            "fine_term_name": "一元一次方程",
+            "role": "direct",
+        }
+    ]
+    second = deepcopy(raw["parts"][0])
+    second.update(part_id="part-2", label="第2问", full_answer="证明三角形全等")
+    second["evidence_points"][0].update(
+        evidence_point_id="step-2",
+        target="证明全等",
+        observable_evidence="列出全等条件",
+        fine_term_links=[
+            {
+                "fine_term_id": "sk_geo_triangle_congruence",
+                "fine_term_name": "三角形全等",
+                "role": "direct",
+            }
+        ],
+    )
+    raw["parts"].append(second)
+    old = deepcopy(raw)
+    old["parts"][1]["evidence_points"][0]["target"] = "旧的判定目标"
+    make = lambda payload: QuestionSolutionEvidence.from_model_dict(
+        payload,
+        question_id=1,
+        source_content_hash=solution_evidence_source_content_hash(question),
+        resolver=Resolver(),
+    )
+    criteria = TrainingCriterionModule(path)
+    criteria.propose(
+        question=question,
+        draft=training_criteria_from_solution_evidence(make(old), question=question),
+        source_kind="backfill",
+        source_reference="synthetic-old",
+        actor_ref="test",
+        reason="synthetic",
+    )
+    old_version = criteria.read(question)["current_version"]["version_id"]
+    evidence = make(raw)
+    version = SolutionEvidenceRepository(path).save(
+        evidence,
+        source_kind="backfill",
+        source_reference="synthetic-refined",
+        created_by="test",
+    )
+    with connect(path) as conn:
+        part_assessment_mastery__insert_feature_rows(conn, 1, [("part-1", 2), ("part-2", 8)])
+    return path, root, question, evidence, load_profiles(path, [1])[1], old_version
 
 
-def test_prewarm_waits_for_display_refresh_busy(training_services, monkeypatch):
-    """展示重算占用读路径时，预热批次同样让位。"""
-    import threading
-    import time
+def personalized_papers__diagnosis(**kwargs):
+    """Keep export fixtures within their candidate bank's 4-6 difficulty band."""
+    diagnosis = _diagnosis(**kwargs)
+    for student in diagnosis["students"]:
+        for point in student["weak_points"]:
+            for ref in point["source_question_refs"]:
+                ref["score_awarded"] = 0.8 * ref["full_score"]
+    return diagnosis
 
-    from integration import display_refresh
-    from integration.training_prewarm import (
-        TrainingPrewarmWorker, clear_recent_requests,
+
+class personalized_papers_SyntheticPdfConverter:
+    def __init__(self, *, fail: bool = False, pages: int = 2) -> None:
+        self.fail = fail
+        self.pages = pages
+
+    def convert(self, source_docx: Path, output_pdf: Path) -> None:
+        if self.fail:
+            raise OSError("synthetic conversion failure")
+        document = fitz.open()
+        try:
+            for page_number in range(1, self.pages + 1):
+                page = document.new_page(width=595, height=842)
+                page.insert_text(
+                    fitz.Point(72, 96),
+                    f"Synthetic reviewed page {page_number}",
+                    fontsize=14,
+                )
+            document.save(output_pdf)
+        finally:
+            document.close()
+
+
+class personalized_papers_SyntheticLatexCompiler:
+    def __init__(self, *, fail: bool = False, pages: int = 2) -> None:
+        self.fail = fail
+        self.pages = pages
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    def compile(self, tex_source: str, output_pdf: Path) -> None:
+        if self.fail:
+            raise LatexRenderError("synthetic latex failure")
+        document = fitz.open()
+        try:
+            for page_number in range(1, self.pages + 1):
+                page = document.new_page(width=595, height=842)
+                page.insert_text(
+                    fitz.Point(72, 96),
+                    f"Synthetic latex page {page_number}",
+                    fontsize=14,
+                )
+            document.save(output_pdf)
+        finally:
+            document.close()
+
+
+@pytest.fixture()
+def personalized_papers_paper_workspace(
+    tmp_path: Path,
+) -> tuple[PersonalizedPaperModule, dict[str, object], Path, Path]:
+    db_path = tmp_path / "question_bank.db"
+    data_root = tmp_path / "data"
+    initialize_database(db_path)
+    _install_release_with_skills(db_path, revision=3, skill_parents=SK_PARENTS)
+    _seed_recommendation_sources(db_path, data_root)
+    recommendation = PersonalizedRecommendationModule(
+        db_path=db_path,
+        data_root=data_root,
+        clock=lambda: NOW,
+    )
+    draft = recommendation.create(
+        request_token="1" * 32,
+        diagnosis=personalized_papers__diagnosis(student_ids=("SYN-S01",)),
+        config=PersonalizedRecommendationConfig(
+            question_count=8,
+            expected_minutes=120,
+        ),
+        actor_ref="teacher-1",
+    )
+    module = PersonalizedPaperModule(
+        db_path=db_path,
+        data_root=data_root,
+        pdf_converter=personalized_papers_SyntheticPdfConverter(),
+        latex_compiler=personalized_papers_SyntheticLatexCompiler(),
+        clock=lambda: NOW,
+    )
+    return module, draft, db_path, data_root
+
+
+def personalized_papers__create_command(
+    token_character: str,
+    draft: dict[str, object],
+) -> CreatePaperCommand:
+    return CreatePaperCommand(
+        operation_token=token_character * 32,
+        expected_draft_revision=int(draft["revision"]),
+        student_id="SYN-S01",
+        actor_ref="teacher-1",
     )
 
-    clear_recent_requests()
-    service = training_services
-    paths = SimpleNamespace(db_path=service.grading_db_path,
-                            qb_db_path=service.question_bank_db_path,
-                            data_root=service.data_root)
-    jobs = SimpleNamespace(list=lambda **kwargs: ([], 0), is_shutdown=False)
-    ran = []
-    worker = TrainingPrewarmWorker(paths, jobs, foreground_quiet_seconds=30)
-    monkeypatch.setattr(worker, '_refresh_plan', lambda: [lambda: ran.append(True)])
-    gate = threading.Event()
 
-    def slow_compute():
-        gate.wait(5)
-        return b'{}'
-
-    try:
-        thread = threading.Thread(target=lambda: worker.tick(), daemon=True)
-        refresh_thread = threading.Thread(
-            target=lambda: display_refresh.serve_with_refresh(
-                data_root=service.data_root, endpoint='TEST-refresh',
-                request_key={'a': 1}, compute=slow_compute),
-            daemon=True)
-        refresh_thread.start()
-        while not display_refresh.busy():
-            time.sleep(0.01)
-        thread.start()
-        thread.join(timeout=3)
-        assert thread.is_alive() and ran == []
-        gate.set()
-        refresh_thread.join(timeout=10)
-        worker._stop.set()
-        thread.join(timeout=5)
-        assert ran == [] and worker.batches[-1][0] == 0
-    finally:
-        gate.set()
-        worker._stop.set()
+class solution_evidence_semantics_Resolver:
+    def resolve(self, fine_term_id: str) -> CoreResolution:
+        if fine_term_id in {"kp_alg_linear_equation", "knowledge-fine-linear"}:
+            return CoreResolution(
+                status="resolved",
+                stable_keys=("kp_alg_linear_equation",),
+                reason="test",
+            )
+        return CoreResolution(status="unmapped", reason="test")
 
 
-def test_prewarm_startup_waits_for_first_foreground_or_grace(training_services, monkeypatch):
-    """首次前台请求结束并静默后启动；无前台请求时到宽限时启动。"""
-    import threading
+def solution_evidence_semantics__evidence_payload(
+    question_id: int,
+    *,
+    invented_term: bool = False,
+) -> dict[str, Any]:
+    direct_id = "invented-term" if invented_term else "kp_alg_linear_equation"
+    direct_name = "模型新造词" if invented_term else "一元一次方程"
+    return {
+        "schema_version": "question-solution-evidence-v1",
+        "question_id": question_id,
+        "parts": [
+            {
+                "part_id": "part-1",
+                "label": "第1问",
+                "response_mode": "process_required",
+                "canonical_answer": "",
+                "accepted_forms": [],
+                "full_answer": "由等式性质移项并化简，得到结论。",
+                "proof_obligations": ["说明所用等式性质", "写出结论"],
+                "visual_requirements": [],
+                "deduction_policy": ["缺少关键变形依据时该步骤未达成"],
+                "allow_alternative_methods": True,
+                "evidence_points": [
+                    {
+                        "evidence_point_id": "step-1",
+                        "target": "正确移项",
+                        "observable_evidence": "写出等价变形后的方程",
+                        "fine_term_links": [
+                            {
+                                "fine_term_id": direct_id,
+                                "fine_term_name": direct_name,
+                                "role": "direct",
+                            },
+                            {
+                                "fine_term_id": "knowledge-fine-linear",
+                                "fine_term_name": "移项解方程",
+                                "role": "supporting_prerequisite",
+                            },
+                        ],
+                        "equivalent_rules": ["等价变形顺序可不同"],
+                        "counterexamples": ["改变等号一侧符号但另一侧不变"],
+                    }
+                ],
+            }
+        ],
+        "auxiliary_rules": ["符号等价即可"],
+        "rationale": "按可观察解题过程拆分。",
+        "confidence": 0.92,
+    }
 
-    from integration.training_prewarm import (
-        TrainingPrewarmWorker, foreground_request,
+
+def training_criterion_api__seed(database: Path) -> None:
+    initialize_database(database)
+    with connect(database) as connection:
+        paper_id = connection.execute(
+            """
+            INSERT INTO papers (title, import_status)
+            VALUES ('P4-10 API 合成试卷', 'completed')
+            """
+        ).lastrowid
+        connection.executemany(
+            """
+            INSERT INTO questions (
+                id, paper_id, question_number, question_type,
+                question_text, answer_text
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                (1, paper_id, "1", "计算题", "解方程 x+1=2", "x=1"),
+                (2, paper_id, "2", "选择题", "选择正确选项", "C"),
+            ),
+        )
+
+
+def training_criterion_api__client(tmp_path: Path):
+    data_root = tmp_path / "data"
+    database = data_root / "databases" / "question_bank.db"
+    training_criterion_api__seed(database)
+    module = TrainingCriterionModule(database)
+    manager = JobManager(JobStore(tmp_path / "jobs.db"), max_workers=1)
+
+    def backfill_handler(context):
+        ids = module.claim_backfill(context.payload["run_id"])
+        for question_id in ids:
+            module.finish_backfill_item(
+                run_id=context.payload["run_id"],
+                question_id=question_id,
+                status="failed",
+                error_category="synthetic",
+            )
+        run = module.complete_backfill(context.payload["run_id"])
+        return {
+            "run_id": run["run_id"],
+            "status": run["status"],
+            "successful_question_ids": [],
+            "failed_question_ids": list(ids),
+            "retryable": True,
+            "question_text": "must not leak",
+        }
+
+    manager.register("criterion_backfill", backfill_handler)
+    app = create_app()
+    app.dependency_overrides[get_data_root] = lambda: data_root
+    app.dependency_overrides[get_question_bank_db_path] = lambda: database
+    app.dependency_overrides[get_training_criterion_module] = lambda: module
+    app.dependency_overrides[get_job_manager] = lambda: manager
+    return TestClient(app), manager, module, database
+
+
+def training_criterion_api__draft_body(*, revision: int, parent: str | None):
+    return {
+        "expected_revision": revision,
+        "parent_version_id": parent,
+        "reason": "教师手工建立判定点",
+        "points": [
+            {
+                "point_id": "p-relation",
+                "target": "建立等量关系",
+                "observable_evidence": "列出正确方程",
+                "equivalent_rules": [],
+                "counterexamples": [],
+            },
+            {
+                "point_id": "p-answer",
+                "target": "得到结论",
+                "observable_evidence": "写出 x=1",
+                "equivalent_rules": ["1=x"],
+                "counterexamples": [],
+            },
+        ],
+        "auxiliary_rules": ["书写清晰但不计数"],
+        "rationale": "教师核对",
+        "confidence": 1,
+    }
+
+
+def test_teacher_can_create_review_and_read_immutable_criterion_version(
+    tmp_path: Path,
+) -> None:
+    client, _manager, _module, database = training_criterion_api__client(tmp_path)
+
+    missing = client.get("/api/question-bank/criteria/questions/1")
+    created = client.post(
+        "/api/question-bank/criteria/questions/1/drafts",
+        json=training_criterion_api__draft_body(revision=0, parent=None),
     )
 
-    service = training_services
-    paths = SimpleNamespace(db_path=service.grading_db_path,
-                            qb_db_path=service.question_bank_db_path,
-                            data_root=service.data_root)
-    jobs = SimpleNamespace(list=lambda **kwargs: ([], 0), is_shutdown=False)
+    assert missing.status_code == 200
+    assert missing.json()["state"] == "missing"
+    assert created.status_code == 200, created.text
+    proposed = created.json()
+    assert proposed["available"] is True
+    version_id = proposed["current_version"]["version_id"]
+    approved = client.post(
+        "/api/question-bank/criteria/questions/1/review",
+        json={
+            "version_id": version_id,
+            "expected_revision": proposed["revision"],
+            "action": "approve",
+            "reason": "原题、答案和判定点已核对",
+        },
+    )
 
-    # 前台计数是进程级状态，同进程其他用例可能已留下痕迹。
-    import integration.training_prewarm as prewarm_module
-    monkeypatch.setattr(prewarm_module, '_FOREGROUND_ACTIVE', 0)
-    monkeypatch.setattr(prewarm_module, '_FOREGROUND_LAST_FINISH', 0.0)
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["available"] is True
+    old_version = client.get(f"/api/question-bank/criteria/versions/{version_id}")
+    assert old_version.status_code == 200
+    assert old_version.json()["status"] == "approved"
 
-    # 无前台请求：宽限到期即开始（测试用极短宽限）。
-    quick = TrainingPrewarmWorker(paths, jobs, foreground_quiet_seconds=0,
-                                  startup_max_seconds=0.05)
-    assert quick._wait_startup()
+    with connect(database) as connection:
+        connection.execute(
+            "UPDATE questions SET question_text = ? WHERE id = 1",
+            ("题干变化：解方程 x+2=3",),
+        )
+    stale = client.get("/api/question-bank/criteria/questions/1")
+    assert stale.status_code == 200
+    assert stale.json()["available"] is True
+    assert stale.json()["current_version"]["status"] == "approved"
+    assert (
+        client.get(f"/api/question-bank/criteria/versions/{version_id}").json()[
+            "criteria"
+        ]
+        == old_version.json()["criteria"]
+    )
 
-    # 前台请求结束后满足静默窗口即开始，不等满宽限。
-    quiet = TrainingPrewarmWorker(paths, jobs, foreground_quiet_seconds=0,
-                                  startup_max_seconds=60)
-    with foreground_request():
-        pass
-    assert quiet._wait_startup()
 
-    # 前台请求仍在进行时不提前启动，结束后才放行。
-    slow = TrainingPrewarmWorker(paths, jobs, foreground_quiet_seconds=0.3,
-                                 startup_max_seconds=60)
-    with foreground_request():
-        holder = []
+def test_atomic_criterion_approval_and_revision_conflict_are_public(
+    tmp_path: Path,
+) -> None:
+    client, _manager, _module, _database = training_criterion_api__client(tmp_path)
+    created = client.post(
+        "/api/question-bank/criteria/questions/1/drafts",
+        json={
+            **training_criterion_api__draft_body(revision=0, parent=None),
+            "points": [
+                {
+                    "point_id": "p-answer",
+                    "target": "完成解答",
+                    "observable_evidence": "答案正确",
+                    "equivalent_rules": [],
+                    "counterexamples": [],
+                }
+            ],
+        },
+    ).json()
+    version_id = created["current_version"]["version_id"]
 
-        def held():
-            holder.append(slow._wait_startup())
+    quality = client.post(
+        "/api/question-bank/criteria/questions/1/review",
+        json={
+            "version_id": version_id,
+            "expected_revision": created["revision"],
+            "action": "approve",
+            "reason": "尝试批准",
+        },
+    )
+    conflict = client.post(
+        "/api/question-bank/criteria/questions/1/review",
+        json={
+            "version_id": version_id,
+            "expected_revision": 99,
+            "action": "reject",
+            "reason": "过期页面",
+        },
+    )
 
-        thread = threading.Thread(target=held, daemon=True)
-        thread.start()
-        thread.join(timeout=1)
-        assert thread.is_alive() and holder == []
-    thread.join(timeout=10)
-    assert holder == [True]
+    assert quality.status_code == 200
+    assert quality.json()["current_version"]["status"] == "approved"
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == ("criterion_revision_conflict")
+
+
+training_feedback_api_SUBMISSION_ID = "c" * 64
+
+
+class training_feedback_api_FakeAssessmentModule:
+    def __init__(self) -> None:
+        self.error: Exception | None = None
+        self.calls: list[tuple[object, ...]] = []
+        self.outcome = TrainingPaperOutcome(
+            run_id="a" * 64,
+            submission_id=training_feedback_api_SUBMISSION_ID,
+            submission_revision=1,
+            status="partial",
+            request_count=1,
+            expected_question_count=1,
+            expected_point_count=2,
+            model_name="synthetic-model",
+            usage=AssessmentUsage(
+                prompt_tokens=100,
+                completion_tokens=20,
+                total_tokens=120,
+            ),
+            latency_ms=50,
+            issue_codes=(),
+            error_code=None,
+            questions=(
+                {
+                    "task_item_code": "P4-SYN-Q01",
+                    "item_order": 1,
+                    "status": "review_required",
+                    "met_count": 1,
+                    "not_met_count": 0,
+                    "uncertain_count": 1,
+                    "unreadable_count": 0,
+                    "total_count": 2,
+                    "review_status": "pending",
+                    "review_points": [
+                        {
+                            "point_id": "p1",
+                            "content": "写出关键步骤",
+                            "state": "met",
+                            "evidence": "合成依据",
+                            "teacher_locked": False,
+                            "teacher_reason": None,
+                            "actor_ref": None,
+                            "lock_revision": 0,
+                        },
+                        {
+                            "point_id": "p2",
+                            "content": "得到结论",
+                            "state": "uncertain",
+                            "evidence": "图像不清",
+                            "teacher_locked": False,
+                            "teacher_reason": None,
+                            "actor_ref": None,
+                            "lock_revision": 0,
+                        },
+                    ],
+                },
+            ),
+            review_revision=1,
+            control_state="active",
+            workflow_status="review_required",
+            action_message="请复核不确定判定点。",
+            attempts=(),
+        )
+        self.feedback = {
+            "schema_version": "training-feedback-v1",
+            "feedback_id": "f" * 64,
+            "submission_id": training_feedback_api_SUBMISSION_ID,
+            "submission_revision": 1,
+            "source_review_revision": 1,
+            "status": "partial",
+            "student": {
+                "student_id": "SYN-S01",
+                "student_code": "S01",
+                "student_name": "合成学生",
+                "class_id": "SYN-C01",
+            },
+            "summary": {
+                "published_question_count": 1,
+                "ready_question_count": 1,
+                "total_question_count": 1,
+                "pending_outbox_count": 0,
+                "message": "已形成逐题训练证据。",
+            },
+            "questions": [],
+            "mastery_changes": [],
+            "next_round": {
+                "status": "draft",
+                "draft_id": "d" * 64,
+                "message": "下一轮草稿等待教师确认。",
+                "changes": [],
+            },
+            "timeline": [],
+            "safety": {
+                "is_exam_score": False,
+                "changes_exam_score": False,
+                "auto_paper_created": False,
+                "auto_printed": False,
+            },
+            "evidence_version": "e" * 64,
+        }
+
+    def _raise(self) -> None:
+        if self.error is not None:
+            raise self.error
+
+    def pending_summary(self):
+        self.calls.append(("pending",))
+        return {"items": [dict(draft_id="d"*64, draft_name="TEST-训练卷", scan_page_count=2,
+                               review_submission_count=1, publish_submission_count=3)]}
+
+    def assess(self, submission_id, expected_revision):
+        self._raise()
+        self.calls.append(("assess", submission_id, expected_revision))
+        return self.outcome
+
+    def get_outcome(self, submission_id, revision):
+        self._raise()
+        self.calls.append(("get", submission_id, revision))
+        return self.outcome
+
+    def review_point(self, submission_id, revision, command):
+        self._raise()
+        self.calls.append(("review", submission_id, revision, command))
+        return self.outcome
+
+    def retry_failed(self, submission_id, revision, command):
+        self._raise()
+        self.calls.append(("retry", submission_id, revision, command))
+        return self.outcome
+
+    def pause(self, submission_id, revision, command):
+        return self.retry_failed(submission_id, revision, command)
+
+    def resume(self, submission_id, revision, command):
+        return self.retry_failed(submission_id, revision, command)
+
+    def cancel(self, submission_id, revision, command):
+        return self.retry_failed(submission_id, revision, command)
+
+    def recover(self, submission_id, revision, command):
+        return self.retry_failed(submission_id, revision, command)
+
+    def sync_evidence(self, submission_id, revision, command):
+        self._raise()
+        self.calls.append(("evidence", submission_id, revision, command))
+        return self.feedback
+
+    def get_feedback(self, submission_id, revision):
+        self._raise()
+        self.calls.append(("feedback", submission_id, revision))
+        return self.feedback
+
+    def replay_evidence_outbox(self, max_items):
+        self._raise()
+        self.calls.append(("replay", max_items))
+        return {
+            "examined_count": 1,
+            "delivered_count": 1,
+            "failed_count": 0,
+            "feedbacks": [self.feedback],
+        }
+
+
+@pytest.fixture()
+def training_feedback_api_feedback_client() -> tuple[TestClient, training_feedback_api_FakeAssessmentModule]:
+    from backend.api.app import create_app
+    from backend.api.dependencies import get_training_assessment_module
+
+    module = training_feedback_api_FakeAssessmentModule()
+    app = create_app()
+    app.dependency_overrides[get_training_assessment_module] = lambda: module
+    return TestClient(app), module
+
+
+def test_assessment_review_evidence_feedback_and_replay_contract(
+    training_feedback_api_feedback_client,
+) -> None:
+    client, module = training_feedback_api_feedback_client
+    started = client.post(
+        f"/api/training/submissions/{training_feedback_api_SUBMISSION_ID}/assessment",
+        json={"expected_revision": 1},
+    )
+    assert started.status_code == 200
+    assert started.json()["workflow_status"] == "review_required"
+    assert started.headers["cache-control"] == "no-store"
+    assert "path" not in started.text.casefold()
+
+    loaded = client.get(
+        f"/api/training/submissions/{training_feedback_api_SUBMISSION_ID}/assessment",
+        params={"submission_revision": 1},
+    )
+    assert loaded.status_code == 200
+
+    reviewed = client.post(
+        f"/api/training/submissions/{training_feedback_api_SUBMISSION_ID}/assessment/reviews",
+        json={
+            "submission_revision": 1,
+            "expected_review_revision": 1,
+            "task_item_code": "P4-SYN-Q01",
+            "point_id": "p2",
+            "final_state": "not_met",
+            "teacher_evidence": "教师核对原图",
+            "teacher_reason": "确认该点未达成",
+        },
+    )
+    assert reviewed.status_code == 200
+    assert module.calls[-1][3].actor_ref == "local_teacher"
+
+    retried = client.post(
+        f"/api/training/submissions/{training_feedback_api_SUBMISSION_ID}/assessment/actions",
+        json={
+            "operation_token": "2" * 32,
+            "submission_revision": 1,
+            "expected_review_revision": 1,
+            "action": "retry",
+            "reason": "教师确认后显式重试",
+        },
+    )
+    assert retried.status_code == 200
+    assert module.calls[-1][0] == "retry"
+
+    published = client.post(
+        f"/api/training/submissions/{training_feedback_api_SUBMISSION_ID}/evidence",
+        json={
+            "operation_token": "3" * 32,
+            "submission_revision": 1,
+            "expected_review_revision": 1,
+            "action": "publish",
+            "reason": "教师确认发布已完成题目",
+        },
+    )
+    assert published.status_code == 200
+    assert published.headers["cache-control"] == "no-store"
+    assert published.json()["next_round"]["status"] == "draft"
+    assert published.json()["safety"]["auto_paper_created"] is False
+
+    feedback = client.get(
+        f"/api/training/submissions/{training_feedback_api_SUBMISSION_ID}/feedback",
+        params={"submission_revision": 1},
+    )
+    assert feedback.status_code == 200
+
+    replayed = client.post(
+        "/api/training/evidence/replay",
+        json={"max_items": 20},
+    )
+    assert replayed.status_code == 200
+    assert replayed.json()["delivered_count"] == 1
+
+
+def test_assessment_review_conflict_is_public_and_safe(
+    training_feedback_api_feedback_client,
+) -> None:
+    client, module = training_feedback_api_feedback_client
+    module.error = AssessmentReviewConflict(1, 2)
+    response = client.get(
+        f"/api/training/submissions/{training_feedback_api_SUBMISSION_ID}/assessment",
+        params={"submission_revision": 1},
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == (
+        "training_assessment_review_conflict"
+    )
+    assert response.json()["error"]["details"] == {"current_revision": 2}
+    assert "path" not in response.text.casefold()
+
+
+def test_shuffled_pages_group_by_page_identity_and_survive_restart(
+    personalized_papers_paper_workspace,
+) -> None:
+    paper, draft, db_path, data_root = personalized_papers_paper_workspace
+    instance = training_submissions__freeze(paper, draft, token="d")
+    frozen_path, _ = paper.artifact_path(
+        str(instance["paper_instance_id"]),
+        "frozen-pdf",
+    )
+    pages = training_submissions__pdf_pages(frozen_path)
+    module = TrainingSubmissionModule(db_path=db_path, data_root=data_root)
+    batch = module.create_batch(
+        CreateScanBatchCommand(
+            operation_token="e" * 32,
+            paper_instance_ids=(str(instance["paper_instance_id"]),),
+            actor_ref="teacher-1",
+        )
+    )
+
+    shuffled = (pages[1], training_submissions__rotate_png(pages[0]))
+    for index, content in enumerate(shuffled, start=1):
+        batch = module.ingest(
+            str(batch["batch_id"]),
+            training_submissions__upload(
+                token=f"{index + 1:x}",
+                revision=int(batch["revision"]),
+            ),
+            BytesIO(content),
+        )
+
+    assert batch["status"] == "ready", [
+        (
+            page["page_number"],
+            page["state"],
+            page["issue_code"],
+            page["rotation_degrees"],
+            page["width_pixels"],
+            page["height_pixels"],
+        )
+        for page in batch["pages"]
+    ]
+    assert batch["submissions"][0]["missing_pages"] == []
+    assert [
+        page["page_number"]
+        for page in sorted(
+            batch["pages"],
+            key=lambda item: int(item["page_number"] or 0),
+        )
+    ] == [1, 2]
+    assert all(page["state"] == "assigned" for page in batch["pages"])
+    assert any(page["rotation_degrees"] != 0 for page in batch["pages"])
+    restarted = TrainingSubmissionModule(db_path=db_path, data_root=data_root)
+    history = restarted.list_batches(str(batch["paper_batch_id"]))
+    assert [item["batch_id"] for item in history] == [batch["batch_id"]]
+    assert history[0]["submission_count"] == 1
+    assert history[0]["status"] == "ready"
+    assert restarted.list_batches("0" * 64) == []
+    assert restarted.get_batch(str(batch["batch_id"])) == batch
+    finalized = restarted.finalize_submission(
+        str(batch["submissions"][0]["submission_id"])
+    )
+    assert finalized["submission_revision"] == 1
+    assert [page["page_number"] for page in finalized["pages"]] == [1, 2]
+
+    # Continue the actual recovered scan through assessment and publication.
+    # Only the model is replaced; persistence and mastery use the real modules.
+    from backend.training_assessment import EvidenceSyncCommand, FakeTrainingAssessmentGateway, TrainingAssessmentModule
+    from question_bank.mastery.current import CurrentMasteryCalculator
+    from question_bank.current_knowledge import CurrentKnowledgeResolver
+
+    resolver = CurrentKnowledgeResolver.from_active_database(db_path)
+    # The submission stores the draft's diagnosis (paper_workspace applies the
+    # 0.8-rate fixture); reproduce it so the mastery comparison is identical.
+    profile = personalized_papers__diagnosis(student_ids=("SYN-S01",))
+    identity = ("SYN-S01", "sk_alg_linear_equation")
+    before = CurrentMasteryCalculator(
+        db_path, resolver, clock=lambda: NOW, data_root=data_root
+    ).calculate(profile)[identity]
+    gateway = FakeTrainingAssessmentGateway(
+        lambda request: {
+            "results": [
+                {
+                    "task_item_code": item.task_item_code,
+                    "point_id": point["point_id"],
+                    "state": "met",
+                    "evidence": "合成答卷中的步骤和结论均已核对",
+                }
+                for item in request.items
+                for point in item.points
+            ]
+        }
+    )
+    assessment = TrainingAssessmentModule(
+        db_path=db_path, data_root=data_root, gateway=gateway, clock=lambda: NOW
+    )
+    submission_id = str(batch["submissions"][0]["submission_id"])
+    outcome = assessment.assess(submission_id, 1)
+    assert gateway.calls == 1
+    # Candidate results do not count until the teacher confirms publication.
+    assert (
+        CurrentMasteryCalculator(
+            db_path, resolver, clock=lambda: NOW, data_root=data_root
+        ).calculate(profile)[identity]
+        == before
+    )
+    command = EvidenceSyncCommand(
+        operation_token="8" * 32,
+        expected_review_revision=outcome.review_revision,
+        action="publish",
+        actor_ref="teacher-1",
+        reason="确认归卷批改结果并更新掌握度",
+    )
+    feedback = assessment.sync_evidence(submission_id, 1, command)
+    assert feedback["summary"]["published_question_count"] == len(outcome.questions)
+    assert feedback["summary"]["published_question_count"] > 0
+    assert assessment.sync_evidence(submission_id, 1, command) == feedback
+    change = next(
+        item
+        for item in feedback["mastery_changes"]
+        if item["stable_key"] == identity[1]
+    )
+    assert change["mastery_after"]["value"] > before.value
+    reopened = TrainingAssessmentModule(
+        db_path=db_path, data_root=data_root, gateway=gateway, clock=lambda: NOW
+    )
+    assert reopened.get_feedback(submission_id, 1) == feedback
+    after = CurrentMasteryCalculator(
+        db_path, resolver, clock=lambda: NOW, data_root=data_root
+    ).calculate(profile)[identity]
+    assert after.value == change["mastery_after"]["value"]
+    assert after.training_evidence_count == len(outcome.questions)
+    target = next(
+        item
+        for item in feedback["next_round"]["student"]["targets"]
+        if item["stable_key"] == identity[1]
+    )
+    assert target["value"] == after.value
+    assert paper.get(str(instance["paper_instance_id"])) == instance
+
+    another = restarted.create_batch(
+        CreateScanBatchCommand(
+            operation_token="f" * 32,
+            paper_instance_ids=(str(instance["paper_instance_id"]),),
+            actor_ref="teacher-1",
+        )
+    )
+    assert [
+        item["batch_id"]
+        for item in restarted.list_batches(str(batch["paper_batch_id"]))
+    ] == [
+        another["batch_id"],
+        batch["batch_id"],
+    ]
+
+
+@pytest.mark.parametrize("semester_scope", [False, True])
+def test_refined_scanned_paper_updates_each_part_and_survives_reopen(
+    part_assessment_mastery_refined_training_source, semester_scope
+):
+    from backend.training_assessment import EvidenceSyncCommand, FakeTrainingAssessmentGateway, TrainingAssessmentModule
+    from question_bank.mastery.current import CurrentMasteryCalculator
+    from question_bank.current_knowledge import CurrentKnowledgeResolver
+
+    from backend.repositories.db_manager import DBManager
+    from integration.diagnosis_profile_service import DiagnosisProfileService
+    from question_bank.training_criteria.analysis import grading_config_skeleton_from_solution_evidence
+    import backend.api.app
+    from backend.api.routers.training import create_personalized_recommendation_draft
+    from backend.api.schemas.training import PersonalizedRecommendationCreateRequest
+    import json
+
+    db_path, data_root, question, evidence, _, _ = part_assessment_mastery_refined_training_source
+    grading_path = data_root / "databases" / "grading.db"
+    grading = DBManager(grading_path)
+    grading.initialize()
+    rubric = grading_config_skeleton_from_solution_evidence(
+        evidence, question_ref="Q1"
+    )["rubric_question"]
+    for index, part in enumerate(rubric["parts"], 1):
+        part.update(part_id=f"Q1(P{index})", part_score=5)
+    rubric_path = data_root / "synthetic-rubric.json"
+    rubric_path.write_text(json.dumps({"questions": [rubric]}), encoding="utf-8")
+    # 设计 E §7.4：旧会话先迁移出冻结证据快照，投影按 evidence_point_ids 归因。
+    from question_bank.solution_evidence.evidence_snapshot import freeze_session_evidence_snapshot
+
+    freeze_session_evidence_snapshot(
+        db_path,
+        grading_session_id=1,
+        upload_config_dir=data_root / "config" / "uploaded",
+        data_root=data_root,
+    )
+    with grading._connect() as conn:
+        conn.execute(
+            "INSERT INTO grading_sessions(id,session_name,rubric_path,answer_key_path,status,is_deleted) VALUES(1,'合成考试',?,'','completed',0)",
+            (str(rubric_path),),
+        )
+        conn.execute(
+            "UPDATE grading_sessions SET curriculum_volume_id='bnu24-math-g8-upper' WHERE id=1"
+        )
+        conn.execute(
+            "INSERT INTO students(id,student_code,name,class_name) VALUES(1,'SYN-S01','合成学生','合成班')"
+        )
+        conn.execute(
+            "INSERT INTO exam_papers(id,session_id,front_image,back_image,student_id,match_status,processing_status) VALUES(1,1,'','',1,'matched','graded')"
+        )
+        conn.execute(
+            "INSERT INTO session_results(id,session_id,student_id,paper_id,total_score,student_score,needs_human_review,raw_json) VALUES(1,1,1,1,10,5,0,'{}')"
+        )
+        for part, score in (("Q1(P1)", 0), ("Q1(P2)", 5)):
+            conn.execute(
+                "INSERT INTO session_details(result_id,question_id,score_awarded,deduction_reason,knowledge_ids) VALUES(1,?,?,'',?)",
+                (part, score, json.dumps(["UNKNOWN"])),
+            )
+        conn.execute("INSERT INTO students(id,student_code,name,class_name) VALUES(2,'SYN-S02','合成学生二','合成班')")
+        conn.execute("INSERT INTO exam_papers(id,session_id,front_image,back_image,student_id,match_status,processing_status) VALUES(2,1,'','',2,'matched','graded')")
+        conn.execute("INSERT INTO session_results(id,session_id,student_id,paper_id,total_score,student_score,needs_human_review,raw_json) VALUES(2,1,2,2,10,5,0,'{}')")
+        for part, score in (("Q1(P1)", 5), ("Q1(P2)", 0)):
+            conn.execute("INSERT INTO session_details(result_id,question_id,score_awarded,deduction_reason,knowledge_ids) VALUES(2,?,?,'',?)",
+                         (part, score, json.dumps(["UNKNOWN"])))
+    diagnosis_service = DiagnosisProfileService(
+        grading_path, db_path, data_root=data_root
+    )
+    scope = {"mode": "selected", "student_ids": ["1"]}
+    exam_scope = {"mode": "current", "session_ids": [1]}
+    if semester_scope:
+        exam_scope = {"mode": "semester", "curriculum_volume_id": "bnu24-math-g8-upper"}
+    # Warm the real diagnosis cache before publishing training evidence.
+    profile = diagnosis_service.build_profiles(scope=scope, exam_scope=exam_scope)
+    # Teacher-visible keys plus the documented internal exam-source contract.
+    assert {key for key in profile if str(key).startswith("_")} == {"_exam_source_metadata"}
+    # A selected student and the whole population share the same fitted result.
+    full_profile = diagnosis_service.build_profiles(scope={"mode": "all"}, exam_scope=exam_scope)
+    full_student = next(student for student in full_profile["students"] if str(student["student_id"]) == "1")
+    assert full_student["weak_points"] == profile["students"][0]["weak_points"]
+    group_profile = diagnosis_service.build_profiles(scope={"mode": "class", "class_id": "合成班"}, exam_scope=exam_scope)
+    assert next(student for student in group_profile["students"] if str(student["student_id"]) == "1")["weak_points"] == full_student["weak_points"]
+    before = {
+        point["knowledge_key"]: point["mastery"]
+        for point in profile["students"][0]["weak_points"]
+    }
+    before_counts = {
+        point["knowledge_key"]: point["evidence_count"]
+        for point in profile["students"][0]["weak_points"]
+    }
+    frozen_profile = _diagnosis(student_ids=("SYN-S01",))
+    frozen_profile["exam_scope"] = profile["exam_scope"]
+    frozen_profile["students"][0]["student_id"] = "1"
+    # The source exam is older than the three latest graded activities.
+    graded_activities = [
+        {"student_id": "1", "session_id": i, "occurred_at": f"2026-09-0{i}"}
+        for i in (2, 3, 4)
+    ]
+    frozen_profile["students"][0]["weak_points"][0]["source_question_refs"][0][
+        "question_difficulty"
+    ] = 8
+    # Strong-but-imperfect source: still a loss, but the readiness plan can
+    # reach the difficulty-8 candidate instead of capping at foundation.
+    frozen_profile["students"][0]["weak_points"][0]["source_question_refs"][0][
+        "score_awarded"
+    ] = 8
+    recommendation = PersonalizedRecommendationModule(
+        db_path=db_path, data_root=data_root, clock=lambda: NOW,
+        semester_mastery=diagnosis_service.semester_mastery,
+    )
+    draft = recommendation.create(
+        request_token="1" * 32,
+        diagnosis=frozen_profile,
+        graded_activities=graded_activities,
+        config=PersonalizedRecommendationConfig(
+            question_count=8, difficulty_max=8, exclude_current_exam_originals=False
+        ),
+        actor_ref="synthetic",
+    )
+    assert len(draft["students"][0]["items"]) == 1
+    paper = PersonalizedPaperModule(
+        db_path=db_path,
+        data_root=data_root,
+        pdf_converter=personalized_papers_SyntheticPdfConverter(),
+        clock=lambda: NOW,
+    )
+    frozen = training_submissions__freeze(paper, draft, token="a")
+    path, _ = paper.artifact_path(frozen["paper_instance_id"], "frozen-pdf")
+    scans = TrainingSubmissionModule(db_path=db_path, data_root=data_root)
+    batch = scans.create_batch(
+        CreateScanBatchCommand(
+            operation_token="c" * 32,
+            paper_instance_ids=(frozen["paper_instance_id"],),
+            actor_ref="synthetic",
+        )
+    )
+    for index, content in enumerate(training_submissions__pdf_pages(path), 1):
+        batch = scans.ingest(
+            batch["batch_id"],
+            training_submissions__upload(token=str(index), revision=batch["revision"]),
+            BytesIO(content),
+        )
+    submission_id = batch["submissions"][0]["submission_id"]
+    scans.finalize_submission(submission_id)
+    first_points = {
+        point.evidence_point_id for point in evidence.parts[0].evidence_points
+    }
+    gateway = FakeTrainingAssessmentGateway(
+        lambda request: {
+            "results": [
+                {
+                    "task_item_code": item.task_item_code,
+                    "point_id": point["point_id"],
+                    "state": "met" if point["point_id"] in first_points else "not_met",
+                    "evidence": "合成第一问正确、第二问未达成",
+                }
+                for item in request.items
+                for point in item.points
+            ]
+        }
+    )
+    module = TrainingAssessmentModule(
+        db_path=db_path, data_root=data_root, gateway=gateway, clock=lambda: NOW,
+        semester_mastery=diagnosis_service.semester_mastery,
+    )
+    outcome = module.assess(submission_id, 1)
+    feedback = module.sync_evidence(
+        submission_id,
+        1,
+        EvidenceSyncCommand(
+            operation_token="d" * 32,
+            expected_review_revision=outcome.review_revision,
+            action="publish",
+            actor_ref="synthetic",
+            reason="确认逐小问结果",
+        ),
+    )
+    assert feedback["summary"]["published_question_count"] == 1
+    resolver = CurrentKnowledgeResolver.from_active_database(db_path)
+    current = CurrentMasteryCalculator(
+        db_path, resolver, data_root=data_root, clock=lambda: NOW,
+        semester_mastery=diagnosis_service.semester_mastery,
+    ).calculate(profile)
+    first = current[("1", "sk_alg_linear_equation")]
+    second = current[("1", "sk_geo_triangle_congruence")]
+    assert first.training_evidence_count == second.training_evidence_count == 1
+    # This fixture has one student and two differently difficult items. Global
+    # item/source calibration also changes, so a fixed per-node direction is
+    # not an independent expected result for the hierarchical model.
+    assert first.full_correct_count == 1
+    assert second.full_correct_count == 1
+    for item in (first, second):
+        assert item.observation_count == before_counts[item.stable_key] + 1
+        assert item.interval_low <= item.value <= item.interval_high
+        from question_bank.mastery.current import CURRENT_MASTERY_PARAMETERS
+        assert item.parameter_version == CURRENT_MASTERY_PARAMETERS.version
+        change = next(change for change in feedback["mastery_changes"] if change["stable_key"] == item.stable_key)
+        assert change["mastery_before"]["value"] == before[item.stable_key]
+        assert change["mastery_after"] == item.to_dict()
+    reopened = TrainingAssessmentModule(
+        db_path=db_path, data_root=data_root, gateway=gateway, clock=lambda: NOW,
+        semester_mastery=diagnosis_service.semester_mastery,
+    )
+    assert reopened.get_feedback(submission_id, 1) == feedback
+    assert (
+        CurrentMasteryCalculator(
+            db_path, resolver, data_root=data_root, clock=lambda: NOW,
+            semester_mastery=diagnosis_service.semester_mastery,
+        ).calculate(profile)
+        == current
+    )
+    # A separate new-training request must refresh the cached diagnosis, while
+    # the completed paper and its saved feedback remain unchanged.
+    fresh = create_personalized_recommendation_draft(
+        PersonalizedRecommendationCreateRequest(
+            scope=scope,
+            exam_scope=exam_scope,
+            question_count=8,
+            difficulty_max=8,
+            exclude_current_exam_originals=False,
+        ),
+        diagnosis_service=diagnosis_service,
+        module=recommendation,
+    ).model_dump()
+    target = next(
+        item
+        for item in fresh["students"][0]["targets"]
+        if item["stable_key"] == "sk_alg_linear_equation"
+    )
+    assert target["value"] == first.value
+    assert target["tier"] == first.tier
+    assert target["evidence_count"] == before_counts["sk_alg_linear_equation"] + 1
+    assert recommendation.get(draft["draft_id"]) == draft
+    # Persist the current full population with the existing diagnosis snapshot.
+    # A fresh process must reuse it for recommendation/graph callbacks too.
+    if not hasattr(diagnosis_service, "_save_local_profile"):
+        return
+    import subprocess
+    import sys
+    diagnosis_service.persist_snapshots = True
+    all_after = diagnosis_service.build_profiles(scope={"mode": "all"}, exam_scope=exam_scope)
+    script = """
+import json,sys
+from integration.diagnosis_profile_service import DiagnosisProfileService
+from question_bank.mastery.current import CurrentMasteryCalculator
+def fail(*args,**kwargs): raise AssertionError('recomputed saved population')
+service=DiagnosisProfileService(sys.argv[1],sys.argv[2],data_root=sys.argv[3])
+service._compute_tag_profiles=fail
+CurrentMasteryCalculator.calculate=fail
+profile=service.build_profiles(scope={'mode':'all'},exam_scope=json.loads(sys.argv[4]))
+population=service.semester_mastery(profile)
+value=population['1','sk_alg_linear_equation']
+print(json.dumps({'value':value.value,'count':value.observation_count,'tier':value.tier}))
+"""
+    process = subprocess.run([sys.executable, "-c", script, str(grading_path), str(db_path),
+        str(data_root), json.dumps(exam_scope)], capture_output=True, text=True, timeout=30)
+    assert process.returncode == 0, process.stderr
+    saved = next(point for student in all_after["students"] if str(student["student_id"]) == "1"
+                 for point in student["weak_points"] if point["knowledge_key"] == first.stable_key)
+    assert json.loads(process.stdout) == {"value": first.value, "count": first.observation_count, "tier": saved["tier"]}
+    assert reopened.get_feedback(submission_id, 1) == feedback
+    assert paper.get(frozen["paper_instance_id"]) == frozen
+    if semester_scope:
+        other = diagnosis_service.build_profiles(
+            scope=scope,
+            exam_scope={
+                "mode": "semester",
+                "curriculum_volume_id": "bnu24-math-g7-lower",
+            },
+        )
+        assert not other["exam_scope"]["session_ids"]
+        assert not any(
+            point["evidence_count"] for point in other["students"][0]["weak_points"]
+        )
+        # A current-term training result remains available with no exam attached.
+        with grading._connect() as conn:
+            conn.execute(
+                "UPDATE grading_sessions SET curriculum_volume_id='bnu24-math-g7-lower' WHERE id=1"
+            )
+        training_only = diagnosis_service.build_profiles(
+            scope=scope, exam_scope=exam_scope
+        )
+        assert training_only["students"][0]["score_rate"] is None
+        assert not training_only["exam_scope"]["session_ids"]
+        point = next(
+            point
+            for point in training_only["students"][0]["weak_points"]
+            if point["knowledge_key"] == "sk_alg_linear_equation"
+        )
+        assert point["evidence_count"] == 1
+        assert point["mastery"] is not None
+        assert paper.get(frozen["paper_instance_id"]) == frozen
+        assert reopened.get_feedback(submission_id, 1) == feedback
+
+
+def training_submissions__freeze(paper, draft, *, token: str):
+    instance = paper.create_review_instance(
+        str(draft["draft_id"]),
+        replace(
+            personalized_papers__create_command(token, draft),
+            student_id=str(draft["students"][0]["student_id"]),
+        ),
+    )
+    review, _ = paper.artifact_path(str(instance["paper_instance_id"]), "review-docx")
+    content = review.read_bytes()
+    return paper.freeze(
+        str(instance["paper_instance_id"]),
+        FreezePaperCommand(
+            operation_token=f"{int(token, 16) + 1:x}" * 32,
+            expected_revision=int(instance["revision"]),
+            filename="reviewed.docx",
+            actor_ref="teacher-1",
+        ),
+        BytesIO(content),
+    )
+
+
+def training_submissions__pdf_pages(path: Path) -> tuple[bytes, ...]:
+    result: list[bytes] = []
+    with fitz.open(path) as document:
+        for page in document:
+            pixmap = page.get_pixmap(matrix=fitz.Matrix(3, 3), alpha=False)
+            image = numpy.frombuffer(pixmap.samples, dtype=numpy.uint8).reshape(
+                pixmap.height,
+                pixmap.width,
+                3,
+            )
+            success, encoded = cv2.imencode(
+                ".png",
+                cv2.cvtColor(image, cv2.COLOR_RGB2BGR),
+            )
+            assert success
+            result.append(bytes(encoded))
+    return tuple(result)
+
+
+def training_submissions__upload(
+    *,
+    token: str,
+    revision: int,
+) -> IngestUploadCommand:
+    return IngestUploadCommand(
+        operation_token=token * 32,
+        expected_revision=revision,
+        filename="scan.png",
+        media_type="image/png",
+        actor_ref="teacher-1",
+    )
+
+
+def training_submissions__rotate_png(content: bytes) -> bytes:
+    image = cv2.imdecode(numpy.frombuffer(content, dtype=numpy.uint8), cv2.IMREAD_COLOR)
+    rotated = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+    success, encoded = cv2.imencode(".png", rotated)
+    assert success
+    return bytes(encoded)

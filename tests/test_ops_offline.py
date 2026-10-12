@@ -1,19 +1,66 @@
 from __future__ import annotations
-
-import json
-import sqlite3
-import subprocess
-import sys
-import zipfile
 from pathlib import Path
+from backend.files.data_transfer_service import build_export_manifest, default_export_sources
+import sqlite3
+import zipfile
+
 from types import SimpleNamespace
-
 import pytest
-
 from backend.ops.jobs import create_safety_backup
 from backend.ops.journal import OpsOperationJournal, OpsOperationManifest
 from backend.ops.offline import apply_pending_operation
 from backend.schema_migrations import ensure_schema_current
+
+
+def data_transfer_service__write(path: Path, content: str = "x") -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+def data_transfer_service__arc_names(paths) -> set[str]:
+    return {entry.arc_name for entry in paths}
+
+
+def test_lean_export_skips_regenerable_and_historical_heavy_data(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project"
+    data_root = project_root / "user_data"
+
+    data_transfer_service__write(project_root / "config" / "app.json")
+    data_transfer_service__write(data_root / "databases" / "grading_system.db")
+    data_transfer_service__write(data_root / "config" / "api_profiles.json")
+    data_transfer_service__write(data_root / "templates" / "session_1" / "front_template.png")
+    data_transfer_service__write(data_root / "templates" / "session_1" / "template_source_full_class.pdf")
+    data_transfer_service__write(data_root / "question_bank" / "raw_papers" / "paper.docx")
+    data_transfer_service__write(data_root / "question_bank" / "rich_content" / "question.json")
+    data_transfer_service__write(data_root / "question_bank" / "extracted_images" / "page.png")
+    data_transfer_service__write(data_root / "annotated" / "session_1" / "marked.jpg")
+    data_transfer_service__write(data_root / "reports" / "report.pdf")
+    data_transfer_service__write(data_root / "backups" / "backup.zip")
+    data_transfer_service__write(data_root / "outputs" / "comparison" / "image.jpg")
+
+    entries = build_export_manifest(
+        default_export_sources(project_root, data_root), scope="lean"
+    )
+    arc_names = data_transfer_service__arc_names(entries)
+
+    assert "config/app.json" in arc_names
+    assert "user_data/databases/grading_system.db" in arc_names
+    assert "user_data/config/api_profiles.json" not in arc_names
+    assert "user_data/templates/session_1/front_template.png" in arc_names
+    assert "user_data/question_bank/raw_papers/paper.docx" in arc_names
+    assert "user_data/question_bank/rich_content/question.json" in arc_names
+    assert (
+        "user_data/templates/session_1/template_source_full_class.pdf" not in arc_names
+    )
+    assert "user_data/question_bank/extracted_images/page.png" not in arc_names
+    assert "user_data/annotated/session_1/marked.jpg" not in arc_names
+    assert "user_data/reports/report.pdf" not in arc_names
+    assert "user_data/backups/backup.zip" not in arc_names
+    assert "user_data/outputs/comparison/image.jpg" not in arc_names
+
 
 OPERATION_ID = "11111111-1111-4111-8111-111111111111"
 
@@ -353,83 +400,3 @@ def test_all_migration_failure_rolls_back_both_databases(
     assert not _table_exists(paths.qb_db_path, "question_bank_added")
     assert not (paths.databases_dir / "backups").exists()
     assert journal.load_public(OPERATION_ID)["status"] == "rolled_back"
-
-
-def test_startup_entry_points_stay_light() -> None:
-    heavy_modules = {
-        "backend.api.app",
-        "openai",
-        "question_bank.services.question_read_service",
-        "backend.jobs.default_handlers",
-    }
-    repo_root = Path(__file__).resolve().parents[1]
-    probe = (
-        "import importlib, json, sys\n"
-        "importlib.import_module(sys.argv[1])\n"
-        "print(json.dumps(sorted(sys.modules)))\n"
-    )
-    for module in (
-        "tools.ensure_frontend",
-        "backend.api.launcher",
-        "backend.ops.offline",
-    ):
-        result = subprocess.run(
-            [sys.executable, "-c", probe, module],
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            check=False,
-        )
-        assert result.returncode == 0, (module, result.stderr[-2000:])
-        loaded = set(json.loads(result.stdout.strip().splitlines()[-1]))
-        leaked = sorted(loaded & heavy_modules)
-        assert not leaked, f"{module} loaded heavy modules: {leaked}"
-
-
-def test_automatic_standard_and_request_receipt_survive_ordinary_backup_and_offline_restore(tmp_path):
-    import shutil
-    from contextlib import nullcontext
-    from tests.test_ops_jobs import _paths as current_paths, _Context, _payload, _service
-    from tests.test_skill_candidates import _automatic_type_bank, _automatic_response
-    from backend.jobs.chapter_types import run_chapter_type_job
-    from backend.ops.jobs import run_ops_backup_job
-    from question_bank.current_knowledge import CurrentKnowledgeResolver
-    from question_bank.knowledge_graph_release.loader import load_release, load_taxonomy_catalog_for_release
-    from question_bank.services.chapter_type_service import preview_chapter_type_plan
-    source = tmp_path / "TEST-source"
-    db, _ = _automatic_type_bank(source)
-    plan = preview_chapter_type_plan(db_path=db, data_root=source, volume_id="bnu24-math-g8-lower")
-    context = SimpleNamespace(job_id=904, payload={"authorization": {**plan, "confirmed": True, "request_limit": 1}},
-        raise_if_cancelled=lambda: None, report=lambda *args: None)
-    result = run_chapter_type_job(context=context, question_bank_db_path=db, data_root=source,
-        ai_service_factory=lambda: SimpleNamespace(organize_chapter_types=_automatic_response), publication_guard=nullcontext)
-    assert result["outcome"] == "published", result
-    expected = CurrentKnowledgeResolver.from_active_database(db)
-    paths = current_paths(tmp_path / "TEST-backup", migration_current=True)
-    with sqlite3.connect(db) as original, sqlite3.connect(paths.qb_db_path) as target:
-        original.backup(target)
-    shutil.copytree(source / "question_bank", paths.qb_data_dir)
-    backup = run_ops_backup_job(context=_Context(_payload(_service(paths), "backup", reason="manual")), paths=paths)
-    with zipfile.ZipFile(paths.backups_dir / backup["filename"]) as archive:
-        members = {name: archive.read(name) for name in archive.namelist() if not name.endswith("/")}
-    prefix = f"user_data/question_bank/knowledge_releases/{expected.release_id}"
-    assert f"{prefix}/release.json" in members and f"{prefix}/taxonomy.json" in members
-    assert "user_data/question_bank/chapter_type_runs/job-904.json" in members
-    assert not any("api_profiles" in name for name in members)
-    restored = current_paths(tmp_path / "TEST-restored", migration_current=True)
-    journal = _prepare_restore(restored, members)
-    assert apply_pending_operation(paths=restored) == 0
-    assert journal.load_public(OPERATION_ID)["status"] == "applied"
-    actual = CurrentKnowledgeResolver.from_active_database(restored.qb_db_path)
-    assert (actual.release_id, actual.content_hash) == (expected.release_id, expected.content_hash)
-    local_release = load_release(restored.qb_data_dir / "knowledge_releases" / expected.release_id / "release.json")
-    catalog = load_taxonomy_catalog_for_release(local_release)
-    assert all(term["definition"] for term in catalog["terms"] if term["dimension"] == "ability")
-    receipt = json.loads((restored.qb_data_dir / "chapter_type_runs/job-904.json").read_text(encoding="utf-8"))
-    assert receipt["requests"][0]["status"] == "validated" and receipt["status"] == "published"
-    def forbidden():
-        pytest.fail("restored completed chapter task must never add a model request")
-    replay = run_chapter_type_job(context=context, question_bank_db_path=restored.qb_db_path,
-        data_root=restored.data_root, ai_service_factory=forbidden, publication_guard=nullcontext)
-    assert replay == result

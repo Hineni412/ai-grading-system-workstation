@@ -2,7 +2,7 @@ import { readdir, stat } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
 const MAX_CHUNK_BYTES = 500_000
-const assetsDirectory = resolve(process.cwd(), 'dist/assets')
+const assetsDirectory = resolve(process.argv[2] ?? 'dist', 'assets')
 
 const entries = await readdir(assetsDirectory)
 const chunks = await Promise.all(

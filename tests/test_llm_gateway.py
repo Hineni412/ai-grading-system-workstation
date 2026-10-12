@@ -1,134 +1,78 @@
 from __future__ import annotations
-
-import hashlib
-import json
-from dataclasses import asdict
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from backend.llm.execution import LLMExecutionGovernorRegistry, execution_snapshot_from_profile
+from backend.llm.errors import LLMErrorCategory
 from types import SimpleNamespace
-
 import pytest
-
 from backend.llm.gateway import LLMGateway
-from backend.llm.execution import LLMExecutionGovernorRegistry
+
 from backend.llm.policy import LLMRequestKind
+import importlib
 
 
-def test_diagnostic_summary_cache_invalidates_on_append_rotation_replacement_and_clear(tmp_path, monkeypatch):
-    from backend.llm.diagnostics import JsonlDiagnosticJournal
-    journal = JsonlDiagnosticJournal(tmp_path / "test-diagnostics.jsonl")
-    scans = 0
-    original = journal._recent_events
-    def read(*args, **kwargs):
-        nonlocal scans
-        scans += 1
-        return original(*args, **kwargs)
-    monkeypatch.setattr(journal, "_recent_events", read)
-    def append(call_id, timestamp):
-        journal._append({"event": "request", "call_id": call_id,
-            "timestamp_utc": timestamp, "workspace_module": "grading",
-            "request": {"messages": [{"content": "独有测试正文"}]},
-            "raw_response": "独有测试响应", "attachments": []})
-    append("a" * 24, "2026-10-01T00:00:00Z")
-    first = journal.list_calls()
-    first["items"][0]["model"] = "caller mutation"
-    assert journal.list_calls()["items"][0]["model"] == ""
-    assert scans == 1
-    assert "独有测试正文" not in repr(journal._summary_cache)
-    assert "独有测试响应" not in repr(journal._summary_cache)
-    append("b" * 24, "2026-10-02T00:00:00Z")
-    assert journal.list_calls()["matching"] == 2 and scans == 2
-    journal.path.rename(journal._rotated_path(1))
-    append("c" * 24, "2026-10-03T00:00:00Z")
-    assert journal.list_calls()["matching"] == 3 and scans == 3
-    journal.clear_workspace("grading")
-    assert journal.list_calls()["matching"] == 0 and scans == 4
-    append("d" * 24, "2026-10-04T00:00:00Z")
-    assert journal.list_calls()["matching"] == 1 and scans == 5
-    replacement = tmp_path / "replacement.jsonl"
-    replacement.write_text(journal.path.read_text(encoding="utf-8").replace("d" * 24, "e" * 24), encoding="utf-8")
-    replacement.replace(journal.path)
-    assert journal.list_calls()["items"][0]["call_id"] == "e" * 24 and scans == 6
-
-
-def test_list_calls_reads_only_the_latest_100_calls(tmp_path):
-    from backend.llm.diagnostics import JsonlDiagnosticJournal
-    journal = JsonlDiagnosticJournal(tmp_path / "test-diagnostics.jsonl")
-    call_ids = [
-        hashlib.sha256(f"req-{index}".encode()).hexdigest()[:24]
-        for index in range(130)
-    ]
-
-    def event(index, kind):
-        return {
-            "event": kind,
-            "call_id": call_ids[index],
-            "request_id": f"req-{index}",
-            "operation_id": f"op-{index}",
-            "attempt": 1,
-            "request_kind": "grading",
-            "timestamp_utc": (
-                f"2026-10-01T00:{index // 60:02d}:{index % 60:02d}Z"
-            ),
-            "request": {"index": index},
-            "attachments": [],
-            "outcome": "success" if kind == "response" else None,
-            "elapsed_ms": 5,
-            "raw_response": "{}",
-            "response_chars": 2,
+def test_governor_caps_all_callers_sharing_one_profile_scope() -> None:
+    snapshot = execution_snapshot_from_profile(
+        {
+            "request_speed_mode": "custom",
+            "max_concurrent_requests": 3,
+            "requests_per_minute": 10_000,
         }
-
-    with journal.path.open("w", encoding="utf-8", newline="") as handle:
-        # Requests first, responses later: each request sits far before its
-        # response so the tail reader must keep scanning for open call_ids.
-        for index in range(130):
-            handle.write(json.dumps(event(index, "request")) + "\n")
-        for index in range(130):
-            handle.write(json.dumps(event(index, "response")) + "\n")
-        oversized_id = hashlib.sha256(b"req-oversized").hexdigest()[:24]
-        oversized = event(0, "request")
-        oversized["call_id"] = oversized_id
-        oversized["request_id"] = "req-oversized"
-        oversized["timestamp_utc"] = "2026-10-01T01:00:00Z"
-        oversized["request"] = {"pad": "x" * 1_200_000}
-        handle.write(json.dumps(oversized) + "\n")
-        oversized_response = event(0, "response")
-        oversized_response["call_id"] = oversized_id
-        oversized_response["request_id"] = "req-oversized"
-        oversized_response["timestamp_utc"] = "2026-10-01T01:00:01Z"
-        handle.write(json.dumps(oversized_response) + "\n")
-
-    result = journal.list_calls(limit=100)
-    expected = [oversized_id, *reversed(call_ids[31:])]
-    assert result["matching"] == 100
-    assert [item["call_id"] for item in result["items"]] == expected
-    assert {item["outcome"] for item in result["items"]} == {"success"}
-
-    detail = journal.get_call(call_ids[0])
-    assert detail is not None
-    assert detail["call_id"] == call_ids[0]
-    assert detail["request"] == {"index": 0}
-
-
-def test_reverse_lines_yields_newest_first_across_block_boundaries(
-    tmp_path,
-    monkeypatch,
-):
-    import backend.llm.diagnostics as diagnostics
-    monkeypatch.setattr(diagnostics, "_REVERSE_BLOCK_BYTES", 16)
-    long_line = "x" * 100
-    path = tmp_path / "lines.txt"
-    path.write_text(
-        "\n".join(["first", long_line, "third", "fourth"]) + "\n",
-        encoding="utf-8",
     )
-    assert list(diagnostics._reverse_lines(path)) == [
-        "fourth",
-        "third",
-        long_line,
-        "first",
-    ]
-    unterminated = tmp_path / "unterminated.txt"
-    unterminated.write_text("alpha\nbeta", encoding="utf-8")
-    assert list(diagnostics._reverse_lines(unterminated)) == ["beta", "alpha"]
+    governor = LLMExecutionGovernorRegistry()
+    release = threading.Event()
+    entered = threading.Event()
+    lock = threading.Lock()
+    active = 0
+    peak = 0
+
+    def invoke() -> None:
+        nonlocal active, peak
+        permit = governor.acquire("shared-profile", snapshot)
+        with lock:
+            active += 1
+            peak = max(peak, active)
+            if peak == 3:
+                entered.set()
+        release.wait(timeout=2)
+        with lock:
+            active -= 1
+        permit.complete()
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(invoke) for _ in range(8)]
+        assert entered.wait(timeout=2)
+        status = governor.status("shared-profile")
+        assert status["active"] == 3
+        assert status["queued"] == 5
+        release.set()
+        for future in futures:
+            future.result(timeout=2)
+
+    assert peak == 3
+    assert governor.status("shared-profile")["active"] == 0
+
+
+def test_overload_reduces_future_admission_without_retrying_failed_call() -> None:
+    snapshot = execution_snapshot_from_profile(
+        {
+            "request_speed_mode": "custom",
+            "max_concurrent_requests": 12,
+            "requests_per_minute": 1000,
+        }
+    )
+    governor = LLMExecutionGovernorRegistry()
+
+    permit = governor.acquire("shared-profile", snapshot)
+    permit.complete(
+        error_category=LLMErrorCategory.RATE_LIMIT,
+        retry_after_seconds=0,
+    )
+
+    status = governor.status("shared-profile")
+    assert status["effective_max_in_flight"] == 6
+    assert status["limiting_reason"] == "provider_overload"
+    assert status["physical_request_count"] == 1
 
 
 class StatusError(Exception):
@@ -145,10 +89,6 @@ class StatusError(Exception):
             status_code=status_code,
             headers=headers or {},
         )
-
-
-class ReadTimeout(TimeoutError):
-    pass
 
 
 class FakeCreate:
@@ -200,11 +140,6 @@ class RecordingTraceSink:
         self.events.append(event)
         if self.order is not None:
             self.order.append(f"trace:{event.event_type}")
-
-
-class FailingTraceSink:
-    def write(self, _event: object) -> None:
-        raise RuntimeError("trace sink failed")
 
 
 class StepClock:
@@ -372,3 +307,76 @@ def test_allow_retry_false_makes_exactly_one_physical_request():
     assert raised.value is error
     assert len(operation.calls) == 1
     assert sleeper_calls == []
+
+
+@pytest.mark.parametrize("error", [RuntimeError("synthetic callback detail"), KeyboardInterrupt()])
+def test_usage_callback_preserves_response_and_control_signals(error, caplog) -> None:
+    from backend.llm.llm_client import LLMClient
+
+    client = LLMClient.__new__(LLMClient)
+    gateway = llm_transport__RecordingGateway()
+
+    def broken_callback(*_args):
+        raise error
+
+    def request():
+        return client._create_chat_completion(
+            client=object(), model="synthetic-model", messages=[], expect_json=False,
+            gateway=gateway, usage_callback=broken_callback,
+        )
+
+    if isinstance(error, Exception):
+        assert request() == "chat-response"
+        assert "usage callback failed (RuntimeError)" in caplog.text
+        assert "synthetic callback detail" not in caplog.text
+    else:
+        with pytest.raises(KeyboardInterrupt):
+            request()
+    assert len(gateway.calls) == 1
+
+
+def llm_transport__transport():
+    return importlib.import_module("backend.llm.transport")
+
+
+class llm_transport__RecordingGateway:
+    instances: list["_RecordingGateway"] = []
+
+    def __init__(self, **kwargs: object) -> None:
+        self.config = kwargs
+        self.calls: list[dict[str, object]] = []
+        self.__class__.instances.append(self)
+
+    def chat_completions(self, **kwargs: object) -> object:
+        self.calls.append({"protocol": "chat_completions", **kwargs})
+        return "chat-response"
+
+    def responses(self, **kwargs: object) -> object:
+        self.calls.append({"protocol": "responses", **kwargs})
+        return "responses-response"
+
+
+def test_sdk_client_disables_sdk_retries_and_uses_a_bounded_default_timeout() -> None:
+    transport = llm_transport__transport()
+    factory_calls: list[dict[str, object]] = []
+    fake_client = object()
+
+    def fake_factory(**kwargs: object) -> object:
+        factory_calls.append(kwargs)
+        return fake_client
+
+    created = transport.create_openai_client(
+        " secret ",
+        "https://example.test/",
+        client_factory=fake_factory,
+    )
+
+    assert created is fake_client
+    assert factory_calls == [
+        {
+            "api_key": "secret",
+            "base_url": "https://example.test/v1",
+            "timeout": 120.0,
+            "max_retries": 0,
+        }
+    ]

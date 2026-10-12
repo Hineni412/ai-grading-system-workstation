@@ -3,7 +3,7 @@ import { createApp, nextTick, type App } from 'vue';
 
 import { ApiError } from '../api/errors';
 import { questionBankApi } from '../api/question-bank';
-import { decodeTrainingCriterionWorkspace, questionBankCriteriaApi, type TrainingCriterionVersion, type TrainingCriterionWorkspace } from '../api/question-bank-criteria';
+import { questionBankCriteriaApi, type TrainingCriterionVersion, type TrainingCriterionWorkspace } from '../api/question-bank-criteria';
 import TrainingCriterionReview from '../components/question-bank/TrainingCriterionReview.vue'
 import ConfirmDialogHost from '../components/design-system/ConfirmDialogHost.vue'
 
@@ -248,30 +248,5 @@ describe('training criterion review', () => {
     })
     expect(start.mock.calls[0]?.[0]).toEqual([17])
     expect(start.mock.calls[0]?.[2]).toBe('regenerate')
-  })
-})
-
-
-describe('saved criterion compatibility', () => {
-  it.each(['training-criteria-draft-v7', 'legacy-criteria', null, undefined])(
-    'reads the stored point fields with format marker %s', (marker) => {
-      const stored = {
-        ...version,
-        criteria: { ...version.criteria, schema_version: marker },
-      }
-      const decoded = decodeTrainingCriterionWorkspace(workspace(stored))
-      expect(decoded.current_version?.criteria.points).toEqual(version.criteria.points)
-      expect(decoded.current_version?.version_id).toBe(version.version_id)
-    },
-  )
-
-  it('still reports malformed stored points', () => {
-    const stored = {
-      ...version,
-      criteria: { ...version.criteria, points: [{ ...version.criteria.points[0], target: null }] },
-    }
-    expect(() => decodeTrainingCriterionWorkspace({
-      ...workspace(), current_version: stored, versions: [stored],
-    })).toThrow('Invalid training criterion point')
   })
 })

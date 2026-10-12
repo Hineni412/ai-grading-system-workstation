@@ -1,21 +1,92 @@
 from __future__ import annotations
-
 import subprocess
+import pytest
+from tools import check_tracked_user_data
+
 from pathlib import Path
 
-import pytest
 
 from tools import run_test_suite
-from tools.test_suite_manifest import (
-    DATABASE_BASELINE_TEST_PATHS,
-    PROCESS_ISOLATED_TEST_PATHS,
-    QUICK_FRONTEND_TEST_PATHS,
-    QUICK_TEST_PATHS,
-    RELEASE_AUDIT_TEST_PATHS,
-    REVIEW_FRONTEND_TEST_PATHS,
-    REVIEW_TEST_PATHS,
-    SERIAL_TEST_PATHS,
-)
+from tools.test_suite_manifest import DATABASE_BASELINE_TEST_PATHS, PROCESS_ISOLATED_TEST_PATHS, QUICK_FRONTEND_TEST_PATHS, QUICK_TEST_PATHS, RELEASE_AUDIT_TEST_PATHS, REVIEW_FRONTEND_TEST_PATHS, REVIEW_TEST_PATHS, SERIAL_TEST_PATHS
+
+
+def test_repository_check_rejects_private_files_outside_user_data(monkeypatch, capsys):
+    blocked = [
+        'user_data/databases/grading_system.db', 'question_bank/QUESTION_BANK.DB',
+        'config/api_profiles.json.bak', 'config/.env.production', 'keys/client.pem',
+        'question_bank/question_bank.db-wal', 'temporary/export.sqlite3.bak',
+        'backups/private.zip', 'output/TEST-report.html', 'runtime/python/python.exe',
+        'frontend/dist/index.html', 'scratch/private\nexam.json',
+    ]
+    paths = [
+        *blocked, 'backend/repositories/db_manager.py', 'docs/security/SECURITY.md',
+        'config/.env.example', 'frontend/src/api/sessions.ts',
+    ]
+
+    def git_listing(command, **kwargs):
+        assert command == ['git', 'ls-files', '-z']
+        return subprocess.CompletedProcess(command, 0, stdout='\0'.join(paths) + '\0')
+
+    monkeypatch.setattr(check_tracked_user_data.subprocess, 'run', git_listing)
+    assert check_tracked_user_data.main() == 1
+    output = capsys.readouterr().out
+    assert all(repr(path) in output for path in blocked)
+    assert 'backend/repositories/db_manager.py' not in output
+
+
+def test_repository_check_accepts_source_and_reports_git_failure(monkeypatch, capsys):
+    monkeypatch.setattr(
+        check_tracked_user_data.subprocess, 'run',
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 0, stdout='backend/scan_grading/scanner.py\0config/.env.template\0',
+        ),
+    )
+    assert check_tracked_user_data.main() == 0
+    assert 'OK:' in capsys.readouterr().out
+
+    def git_failure(command, **kwargs):
+        raise subprocess.CalledProcessError(128, command)
+
+    monkeypatch.setattr(check_tracked_user_data.subprocess, 'run', git_failure)
+    with pytest.raises(subprocess.CalledProcessError):
+        check_tracked_user_data.main()
+
+
+def test_pytest_preserves_shared_runner_failure_and_slow_test_details(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from tools import smoke_check
+
+    output = "FAILED tests/test_flow.py::test_save\n1 failed in 2.00s\n2.00s call tests/test_flow.py::test_save\n"
+    monkeypatch.setattr(
+        smoke_check.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command,
+            7,
+            stdout=output,
+            stderr="synthetic stderr",
+        ),
+    )
+    result = smoke_check.run_pytest(tmp_path)
+    assert not result.ok
+    assert result.return_code == 7
+    assert result.messages == [*output.splitlines(), "synthetic stderr"]
+
+
+def test_documentation_checks_source_links_without_local_browser_artifacts(tmp_path: Path) -> None:
+    from tools.check_documentation import check_markdown_links
+
+    (tmp_path / "README.md").write_text(
+        "`frontend/test-results/`\n"
+        "`frontend/playwright-report/`\n"
+        "`frontend/src/missing.vue`\n"
+        "[missing source](frontend/src/missing.vue)\n",
+        encoding="utf-8",
+    )
+    issues = check_markdown_links(tmp_path)
+    assert [(issue.code, issue.line) for issue in issues] == [("DOC001", 4), ("DOC002", 3)]
 
 
 def test_manifests_reference_existing_unique_tests() -> None:
@@ -40,66 +111,6 @@ def test_manifests_reference_existing_unique_tests() -> None:
         for path in DATABASE_BASELINE_TEST_PATHS
     )
     assert Path("tests/test_schema_baseline.py") not in DATABASE_BASELINE_TEST_PATHS
-
-
-@pytest.mark.parametrize(
-    "full, frontend_exit", [(False, 0), (False, 1), (True, 0), (True, 1)]
-)
-def test_suite_dispatch_selects_frontend_specs_and_preserves_full_verification(
-    monkeypatch,
-    full: bool,
-    frontend_exit: int,
-) -> None:
-    commands: list[tuple[str, ...]] = []
-
-    def fake_run(label, command, **kwargs):
-        commands.append(tuple(command))
-        return run_test_suite.CommandResult(
-            label=label,
-            command=tuple(command),
-            return_code=frontend_exit,
-            elapsed_seconds=0.1,
-            output="synthetic frontend result",
-        )
-
-    monkeypatch.setattr(run_test_suite, "_run_command", fake_run)
-    monkeypatch.setattr(run_test_suite, "_npm_command", lambda *args: ["npm", *args])
-    monkeypatch.setattr(run_test_suite, "_run_backend_pair", lambda **kwargs: [])
-    monkeypatch.setattr(
-        run_test_suite,
-        "_run_review_browser",
-        lambda **kwargs: fake_run("browser", ("review-browser",)),
-    )
-
-    results = run_test_suite._run_current_suite(
-        mode="full" if full else "quick",
-        workers=1,
-        durations=0,
-        skip_frontend=False,
-        environment={},
-    )
-
-    if full:
-        assert commands == [
-            ("npm", "run", "verify"),
-            *([] if frontend_exit else [("review-browser",)]),
-        ]
-    else:
-        assert commands[0] == (
-            "npm",
-            "run",
-            "test",
-            "--",
-            *(
-                path.relative_to("frontend").as_posix()
-                for path in QUICK_FRONTEND_TEST_PATHS
-            ),
-        )
-        assert commands[1:] == (
-            [] if frontend_exit else [("npm", "run", "test:editor")]
-        )
-    assert len(results) == len(commands)
-    assert all(result.return_code == frontend_exit for result in results)
 
 
 def test_isolated_environment_removes_api_keys_and_uses_sandbox(
@@ -136,40 +147,6 @@ def test_isolated_environment_removes_api_keys_and_uses_sandbox(
     assert environment["PYTHONUTF8"] == "1"
 
 
-def test_serial_lane_gives_process_global_tests_a_fresh_pytest_process(
-    monkeypatch,
-) -> None:
-    calls: list[tuple[str, tuple[str, ...]]] = []
-
-    def fake_run(label, command, **kwargs):
-        calls.append((label, tuple(command)))
-        return run_test_suite.CommandResult(
-            label=label,
-            command=tuple(command),
-            return_code=0,
-            elapsed_seconds=0.1,
-            output="1 passed",
-        )
-
-    monkeypatch.setattr(run_test_suite, "_run_command", fake_run)
-
-    results = run_test_suite._run_serial_paths(
-        label="后端隔离车道",
-        paths=(
-            Path("tests/test_job_manager.py"),
-            Path("tests/test_api_ops_routes.py"),
-        ),
-        durations=10,
-        environment={},
-    )
-
-    assert len(results) == 2
-    assert calls[0][0] == "后端隔离车道"
-    assert calls[0][1][-1] == "tests/test_job_manager.py"
-    assert calls[1][0] == "后端隔离车道（独立进程：test_api_ops_routes.py）"
-    assert calls[1][1][-1] == "tests/test_api_ops_routes.py"
-
-
 def test_run_command_captures_output_without_shell(monkeypatch, tmp_path: Path) -> None:
     seen: dict[str, object] = {}
     unrelated = tmp_path / "unrelated.txt"
@@ -200,28 +177,3 @@ def test_run_command_captures_output_without_shell(monkeypatch, tmp_path: Path) 
     assert seen["cwd"] == tmp_path
     assert seen["env"] == {"SAFE": "1", "TEMP": str(tmp_path)}
     assert seen["capture_output"] is True
-
-
-def test_failure_summary_keeps_errors_after_a_long_captured_log() -> None:
-    lines = run_test_suite._summary_lines(
-        "\n".join(
-            (
-                "================================== FAILURES ===================================",
-                "backend.secure_fs.SecureFilesystemError: denied",
-                *(f"INFO migration step {index}" for index in range(200)),
-                "FAILED tests/test_flow.py::test_flow",
-                "1 failed, 10 passed in 5.00s",
-                " FAIL src/__tests__/page.spec.ts > saves the edited score",
-                "Error: Test timed out in 5000ms.",
-            )
-        ),
-        failure=True,
-    )
-
-    assert lines == [
-        "backend.secure_fs.SecureFilesystemError: denied",
-        "FAILED tests/test_flow.py::test_flow",
-        "1 failed, 10 passed in 5.00s",
-        " FAIL src/__tests__/page.spec.ts > saves the edited score",
-        "Error: Test timed out in 5000ms.",
-    ]

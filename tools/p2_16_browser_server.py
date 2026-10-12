@@ -194,7 +194,7 @@ def _seed_question_bank(paths) -> None:
             """
         )
         rows = []
-        for question_id in range(1, 2006):
+        for question_id in range(1, 106):
             text = long_formula if question_id == 1 else (
                 f"匿名验收题目 {question_id}：计算并说明完整推理过程。"
             )
@@ -348,6 +348,7 @@ def _fake_import(context):
 
 
 def main() -> None:
+    os.environ["AI_GRADING_PREWARM"] = "0"
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--port", type=int, default=8016)

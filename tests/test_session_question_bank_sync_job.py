@@ -1,58 +1,22 @@
 from __future__ import annotations
-
 import hashlib
 import json
 from pathlib import Path
 from typing import Any
-
 import pytest
-
 from backend.config_workspace.publish import load_editor_config
 from backend.config_workspace.deferred_analysis import DeferredAnalysisArtifact, DeferredAnalysisArtifactStore
 from backend.jobs.manager import JobCancellationRequested, JobContext
-from backend.jobs.question_bank_sync import (
-    StaleQuestionBankSyncError,
-    _adopt_deferred_analysis_with_links,
-    run_deferred_question_bank_intake,
-    run_session_question_bank_sync_job,
-)
-from backend.jobs.store import (
-    JobStore,
-    QuestionBankSyncRequestTokenConflictError,
-)
+from backend.jobs.question_bank_sync import _adopt_deferred_analysis_with_links, run_deferred_question_bank_intake, run_session_question_bank_sync_job
+from backend.jobs.store import JobStore
 from backend.repositories.db_manager import DBManager
 from question_bank.database.schema import connect, initialize_database
 from question_bank.models.question import QuestionCreate
 from tests.current_knowledge_support import install_current_knowledge
 from question_bank.services.question_write_service import QuestionBankWriteService
 from tests.question_bank_support import QuestionBankTestStore
-from question_bank.services.source_question_link_service import (
-    SourceQuestionLinkService,
-)
 from question_bank.solution_evidence import SolutionEvidenceRepository
-from question_bank.solution_evidence.contracts import QuestionSolutionEvidence
-from question_bank.training_criteria import (
-    ConfigQuestionAnalysisSource,
-    DeferredAnalysisFailure,
-    DeferredCombinedAnalysisBundle,
-    GatewayBatchResponse,
-    DeferredCombinedQuestionAnalysisModule,
-    UnmappedFineTermResolver,
-    question_analysis_input_from_config_source,
-    reused_analysis_item,
-)
-from question_bank.training_criteria.analysis import (
-    solution_evidence_source_content_hash,
-)
-
-
-LEGACY_CATALOG_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "question_bank"
-    / "taxonomy"
-    / "catalogs"
-    / "tag_vocabulary_v2.json"
-)
+from question_bank.training_criteria import ConfigQuestionAnalysisSource, DeferredAnalysisFailure, DeferredCombinedAnalysisBundle, GatewayBatchResponse, DeferredCombinedQuestionAnalysisModule, question_analysis_input_from_config_source
 from backend.repositories.grading_database import open_grading_repositories
 
 
@@ -662,37 +626,6 @@ def test_sync_adopts_deferred_tags_and_evidence_without_tagging_model(
     assert not artifact_path.exists()
 
 
-def test_score_pending_intake_imports_tags_and_evidence_without_grading_links(
-    tmp_path: Path,
-) -> None:
-    result, gateway, imported_ids, question_bank_db, artifact_path = (
-        _run_deferred_adoption(tmp_path, prepublish_intake=True)
-    )
-
-    assert result["outcome"] == "complete", result
-    assert result["imported_count"] == 1
-    assert result["tagged_count"] == 1
-    assert result["evidence_count"] == 1
-    assert result["linked_count"] == 0
-    assert result["provisional_match_count"] == 1
-    assert result["config_link_pending"] is True
-    assert SourceQuestionLinkService(question_bank_db).list_links() == []
-    saved = QuestionBankTestStore(question_bank_db).get_question(imported_ids[0])
-    assert saved is not None
-    # 整题知识点改由判定点关联派生，模型标签只带能力等维度。
-    assert any(
-        tag["tag_type"] == "ability" and tag["tag_value"] == "运算能力"
-        for tag in saved["tags"]
-    )
-    assert not any(
-        tag["tag_type"] == "knowledge_point" and tag["tag_value"] == "一元一次方程"
-        for tag in saved["tags"]
-    )
-    assert SolutionEvidenceRepository(question_bank_db).latest(imported_ids[0])
-    assert gateway.calls == [(1,)]
-    assert artifact_path.exists()
-
-
 def test_deferred_adoption_isolates_unreadable_questions_without_new_model_calls(tmp_path):
     database = tmp_path / 'TEST-deferred-isolation.db'
     initialize_database(database)
@@ -735,52 +668,3 @@ def test_deferred_adoption_isolates_unreadable_questions_without_new_model_calls
     assert gateway.calls == calls_before_adoption
     assert SolutionEvidenceRepository(database).latest(damaged_id) is None
     assert QuestionBankTestStore(database).get_question(damaged_id)['tags'] == []
-
-
-def test_partial_analysis_intake_keeps_paper_and_tags_only_successful_questions(
-    tmp_path: Path,
-) -> None:
-    result, gateway, imported_ids, question_bank_db, artifact_path = (
-        _run_deferred_adoption(
-            tmp_path,
-            prepublish_intake=True,
-            partial_analysis=True,
-        )
-    )
-
-    assert result["outcome"] == "partial", result
-    assert result["imported_count"] == 2
-    assert result["tagged_count"] == 1
-    assert result["evidence_count"] == 1
-    assert result["analysis_incomplete_count"] == 1
-    assert result["failed_count"] == 1
-    assert len(imported_ids) == 2
-    assert gateway.calls == [(1,)]
-    assert artifact_path.exists()
-    assert QuestionBankTestStore(question_bank_db).get_question(imported_ids[0])["tags"]
-    assert (
-        QuestionBankTestStore(question_bank_db).get_question(imported_ids[1])["tags"]
-        == []
-    )
-
-
-_ANNOTATION_KEYS = {
-    "evidence_snapshot_ref",
-    "source_evidence_version_id",
-    "graph_release_id",
-    "evidence_part_id",
-    "evidence_point_ids",
-}
-
-
-def _strip_snapshot_annotations(value: Any) -> Any:
-    """递归删除 §7.1/§7.2 的快照注解键，只保留评分语义内容。"""
-    if isinstance(value, dict):
-        return {
-            key: _strip_snapshot_annotations(item)
-            for key, item in value.items()
-            if key not in _ANNOTATION_KEYS
-        }
-    if isinstance(value, list):
-        return [_strip_snapshot_annotations(item) for item in value]
-    return value

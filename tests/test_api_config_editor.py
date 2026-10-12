@@ -1,23 +1,20 @@
 from __future__ import annotations
-
 import json
 import copy
 import re
 from pathlib import Path
-
 import pytest
 from fastapi.testclient import TestClient
-
 from backend.api.app import create_app
-from backend.api.dependencies import (
-    get_grading_db,
-    get_job_manager,
-    get_upload_config_dir,
-)
+from backend.api.dependencies import get_grading_db, get_job_manager, get_upload_config_dir
 from backend.jobs.manager import JobManager
 from backend.jobs.store import JobStore
 from backend.repositories.db_manager import DBManager
 from backend.repositories.grading_database import open_grading_repositories
+
+
+from backend.api.dependencies import get_config_source_service
+from backend.config_workspace.sources import ConfigSourceService
 
 
 def _payload() -> dict:
@@ -90,7 +87,7 @@ def _write_config(tmp_path: Path, db: DBManager, payload: dict | None = None) ->
 
 
 @pytest.mark.parametrize(
-    "q14_total, choice_score", [(48, 3), (68, 3), (148, 3.5), (48, -1)]
+    'q14_total,choice_score', [(48, 3), (68, 3), (148, 3.5), (48, -1)]
 )
 def test_teacher_scores_save_exactly_with_advisories_and_structure_command(
     editor_env, q14_total, choice_score
@@ -326,7 +323,7 @@ def test_database_failure_cleans_both_new_files_and_keeps_binding(
 
 
 def test_open_answer_round_trip_through_config_editor_api_keeps_conditions(editor_env) -> None:
-    from tests.test_config_generation_contract import _open_generated_config
+    from tests.test_api_config_editor import config_generation_contract__open_generated_config as _open_generated_config
     from backend.config_generation.normalization import normalize_new_generated_config_payload
 
     client, db, _manager, tmp_path = editor_env
@@ -348,3 +345,175 @@ def test_open_answer_round_trip_through_config_editor_api_keeps_conditions(edito
     assert step["answer_kind"] == "conditions"
     assert step["required_elements"] == ["答案是整数且大于 2"]
     assert db.results.get_session_results(session_id) == []
+
+
+def api_config_generation_jobs__client(
+    tmp_path: Path,
+    *,
+    config_generation_handler=None,
+) -> tuple[TestClient, DBManager, JobManager]:
+    # db lives under a "databases" directory so load_editor_config infers
+    # tmp_path as the controlled data root for the session config files.
+    db = open_grading_repositories(tmp_path / "databases" / "grading.db")
+    db.initialize()
+    manager = JobManager(JobStore(tmp_path / "jobs.db"), max_workers=1)
+    manager.register(
+        "config_generation",
+        config_generation_handler
+        or (
+            lambda context: {
+                "session_id": int(context.payload["session_id"]),
+                "outcome": "partial",
+                "total_questions": 1,
+                "generated_questions": 0,
+                "failed_count": 1,
+                "failed_question_ids": ["Q1"],
+                "retryable": True,
+            }
+        ),
+    )
+    app = create_app()
+    app.dependency_overrides[get_grading_db] = lambda: db
+    app.dependency_overrides[get_job_manager] = lambda: manager
+    app.dependency_overrides[get_upload_config_dir] = lambda: tmp_path / "uploaded"
+    app.dependency_overrides[get_config_source_service] = lambda: ConfigSourceService(
+        tmp_path / "uploaded"
+    )
+    return TestClient(app), db, manager
+
+
+def api_config_generation_jobs__session(db: DBManager, tmp_path: Path) -> int:
+    rubric = tmp_path / "rubric.json"
+    answer = tmp_path / "answer.json"
+    rubric.write_text("{}", encoding="utf-8")
+    answer.write_text("{}", encoding="utf-8")
+    return db.sessions.create_grading_session("Config Job", str(rubric), str(answer))
+
+
+def test_config_generation_retry_rejects_unknown_external_request_outcome_without_confirmation(
+    tmp_path: Path,
+) -> None:
+    client, db, manager = api_config_generation_jobs__client(tmp_path)
+    session_id = api_config_generation_jobs__session(db, tmp_path)
+    source = manager.store.create_job(
+        "config_generation",
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "batched",
+            "input_id": "a" * 32,
+        },
+    )
+    manager.store.finish(
+        source.id,
+        "failed",
+        result={
+            "session_id": session_id,
+            "outcome": "partial",
+            "failed_question_ids": [],
+            "failed_batches": [],
+            "uncertain_question_ids": ["Q1"],
+            "needs_teacher_resolution": True,
+            "retryable": False,
+        },
+    )
+
+    response = client.post(
+        f"/api/sessions/{session_id}/config/generate/retry",
+        json={"source_job_id": source.id, "retry_question_ids": ["Q1"]},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "config_generation_retry_not_available"
+
+
+def test_config_generation_retry_accepts_all_uncertain_questions_after_teacher_confirmation(
+    tmp_path: Path,
+) -> None:
+    client, db, manager = api_config_generation_jobs__client(tmp_path)
+    session_id = api_config_generation_jobs__session(db, tmp_path)
+    source = manager.store.create_job(
+        "config_generation",
+        {
+            "session_id": session_id,
+            "mode": "generate",
+            "generation_mode": "batched",
+            "input_id": "a" * 32,
+            "sync_to_question_bank": True,
+        },
+    )
+    manager.store.finish(
+        source.id,
+        "succeeded",
+        result={
+            "session_id": session_id,
+            "outcome": "partial",
+            "failed_question_ids": [],
+            "failed_batches": [],
+            "uncertain_question_ids": ["Q10"],
+            "needs_teacher_resolution": True,
+            "uncertain_retry_available": True,
+            "retryable": False,
+        },
+    )
+
+    response = client.post(
+        f"/api/sessions/{session_id}/config/generate/retry",
+        json={
+            "source_job_id": source.id,
+            "retry_question_ids": ["Q10"],
+            "confirm_uncertain_retry": True,
+            "client_request_token": "b" * 32,
+        },
+    )
+
+    assert response.status_code == 202
+    stored = manager.get(response.json()["id"])
+    assert stored is not None
+    assert stored.payload["retry_question_ids"] == ["Q10"]
+    assert stored.payload["confirm_uncertain_retry"] is True
+    assert stored.payload["sync_to_question_bank"] is True
+
+
+def config_generation_contract__open_generated_config(*, second_fixed_blank: bool = False) -> dict:
+    from question_bank.solution_evidence import CoreResolution, QuestionSolutionEvidence
+    from question_bank.training_criteria.analysis import grading_config_skeleton_from_solution_evidence
+    from question_bank.training_criteria.combined_analysis import compose_generated_config_from_skeletons
+
+    class UnmappedResolver:
+        def resolve(self, _term_id):
+            return CoreResolution(status="unmapped")
+
+    points = [{
+        "evidence_point_id": "part-1-step-1", "step_index": 1,
+        "answer_kind": "conditions", "target": "给出一个大于 2 的整数",
+        "justification": "题目要求整数且大于 2", "answer_anchor": "3",
+        "observable_evidence": "答案是整数且大于 2", "depends_on": [], "fine_term_links": [],
+        "equivalent_rules": ["任意满足全部条件的整数均正确"],
+        "counterexamples": ["2 不大于 2", "2.5 不是整数"],
+    }]
+    if second_fixed_blank:
+        points.append({
+            "evidence_point_id": "part-1-step-2", "step_index": 2,
+            "target": "给出 9 的算术平方根", "justification": "非负平方根", "answer_anchor": "3",
+            "observable_evidence": "第二空为 3", "depends_on": [], "fine_term_links": [],
+            "equivalent_rules": [], "counterexamples": ["-3 不是算术平方根"],
+        })
+    evidence = QuestionSolutionEvidence.from_model_dict({
+        "schema_version": "question-solution-evidence-v2", "question_id": 1,
+        "parts": [{"part_id": "part-1", "label": "", "response_mode": "short_answer_points" if second_fixed_blank else "exact_objective",
+            "canonical_answer": "3；3" if second_fixed_blank else "3", "accepted_forms": [],
+            "full_answer": "第一空例如 3，第二空为 3" if second_fixed_blank else "",
+            "proof_obligations": [], "visual_requirements": [], "deduction_policy": ["逐空独立判定"],
+            "allow_alternative_methods": True, "evidence_points": points}],
+        "auxiliary_rules": [], "rationale": "合成开放答案", "confidence": 1,
+    }, question_id=1, source_content_hash="0" * 64, resolver=UnmappedResolver())
+    result = compose_generated_config_from_skeletons(
+        [grading_config_skeleton_from_solution_evidence(evidence, question_ref="Q5")], exam_title="TEST-open-answer")
+    question = result["rubric"]["questions"][0]
+    question["question_type"] = "fill_blank"
+    question["max_score"] = 2 if second_fixed_blank else 1
+    question["parts"][0]["part_score"] = question["max_score"]
+    for step in question["parts"][0]["steps"]:
+        step["step_score"] = 1
+    return result

@@ -1,9 +1,6 @@
 from __future__ import annotations
-
 from pathlib import Path
-
 import pytest
-
 import path_manager
 
 
@@ -26,7 +23,7 @@ def test_auto_regions_supplement_commit_scan_and_complete_grading_plan(api_e2e, 
     from backend.scan_grading.workspace import ScanGradingWorkspace
     from backend.scan_grading.grading_service import _target_question_ids_from_regions
     from backend.reporting.original_paper_exporter import detect_printed_question_anchors
-    from tests.test_original_paper_score_contract import _ocr_row
+    from tests.api_e2e.test_five_flow import original_paper_score_contract__ocr_row as _ocr_row
 
     client = api_e2e.client
     created = client.post('/api/sessions', json={
@@ -258,3 +255,7 @@ def test_api_five_flow_persists_reviewed_score_in_downloaded_report(
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
     assert api_e2e.xlsx_score(download.content, "SYN-001") == 90.0
+
+
+def original_paper_score_contract__ocr_row(text, x, y, w=250, h=24, confidence=0.95):
+    return [[[x, y], [x + w, y], [x + w, y + h], [x, y + h]], text, confidence]

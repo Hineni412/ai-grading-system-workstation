@@ -16,6 +16,7 @@ import path_manager as path_manager_module
 import pytest
 
 from tools.test_suite_manifest import DATABASE_BASELINE_TEST_PATHS, categories_for_path
+from tools.run_test_suite import BACKEND_CASE_LIMIT
 
 
 _TEMPORARY_ROOT: tempfile.TemporaryDirectory[str] | None = None
@@ -130,6 +131,11 @@ def tmp_path(tmp_path: Path):
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    if len(items) > BACKEND_CASE_LIMIT:
+        raise pytest.UsageError(
+            f"后端展开用例 {len(items)} 超过上限 {BACKEND_CASE_LIMIT}。"
+            "先删除重复参数与用例；提高上限需用户授权。"
+        )
     for item in items:
         try:
             relative_path = Path(item.path).resolve().relative_to(_PROJECT_ROOT)

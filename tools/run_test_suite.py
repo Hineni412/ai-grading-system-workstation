@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import os
 import re
 import shutil
@@ -17,6 +18,9 @@ from typing import Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_ROOT = PROJECT_ROOT / "frontend"
+TEST_FILE_LIMIT = 24
+TEST_FUNCTION_LIMIT = 140
+BACKEND_CASE_LIMIT = 132
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -76,6 +80,35 @@ def default_worker_count(cpu_count: int | None = None) -> int:
     if available <= 8:
         return 4
     return 6
+
+
+def check_test_inventory() -> tuple[int, int]:
+    files: list[Path] = []
+    functions = 0
+    for relative in ("tests", "frontend/src", "frontend/e2e", "frontend/demo", "components"):
+        for path in (PROJECT_ROOT / relative).rglob("*"):
+            if not path.is_file() or "__pycache__" in path.parts:
+                continue
+            python_test = path.suffix == ".py" and (
+                path.name.startswith("test_") or path.name.endswith("_test.py")
+            )
+            javascript_test = bool(re.search(r"\.(?:spec|test)\.[cm]?[jt]sx?$", path.name))
+            if not (python_test or javascript_test):
+                continue
+            files.append(path)
+            source = path.read_text(encoding="utf-8-sig")
+            if python_test:
+                functions += sum(
+                    isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and node.name.startswith("test_")
+                    for node in ast.walk(ast.parse(source, filename=str(path)))
+                )
+            else:
+                functions += len(re.findall(r"(?<![\w.])(?:it|test)(?:\.(?:each|skip|only|todo))?\s*\(", source))
+    print(f"测试文件：{len(files)}/{TEST_FILE_LIMIT}；测试函数：{functions}/{TEST_FUNCTION_LIMIT}", flush=True)
+    if len(files) > TEST_FILE_LIMIT or functions > TEST_FUNCTION_LIMIT:
+        raise ValueError("测试数量超过上限。合并业务流程检查并删除重复测试；增加总量需用户授权。")
+    return len(files), functions
 
 
 def _validate_paths(paths: Sequence[Path]) -> None:
@@ -277,15 +310,26 @@ def _run_frontend(
     environment: dict[str, str],
 ) -> list[CommandResult]:
     if full:
-        verification = _run_command(
-            "前端静态检查、单元测试与构建",
-            _npm_command("run", "verify"),
-            cwd=FRONTEND_ROOT,
-            environment=environment,
+        results: list[CommandResult] = []
+        build_root = Path(environment["AI_GRADING_DATA_DIR"]).parent / "frontend-dist"
+        for label, arguments in (
+            ("前端代码规范", ("run", "lint")),
+            ("前端单元测试与题框编辑器", ("run", "test:all")),
+            ("前端类型检查", ("run", "typecheck")),
+            ("前端隔离构建", ("exec", "--no", "--", "vite", "build", "--outDir", str(build_root))),
+        ):
+            result = _run_command(label, _npm_command(*arguments), cwd=FRONTEND_ROOT, environment=environment)
+            results.append(result)
+            if not result.ok:
+                return results
+        budget = _run_command(
+            "前端包体积检查", (shutil.which("node") or "node", "scripts/check-js-bundle-budget.mjs", str(build_root)),
+            cwd=FRONTEND_ROOT, environment=environment,
         )
-        if not verification.ok:
-            return [verification]
-        return [verification, _run_review_browser(environment=environment)]
+        results.append(budget)
+        if budget.ok:
+            results.append(_run_review_browser(environment=environment))
+        return results
     selected_paths = tuple(
         (PROJECT_ROOT / path).relative_to(FRONTEND_ROOT).as_posix()
         for path in QUICK_FRONTEND_TEST_PATHS
@@ -489,6 +533,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     _configure_console_encoding()
     parser = argparse.ArgumentParser(description="AI 阅卷系统分层验收测试")
     parser.add_argument(
+        "--inventory",
+        action="store_true",
+        help="检查测试数量上限，并收集全部后端用例；不执行业务测试。",
+    )
+    parser.add_argument(
         "mode",
         choices=("quick", "full", "serial", "release", "review"),
         nargs="?",
@@ -520,6 +569,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.mode == "review" and args.skip_frontend:
         parser.error("review 包含真实浏览器操作，不能使用 --skip-frontend")
 
+    try:
+        check_test_inventory()
+    except ValueError as error:
+        print(str(error))
+        return 1
+
     _validate_paths(
         tuple(dict.fromkeys((
             *QUICK_TEST_PATHS,
@@ -539,6 +594,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         ignore_cleanup_errors=True,
     ) as sandbox_name:
         environment = _isolated_environment(Path(sandbox_name))
+        if args.inventory:
+            collected = _run_command(
+                "收集全部后端用例",
+                [sys.executable, "-m", "pytest", "--collect-only", "-q"],
+                cwd=PROJECT_ROOT, environment=environment,
+            )
+            match = re.search(r"(\d+) tests? collected", collected.output)
+            if not collected.ok or match is None:
+                print(collected.output)
+                return 1
+            cases = int(match.group(1))
+            print(f"后端展开用例：{cases}/{BACKEND_CASE_LIMIT}")
+            return 0
         if args.mode == "review":
             results = _run_review_suite(
                 workers=args.workers, durations=args.durations, environment=environment,
