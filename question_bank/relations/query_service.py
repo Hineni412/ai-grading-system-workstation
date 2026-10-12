@@ -418,7 +418,10 @@ def _node_payload(
             "training_evidence_count": 0,
         }
     else:
-        mastery_payload = mastery.to_dict()
+        mastery_payload = dict(mastery.to_dict())
+        # The node already carries display_name at the top level; the graph
+        # response schema does not repeat it inside mastery.
+        mastery_payload.pop("display_name", None)
     return {
         "stable_key": node.stable_key,
         "display_name": node.display_name,
