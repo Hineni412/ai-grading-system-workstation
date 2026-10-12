@@ -15,7 +15,7 @@ import OverviewTierBar from '../components/knowledge-overview/OverviewTierBar.vu
 import StudentTierChips from '../components/knowledge-overview/StudentTierChips.vue'
 import QuestionContentRenderer from '../components/question-bank/QuestionContentRenderer.vue'
 import { compareFocusNodes, formatPercent, masteryDetail, shortNodeName } from '../components/knowledge-overview/model'
-import { WEAK_HEAT_LABELS, chapterMetrics, heatLevel, isItem, itemWeakCount, nodeLocation, relatedNodes, scoreOpportunities, volumeItems } from '../components/knowledge-overview/metrics'
+import { RATE_BANDS, chapterMetrics, nodeMastery, rateBand, isItem, itemWeakCount, nodeLocation, relatedNodes, scoreOpportunities, volumeItems } from '../components/knowledge-overview/metrics'
 import { saveEvidenceScope, semesterEvidenceQuery } from '../features/evidence-scope/session'
 import { presetFocusedTraining } from '../features/training/paper-selection-session'
 import { useCurriculumScopeStore } from '../stores/curriculum-scope'
@@ -221,8 +221,8 @@ onBeforeUnmount(() => {
           <button type="button" :aria-pressed="arrangement === 'chapters'" :class="{ 'is-active': arrangement === 'chapters' }" @click="router.replace({ query: { ...queryFor(), view: 'chapters' } })">按教材章节</button>
         </div>
         <div class="app-segmented" role="group" aria-label="地图筛选"><button v-for="option in filters" :key="option.key" type="button" :aria-pressed="filter === option.key" :class="{ 'is-active': filter === option.key }" @click="router.replace({ name: 'knowledge-overview', query: queryFor(selectedKey, option.key) })">{{ option.label }}</button></div>
-        <div class="mastery-map-legend" aria-label="热度图例"><span v-for="(label, index) in WEAK_HEAT_LABELS" :key="label"><i :class="`heat-${index}`" />{{ label }}</span><span><i class="heat--1" />无证据</span></div>
-        <p>底色越深＝明显薄弱的学生占比越高（分母：有证据学生）；底部细条＝四档人数分布。</p>
+        <div class="mastery-map-legend" aria-label="掌握度与得分率数值配色"><span v-for="band in RATE_BANDS" :key="band.key"><i :class="`rate-${band.key}`" />{{ band.label }}</span><span><i class="rate-none" />暂无数据</span></div>
+        <p>题型配色＝群体掌握度；学生数字配色＝考试得分率。底部细条＝四档人数分布，数值配色不改变掌握档位。</p>
         <div class="mastery-tier-legend"><span class="is-weak">明显薄弱</span><span class="is-unsteady">还不稳</span><span class="is-stable">较稳定</span><span class="is-insufficient">证据不足</span><span v-if="!typeMode">实线：同一小问 · 虚线：仅同题出现</span></div>
       </div>
       <p v-if="typeMode && hiddenTypeCount" class="mastery-map-hidden-note">尚未考查的 {{ hiddenTypeCount }} 个题型已隐藏</p>
@@ -234,7 +234,7 @@ onBeforeUnmount(() => {
             <button type="button" class="overview-priority-select" :aria-pressed="selectedKey === node.knowledge_key" @click="select(node, $event)">
               <span class="overview-rank">{{ priorityRanks.get(node.knowledge_key) ?? '·' }}</span>
               <span><strong>{{ shortNodeName(node) }}</strong><small>{{ nodeLocation(node, overview.nodes) }}</small></span>
-              <OverviewTierBar :distribution="node.distribution" />
+              <span class="overview-priority-mastery"><span class="overview-mastery-value" :class="`rate-${rateBand(nodeMastery(node))}`">掌握度 {{ formatPercent(nodeMastery(node)) }}</span><OverviewTierBar :distribution="node.distribution" /></span>
               <span class="overview-weak-count">{{ node.distribution.weak }} 人明显薄弱</span>
             </button>
             <StudentTierChips v-if="priorityRanks.has(node.knowledge_key)" :node="node" :students="overview.students" weak-only :limit="8" />
@@ -266,7 +266,7 @@ onBeforeUnmount(() => {
           <template v-if="studentSearch.trim()">
             <StatePanel v-if="!studentMatches.length" kind="empty" compact title="没有匹配的学生。" />
             <button v-for="student in studentMatches" :key="student.student_id" type="button" class="overview-opportunity-student" @click="openStudent(student)">
-              <span class="overview-opportunity-heading"><strong>{{ student.student_name }}</strong><span>{{ scoreRateText(student) }}</span><b>明显薄弱 {{ itemWeakCount(student) }} 项</b></span>
+              <span class="overview-opportunity-heading"><strong>{{ student.student_name }}</strong><span class="overview-score-rate" :class="`rate-${rateBand(student.score_rate)}`">{{ scoreRateText(student) }}</span><b>明显薄弱 {{ itemWeakCount(student) }} 项</b></span>
               <span class="overview-location">{{ student.class_id || '未分班' }} · {{ student.student_code }}</span>
             </button>
           </template>
@@ -274,7 +274,7 @@ onBeforeUnmount(() => {
             <StatePanel v-if="!opportunities.length" kind="empty" compact title="当前范围没有得分率 40% 及以上且有明显薄弱项的学生。" />
             <article v-for="opportunity in opportunities" :key="opportunity.student.student_id" class="overview-opportunity-row">
               <button type="button" class="overview-opportunity-name" @click="openStudent(opportunity.student)">
-                <span class="overview-opportunity-heading"><strong>{{ opportunity.student.student_name }}</strong><b>{{ scoreRateText(opportunity.student) }}</b></span>
+                <span class="overview-opportunity-heading"><strong>{{ opportunity.student.student_name }}</strong><b class="overview-score-rate" :class="`rate-${rateBand(opportunity.student.score_rate)}`">{{ scoreRateText(opportunity.student) }}</b></span>
                 <span class="overview-location">{{ opportunity.student.class_id || '未分班' }} · {{ opportunity.student.student_code }}</span>
               </button>
               <div class="overview-opportunity-items">
@@ -302,7 +302,7 @@ onBeforeUnmount(() => {
           </section>
           <section v-if="!typeMode && related.length" class="mastery-map-related"><h3>{{ selected.kind === 'skill' ? '相关知识点' : '相关技能' }}</h3>
             <button v-for="item in related" :key="item.node.knowledge_key" type="button" @click="select(item.node)">
-              <i :class="`heat-${heatLevel(item.node)}`" /><span><strong>{{ shortNodeName(item.node) }}</strong><small>明显薄弱 {{ item.node.distribution.weak }} 人 · {{ item.association.basis === 'same_part' ? `同一小问 ${item.association.same_part_question_count} 题` : `仅同题出现 ${item.association.question_count} 题（虚线）` }}</small></span>
+              <i :class="`rate-${rateBand(nodeMastery(item.node))}`" /><span><strong>{{ shortNodeName(item.node) }}</strong><small>掌握度 {{ formatPercent(nodeMastery(item.node)) }} · 明显薄弱 {{ item.node.distribution.weak }} 人 · {{ item.association.basis === 'same_part' ? `同一小问 ${item.association.same_part_question_count} 题` : `仅同题出现 ${item.association.question_count} 题（虚线）` }}</small></span>
             </button>
             <p>关联来自题库里同时考查两者的题目，不代表两者掌握度相同。</p>
           </section>

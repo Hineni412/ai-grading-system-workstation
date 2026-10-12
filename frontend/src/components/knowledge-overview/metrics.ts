@@ -1,9 +1,20 @@
 import type { TrainingOverview, TrainingOverviewNode, TrainingOverviewStudent } from '../../api/training'
 import { shortNodeName, tierOf } from './model'
 
-// Display thresholds only. Backend tiers are never inferred from these rates.
-export const WEAK_HEAT_THRESHOLDS = [0, .1, .2, .3, .4] as const
-export const WEAK_HEAT_LABELS = ['0', '≤10%', '≤20%', '≤30%', '≤40%', '>40%'] as const
+// Numeric display bands do not change the backend mastery tiers.
+export const RATE_BANDS = [
+  { key: 'low', label: '<40%', upper: .4 },
+  { key: 'mid', label: '40%–<60%', upper: .6 },
+  { key: 'good', label: '60%–<80%', upper: .8 },
+  { key: 'high', label: '≥80%', upper: Number.POSITIVE_INFINITY },
+] as const
+export function rateBand(value: number | null | undefined): typeof RATE_BANDS[number]['key'] | 'none' {
+  if (value == null) return 'none'
+  return RATE_BANDS.find(band => value < band.upper)?.key ?? 'none'
+}
+export function nodeMastery(node: TrainingOverviewNode): number | null {
+  return node.evidence_student_count > 0 ? node.group_mastery : null
+}
 export const isItem = (node: TrainingOverviewNode) => node.kind === 'topic' || node.kind === 'skill' || node.kind === 'type'
 export const isTypeMode = (data: Pick<TrainingOverview, 'target_kind'>) => data.target_kind === 'type'
 export const itemWeakCount = (student: TrainingOverview['students'][number]) =>
@@ -11,12 +22,6 @@ export const itemWeakCount = (student: TrainingOverview['students'][number]) =>
 export const volumeItems = (nodes: TrainingOverviewNode[]) => nodes.filter(node => node.in_volume !== false && isItem(node))
 export function weakRate(node: TrainingOverviewNode): number | null {
   return node.evidence_student_count > 0 ? node.distribution.weak / node.evidence_student_count : null
-}
-export function heatLevel(node: TrainingOverviewNode): number {
-  const rate = weakRate(node)
-  if (rate === null) return -1
-  const level = WEAK_HEAT_THRESHOLDS.findIndex(limit => rate <= limit)
-  return level === -1 ? WEAK_HEAT_THRESHOLDS.length : level
 }
 export function overviewMetrics(data: TrainingOverview) {
   const items = volumeItems(data.nodes)

@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { TrainingOverviewNode } from '../../api/training'
-import { shortNodeName } from './model'
-import { heatLevel, weakRate } from './metrics'
+import { formatPercent, shortNodeName } from './model'
+import { nodeMastery, rateBand, weakRate } from './metrics'
 import OverviewTierBar from './OverviewTierBar.vue'
 const props = defineProps<{ nodes: TrainingOverviewNode[]; catalog: TrainingOverviewNode[]; selectedKey: string; activeKeys: Set<string>; hasActive: boolean; priorityRanks?: Map<string, number> }>()
 const emit = defineEmits<{ select: [node: TrainingOverviewNode, event: MouseEvent]; hover: [key: string] }>()
@@ -31,7 +31,7 @@ function label(node: TrainingOverviewNode) {
   const rate = weakRate(node)
   const kindLabel = node.kind === 'skill' ? '技能' : node.kind === 'type' ? '题型' : '知识点'
   return `${node.display_name}，${kindLabel}，${rate === null ? '无证据'
-    : `明显薄弱 ${node.distribution.weak} 人 / 有证据 ${node.evidence_student_count} 人，占 ${Math.round(rate * 100)}%`}`
+    : `群体掌握度 ${formatPercent(nodeMastery(node))}，明显薄弱 ${node.distribution.weak} 人 / 有证据 ${node.evidence_student_count} 人，占 ${Math.round(rate * 100)}%`}`
 }
 </script>
 <template>
@@ -42,13 +42,13 @@ function label(node: TrainingOverviewNode) {
         <h4>{{ column.label }}</h4>
         <div class="mastery-map-cells">
           <button v-for="node in cellNodes(row, column.kind)" :key="node.knowledge_key" type="button"
-            class="mastery-map-node" :class="[`is-${column.kind}`, `heat-${heatLevel(node)}`, { 'is-selected': selectedKey === node.knowledge_key,
+            class="mastery-map-node" :class="[`is-${column.kind}`, `rate-${rateBand(nodeMastery(node))}`, { 'is-selected': selectedKey === node.knowledge_key,
               'is-related': hasActive && activeKeys.has(node.knowledge_key), 'is-dimmed': hasActive && !activeKeys.has(node.knowledge_key) }]"
             :data-knowledge="node.knowledge_key" :title="label(node)" :aria-label="label(node)" :aria-pressed="selectedKey === node.knowledge_key"
             @click="emit('select', node, $event)" @mouseenter="emit('hover', node.knowledge_key)" @mouseleave="emit('hover', '')">
-            <span v-if="priorityRanks?.has(node.knowledge_key)" class="mastery-map-priority">优先 {{ priorityRanks.get(node.knowledge_key) }}</span>
+            <span class="mastery-map-node-heading"><span class="mastery-map-mastery-value">{{ nodeMastery(node) === null ? '无证据' : '掌握 ' + formatPercent(nodeMastery(node)) }}</span><span v-if="priorityRanks?.has(node.knowledge_key)" class="mastery-map-priority">优先 {{ priorityRanks.get(node.knowledge_key) }}</span></span>
             <span class="mastery-map-node-name">{{ shortNodeName(node) }}</span>
-            <b v-if="node.distribution.weak > 0" class="mastery-map-badge">{{ node.distribution.weak }}</b>
+            <span class="mastery-map-badge">{{ node.distribution.weak }} 人明显薄弱</span>
             <OverviewTierBar v-if="node.evidence_student_count > 0" :distribution="node.distribution" />
           </button>
           <span v-if="!cellNodes(row, column.kind).length" class="mastery-map-empty">—</span>

@@ -4,6 +4,7 @@ import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import type { TrainingOverviewNode, TrainingOverviewStudent } from '../../api/training'
 import { TIER_LABELS, formatPercent, masteryDetail, tierOf, type MasteryTier } from './model'
+import { rateBand } from './metrics'
 const props = defineProps<{ node: TrainingOverviewNode; students: TrainingOverviewStudent[]; weakOnly?: boolean; limit?: number }>()
 const router = useRouter()
 const byId = computed(() => new Map(props.students.map(s => [s.student_id, s])))
@@ -36,7 +37,7 @@ function open(studentId: string) {
       <div class="student-tier-chips">
         <button v-for="entry in group.entries.slice(0, limit ?? group.entries.length)" :key="entry.student_id"
           type="button" class="student-tier-chip" :title="`考试得分率 ${scoreText(entry.student_id)} · ${masteryDetail(entry)}`" @click="open(entry.student_id)">
-          {{ byId.get(entry.student_id)?.student_name ?? entry.student_id }} <span>{{ scoreText(entry.student_id) }}</span>
+          {{ byId.get(entry.student_id)?.student_name ?? entry.student_id }} <span class="student-score-rate" :class="`rate-${rateBand(byId.get(entry.student_id)?.score_rate)}`">{{ scoreText(entry.student_id) }}</span>
         </button>
         <span v-if="limit && group.entries.length > limit" class="student-tier-more">+{{ group.entries.length - limit }}</span>
       </div>
