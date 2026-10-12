@@ -717,3 +717,49 @@ def test_near_duplicates_incremental_matches_full_recompute(profile_db, monkeypa
         data_generation, "question_version_state", lambda *a, **k: None)
     _build(profile_db)
     assert data_generation.LAST_INCREMENTAL["near_duplicates"]["mode"] == "full"
+
+
+def test_chapter_profile_disk_cache_restore_refresh_and_failure(profile_db, monkeypatch):
+    from question_bank.services import chapter_exam_profile as profile_module
+    from question_bank.services import question_read_service as read_module
+    from question_bank.services.question_read_service import QuestionBankReadService
+
+    monkeypatch.setattr(QuestionBankReadService, "_skill_snapshot", lambda self, **kwargs: _snapshot())
+    root = profile_db.parent
+    cache = root / "cache" / "chapter_exam_profiles.cache"
+    read_module._READ_RESULT_CACHE.clear()
+    service = QuestionBankReadService(profile_db, data_root=root)
+    expected = _build(profile_db)
+    with sqlite3.connect(profile_db) as conn:
+        before = list(conn.iterdump())
+    first = service.chapter_exam_profile(VOLUME_ID)
+    assert first == expected
+    assert cache.is_file()
+    first["chapters"].clear()
+    read_module._READ_RESULT_CACHE.clear()
+    profile_module._DUP_CACHE.clear()
+    profile_module._GRAM_MEMO.clear()
+    assert QuestionBankReadService(profile_db, data_root=root).chapter_exam_profile(VOLUME_ID) == expected
+    with sqlite3.connect(profile_db) as conn:
+        assert list(conn.iterdump()) == before
+        conn.execute("UPDATE questions SET difficulty=8 WHERE id=1")
+    updated = _build(profile_db)
+    assert updated != expected
+    read_module._READ_RESULT_CACHE.clear()
+    assert QuestionBankReadService(profile_db, data_root=root).chapter_exam_profile(VOLUME_ID) == updated
+    cache.write_bytes(b"TEST-corrupt-chapter-cache")
+    read_module._READ_RESULT_CACHE.clear()
+    assert service.chapter_exam_profile(VOLUME_ID) == updated
+    assert cache.read_bytes() != b"TEST-corrupt-chapter-cache"
+
+    cache.write_bytes(b"TEST-corrupt-chapter-cache")
+    read_module._READ_RESULT_CACHE.clear()
+
+    def fail_replace(*args, **kwargs):
+        raise OSError("TEST-cache-write-failed")
+
+    monkeypatch.setattr("question_bank.atomic_files.replace_with_retry", fail_replace)
+    assert service.chapter_exam_profile(VOLUME_ID) == updated
+    assert cache.read_bytes() == b"TEST-corrupt-chapter-cache"
+    assert not list(cache.parent.glob("chapter-exam-*.tmp"))
+    read_module._READ_RESULT_CACHE.clear()

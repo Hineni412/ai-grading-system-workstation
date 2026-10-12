@@ -445,6 +445,10 @@ _BROWSE_CACHE_LIMITS = {"skill_snapshot": 2, "skill_inventory": 2, "skill_page":
 _READ_RESULT_CACHE_LOCK = threading.Lock()
 _SKILL_SNAPSHOT_LOCK = threading.Lock()
 _SKILL_LOCAL_CACHE_MAX_BYTES = 16 * 1024 * 1024
+_CHAPTER_PROFILE_CACHE_VERSION = 1  # 缓存格式与章节考情统计口径版本
+_CHAPTER_PROFILE_CACHE_MAX_BYTES = 16 * 1024 * 1024
+_CHAPTER_PROFILE_CACHE_LIMIT = 8
+_CHAPTER_PROFILE_CACHE_LOCK = threading.Lock()
 _READ_RESULT_CACHE: OrderedDict[tuple[object, ...], object] = OrderedDict()
 _CACHE_MISS = object()
 # An index is shared across different target questions; no database-side index
@@ -1574,6 +1578,10 @@ class QuestionBankReadService:
             asset_generation, _manifest = self._asset_generation()
             key = ("chapter_exam_profile", generation, self._cache_data_root, asset_generation, curriculum_volume_id)
             cached = _read_result_cache_get(key) if generation is not None and asset_generation is not None else _CACHE_MISS
+            if cached is _CACHE_MISS and generation is not None and asset_generation is not None:
+                cached = self._read_chapter_exam_profile(key)
+                if cached is not _CACHE_MISS:
+                    _read_result_cache_put(key, cached)
             if cached is not _CACHE_MISS:
                 return cached
             snapshot = self._skill_snapshot(volume_id=curriculum_volume_id)
@@ -1582,7 +1590,69 @@ class QuestionBankReadService:
                 and generation == _source_generation_token(self.db_path)
                 and asset_generation == self._asset_generation(refresh=True)[0]):
             _read_result_cache_put(key, result)
+            self._save_chapter_exam_profile(key, result)
         return result
+
+    def _chapter_profile_entries(self) -> dict:
+        try:
+            path = Path(self._cache_data_root) / "cache" / "chapter_exam_profiles.cache"
+            with path.open("rb") as saved:
+                encoded = saved.read(_CHAPTER_PROFILE_CACHE_MAX_BYTES + 1)
+            if len(encoded) > _CHAPTER_PROFILE_CACHE_MAX_BYTES:
+                return {}
+            entry = pickle.loads(encoded)
+            if (not isinstance(entry, dict) or entry.get("version") != _CHAPTER_PROFILE_CACHE_VERSION
+                    or not isinstance(entry.get("entries"), dict)):
+                return {}
+            return entry["entries"]
+        except (OSError, EOFError, pickle.PickleError, TypeError, ValueError, AttributeError, ImportError):
+            return {}
+
+    def _read_chapter_exam_profile(self, key: tuple[object, ...]) -> object:
+        if not self.persist_skill_snapshots or not self._cache_data_root:
+            return _CACHE_MISS
+        with _CHAPTER_PROFILE_CACHE_LOCK:
+            record = self._chapter_profile_entries().get(key[-1])
+        if not isinstance(record, dict) or record.get("key") != key:
+            return _CACHE_MISS
+        result = record.get("profile")
+        if (not isinstance(result, dict) or result.get("curriculum_volume_id") != key[-1]
+                or result.get("model_calls") != 0
+                or not isinstance(result.get("counted_question_count"), int)
+                or any(not isinstance(result.get(name), list) for name in ("chapters", "stages", "merged_groups"))):
+            return _CACHE_MISS
+        return result
+
+    def _save_chapter_exam_profile(self, key: tuple[object, ...], result: dict) -> None:
+        if not self.persist_skill_snapshots or not self._cache_data_root:
+            return
+        temporary = None
+        try:
+            with _CHAPTER_PROFILE_CACHE_LOCK:
+                entries = self._chapter_profile_entries()
+                entries.pop(key[-1], None)
+                entries[key[-1]] = {"key": key, "profile": result}
+                while len(entries) > _CHAPTER_PROFILE_CACHE_LIMIT:
+                    entries.pop(next(iter(entries)))
+                encoded = pickle.dumps({"version": _CHAPTER_PROFILE_CACHE_VERSION, "entries": entries},
+                                       protocol=pickle.HIGHEST_PROTOCOL)
+                if len(encoded) > _CHAPTER_PROFILE_CACHE_MAX_BYTES:
+                    return
+                path = Path(self._cache_data_root) / "cache" / "chapter_exam_profiles.cache"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.NamedTemporaryFile(dir=path.parent, prefix="chapter-exam-", suffix=".tmp", delete=False) as saved:
+                    temporary = Path(saved.name)
+                    saved.write(encoded)
+                from question_bank.atomic_files import replace_with_retry
+                replace_with_retry(temporary, path)
+        except (OSError, pickle.PickleError, TypeError, ValueError, AttributeError, ImportError):
+            pass
+        finally:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def exam_frequency(self) -> dict[int, tuple[float, float]]:
         """每题考频：(期中同源卷组覆盖率, 期末同源卷组覆盖率)，章节考情口径。"""
