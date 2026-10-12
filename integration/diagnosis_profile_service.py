@@ -355,6 +355,7 @@ class DiagnosisProfileService:
         include_source_details: bool = True,
     ) -> DiagnosisSnapshot:
         cache_key = self.tag_profile_cache_key(scope=scope, exam_scope=exam_scope)
+        full_cache_key = cache_key
         if not include_source_details:
             cache_key = (*cache_key, 'summary-without-source-details-v1')
         cached = _claim_or_wait_tag_profile(cache_key)
@@ -379,11 +380,21 @@ class DiagnosisProfileService:
                         exam_scope=exam_scope,
                     )
                 else:
-                    # One evidence scan serves both views: strip the detailed
-                    # snapshot's source-only fields instead of scanning twice.
-                    full = self.build_tag_profiles(scope=scope, exam_scope=exam_scope)
-                    result = self._summary_tag_profile_snapshot(full)
-                    aggregated = dict(self.latest_aggregated_mastery or {})
+                    # Reuse an existing detailed snapshot when available;
+                    # otherwise compute without source details, because a
+                    # summary read must not load the private class baseline.
+                    with _TAG_PROFILE_CACHE_LOCK:
+                        full_entry = _TAG_PROFILE_CACHE.get(full_cache_key)
+                    if full_entry is None:
+                        full_entry = self._read_local_profile(full_cache_key)
+                    if full_entry is not None:
+                        result = self._summary_tag_profile_snapshot(pickle.loads(full_entry[0]))
+                        aggregated = dict(pickle.loads(full_entry[1]))
+                    else:
+                        result, aggregated = self._compute_tag_profiles(
+                            scope=_normalized_profile_scope(scope, exam_scope),
+                            exam_scope=exam_scope, include_source_details=False,
+                        )
             else:
                 result, aggregated = pickle.loads(local[0]), pickle.loads(local[1])
         except BaseException as exc:
