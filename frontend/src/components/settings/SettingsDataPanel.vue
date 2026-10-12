@@ -188,7 +188,7 @@ onBeforeUnmount(() => controller.abort())
       <div class="settings-table-note">清除前建议先备份。<AppButton variant="ghost" size="small" @click="backupBlock?.scrollIntoView({ behavior: 'smooth', block: 'center' })">立即备份</AppButton></div>
       <div v-if="selectedRows.length" class="settings-selection-bar"><span>已选 {{ selectedRows.length }} 场 · 可腾出 {{ formatBytes(selectedRows.reduce((sum, row) => sum + row.clear_bytes, 0)) }}</span><div><AppButton variant="secondary" :disabled="!canReleaseBatch || busy" @click="beginCleanup('release', selectedRows)">释放扫描文件</AppButton><AppButton variant="danger" class="settings-danger-outline" :disabled="!canClearBatch || busy" @click="beginCleanup('clear', selectedRows)">清除原卷</AppButton></div></div>
       <div class="settings-table-scroll"><table class="app-table settings-originals-table">
-        <thead><tr><th><input type="checkbox" aria-label="全选可清理的考试" :checked="selectableRows.length > 0 && selected.length === selectableRows.length" :disabled="busy || selectableRows.length === 0" @change="toggleAll"></th><th>考试</th><th>状态</th><th class="is-num">扫描文件</th><th class="is-num">页面与批注图</th><th>原卷</th><th>操作</th></tr></thead>
+        <thead><tr><th><input type="checkbox" aria-label="全选可清理的考试" :checked="selectableRows.length > 0 && selected.length === selectableRows.length" :disabled="busy || selectableRows.length === 0" @change="toggleAll"></th><th>考试</th><th>状态</th><th class="is-num">扫描文件</th><th class="is-num">页面与旧批注图</th><th>原卷</th><th>操作</th></tr></thead>
         <tbody><tr v-for="row in storage?.sessions" :key="row.session_id">
           <td><input v-model="selected" type="checkbox" :value="row.session_id" :aria-label="`选择 ${row.name}`" :disabled="busy || !(row.can_release_scans || row.can_clear)"></td>
           <td><strong>{{ row.name }}</strong><small>{{ time(row.created_at).slice(0, 10) }}</small></td><td><StatusBadge :label="row.status_label" :tone="row.status_label === '已完成' ? 'success' : 'neutral'" /></td>
@@ -221,7 +221,7 @@ onBeforeUnmount(() => controller.abort())
         <p v-if="dialog === 'legacy'">这些标注图片已不再使用，清理不影响分数与原卷。</p>
         <p v-if="dialog === 'release'">可腾出 {{ formatBytes(freedEstimate) }}。分数、查看原卷、AI 继续批改都不受影响；之后不能再重新扫描归卷。</p>
         <template v-if="dialog === 'clear'">
-          <div class="settings-keep-columns"><div><strong>会保留</strong><ul><li v-for="item in ['分数和排名', '每题得分与扣分原因', '识别出的作答内容', '成绩报告', '掌握度和训练记录', '老师改分']" :key="item">{{ item }}</li></ul></div><div><strong>之后无法</strong><ul><li v-for="item in ['查看原卷和批注图', 'AI 重新批改', '重新扫描归卷', '导出批注原卷', '个人报告里的作答截图']" :key="item">{{ item }}</li></ul></div></div>
+          <div class="settings-keep-columns"><div><strong>会保留</strong><ul><li v-for="item in ['分数和排名', '每题得分与扣分原因', '识别出的作答内容', '成绩报告', '掌握度和训练记录', '老师改分']" :key="item">{{ item }}</li></ul></div><div><strong>之后无法</strong><ul><li v-for="item in ['查看原卷（含批改标记）', 'AI 重新批改', '重新扫描归卷', '导出批注原卷', '个人报告里的作答截图']" :key="item">{{ item }}</li></ul></div></div>
           <p>可腾出 {{ formatBytes(freedEstimate) }}</p>
           <div v-for="target in targets" :key="target.row.session_id" class="settings-backup-hint" :class="{ 'is-covered': target.snapshot.backup_covers_originals }">
             <span>{{ targets.length > 1 ? `${target.row.name} · ` : '' }}{{ target.snapshot.latest_backup_at ? `最近一次备份：${time(target.snapshot.latest_backup_at)}，${target.snapshot.backup_covers_originals ? '包含这场考试的原卷。' : '早于这场考试的批改或扫描文件释放，不能确认备份里包含这些原卷。'}` : '尚无可用备份，建议先备份。' }}</span>
