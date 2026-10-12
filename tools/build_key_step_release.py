@@ -1234,6 +1234,13 @@ def _write_report_md(path: Path, report: dict[str, Any]) -> None:
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def _real_candidate_state_path() -> Path:
+    from backend.api.dependencies import _taxonomy_companion_state_path
+    from path_manager import get_path_manager
+    return _taxonomy_companion_state_path(
+        Path(get_path_manager().taxonomy_state_path), "skill_candidates")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rehearse", action="store_true",
@@ -1249,6 +1256,7 @@ def main(argv: list[str] | None = None) -> int:
                         default=ROOT / "output" / "key-step-release-rehearsal-20261012")
     parser.add_argument("--catalog-dir", type=Path, default=DATA_DIR)
     parser.add_argument("--keep-copy", action="store_true")
+    parser.add_argument("--candidate-state", type=Path, default=None)
     args = parser.parse_args(argv)
 
     if args.publish:
@@ -1269,7 +1277,7 @@ def main(argv: list[str] | None = None) -> int:
         report = publish_key_step_release(
             args.db, data_root=args.data_root, candidate=candidate,
             catalog=catalog, inputs=inputs,
-            candidate_state_path=None)
+            candidate_state_path=args.candidate_state or _real_candidate_state_path())
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
 
