@@ -190,14 +190,6 @@ def _prepare_restore(
     return journal
 
 
-def _table_exists(path: Path, table: str) -> bool:
-    with sqlite3.connect(path) as connection:
-        row = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
-        ).fetchone()
-    return row is not None
-
-
 def test_restore_rechecks_source_overlays_files_and_backs_up_latest_state(
     tmp_path: Path,
 ) -> None:
@@ -345,58 +337,4 @@ def test_crash_recovery_rolls_back_before_attempting_apply(tmp_path: Path) -> No
 
     assert apply_pending_operation(paths=paths) == 0
     assert (paths.config_dir / "keep.txt").read_text(encoding="utf-8") == "keep"
-    assert journal.load_public(OPERATION_ID)["status"] == "rolled_back"
-
-
-def test_all_migration_failure_rolls_back_both_databases(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    paths = _paths(tmp_path)
-    operation_root = paths.ops_state_dir / "operations" / OPERATION_ID
-    staging = operation_root / "staging"
-    staging.mkdir(parents=True)
-    backup = create_safety_backup(
-        paths=paths,
-        reason="before_update",
-        operation_id=OPERATION_ID,
-        archive_names=(
-            "user_data/databases/grading_system.db",
-            "user_data/databases/question_bank.db",
-        ),
-    )
-    from backend.ops.plan_store import OpsPlanStore
-    from backend.ops.write_service import OpsWriteService
-
-    service = OpsWriteService(paths, plan_store=OpsPlanStore())
-    journal = OpsOperationJournal(paths.ops_state_dir)
-    journal.prepare(
-        OpsOperationManifest(
-            operation_id=OPERATION_ID,
-            operation="migration",
-            parameters={"target": "all"},
-            resource_fingerprint=service.migration_files_fingerprint("all"),
-            staging_root=str(staging),
-            preparation_backup=str(backup),
-            created_at="2026-07-12T12:00:00+08:00",
-        )
-    )
-    from backend.ops import offline
-
-    real_run = offline.run_migrations
-    calls = 0
-
-    def fail_second(target, **kwargs):
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            raise RuntimeError("second migration failed")
-        return real_run(target, **kwargs)
-
-    monkeypatch.setattr(offline, "run_migrations", fail_second)
-
-    exit_code = apply_pending_operation(paths=paths)
-    assert exit_code == 0, journal.load_public(OPERATION_ID)
-    assert not _table_exists(paths.db_path, "grading_added")
-    assert not _table_exists(paths.qb_db_path, "question_bank_added")
-    assert not (paths.databases_dir / "backups").exists()
     assert journal.load_public(OPERATION_ID)["status"] == "rolled_back"

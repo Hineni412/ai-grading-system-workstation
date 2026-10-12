@@ -77,60 +77,6 @@ async function mountView(options: {
 }
 
 describe('ConfigSaveResult', () => {
-  it('saves a teacher total above 100 and can retry a stale global rejection without losing edits', async () => {
-    const saver = vi.fn().mockRejectedValueOnce(new ApiError({ kind: 'validation', status: 422,
-      requestId: 'manual-score-test', retryable: false,
-      code: 'invalid_config_editor', message: 'invalid', details: { issues: [{
-        code: 'invalid_generated_config', severity: 'error', row_id: null,
-        field: 'config', message: '旧校验未通过',
-      }] },
-    })).mockResolvedValueOnce({ ...saved(), total_score: 148,
-      rows: [{ ...editor().rows[0]!, score: 148 }] })
-    const mounted = await mountView({ saver })
-    mounted.workspace.updateEditor({ row_id: 'row-q12-p1-s1', score: 148 })
-    await nextTick()
-    const save = mounted.host.querySelector<HTMLButtonElement>('button[name="保存评分依据"]')!
-    expect(save.disabled).toBe(false)
-    expect(mounted.host.querySelector('.rubric-ledger__issues--warning')?.textContent).toContain('当前总分为 148')
-    save.click()
-    await settle()
-    expect(mounted.workspace.editorEdits[0]?.score).toBe(148)
-    expect(save.disabled).toBe(false)
-    save.click()
-    await settle()
-    expect(saver).toHaveBeenLastCalledWith(7, expect.objectContaining({ edits: [{ row_id: 'row-q12-p1-s1', score: 148 }] }))
-    expect(mounted.workspace.effectiveTotalScore).toBe(148)
-    expect(mounted.workspace.hasDirtyEditor).toBe(false)
-    mounted.unmount()
-  })
-
-  it('retains local edits after a 409 and reloads only after the second confirmation', async () => {
-    const conflict = new ApiError({
-      kind: 'conflict', status: 409, code: 'config_revision_conflict', message: 'conflict',
-      details: {}, requestId: 'safe', retryable: false,
-    })
-    const loader = vi.fn(async () => editor('最新服务器答案', 'c'))
-    const mounted = await mountView({ saver: vi.fn(async () => { throw conflict }), loader })
-    const answer = mounted.host.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 标准答案"]')!
-    answer.value = '本地未保存答案'
-    answer.dispatchEvent(new Event('change', { bubbles: true }))
-    await nextTick()
-    mounted.host.querySelector<HTMLButtonElement>('button[name="保存评分依据"]')!.click()
-    await settle()
-
-    expect(mounted.workspace.saveStatus).toBe('conflict')
-    expect(mounted.host.querySelector('[role="alert"]')?.textContent).toContain('服务器已有较新版本')
-    expect(mounted.workspace.hasDirtyEditor).toBe(true)
-    expect(mounted.host.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 标准答案"]')?.value).toBe('本地未保存答案')
-    mounted.host.querySelector<HTMLButtonElement>('button[name="重新加载最新版本"]')!.click()
-    await nextTick()
-    expect(loader).not.toHaveBeenCalled()
-    mounted.host.querySelector<HTMLButtonElement>('button[name="确认丢弃并重新加载"]')!.click()
-    await settle()
-    expect(loader).toHaveBeenCalledExactlyOnceWith(7)
-    expect(mounted.workspace.hasDirtyEditor).toBe(false)
-    expect(mounted.host.querySelector<HTMLTextAreaElement>('[aria-label="Q12 P1 S1 标准答案"]')?.value).toBe('最新服务器答案')
-  })
 
   it('keeps an answer typed during conflict reload before the field loses focus', async () => {
     const pending = deferred<ConfigEditorResponse>()

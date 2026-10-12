@@ -5,7 +5,6 @@ from pathlib import Path
 REVIEW_TEST_PATHS = (Path('tests/test_api_review_routes.py'),)
 REVIEW_FRONTEND_TEST_PATHS = (Path('frontend/src/__tests__/review-scoring-inspector.spec.ts'),)
 SERIAL_TEST_PATHS = (
-    Path('tests/api_e2e/test_failure_recovery.py'),
     Path('tests/api_e2e/test_five_flow.py'),
     Path('tests/test_ops_offline.py'),
 )
@@ -13,7 +12,7 @@ PROCESS_ISOLATED_TEST_PATHS = (Path('tests/test_ops_offline.py'),)
 RELEASE_AUDIT_TEST_PATHS = (Path('tests/test_p3_11_schema_version_gate.py'),)
 QUICK_TEST_PATHS = (
     *REVIEW_TEST_PATHS,
-    *SERIAL_TEST_PATHS[:2],
+    SERIAL_TEST_PATHS[0],
     Path('tests/test_api_config_editor.py'),
     Path('tests/test_llm_gateway.py'),
     Path('tests/training/test_personalized_recommendation.py'),

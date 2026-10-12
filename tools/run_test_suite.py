@@ -18,9 +18,9 @@ from typing import Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_ROOT = PROJECT_ROOT / "frontend"
-TEST_FILE_LIMIT = 24
-TEST_FUNCTION_LIMIT = 140
-BACKEND_CASE_LIMIT = 132
+TEST_FILE_LIMIT = 22
+TEST_FUNCTION_LIMIT = 110
+BACKEND_CASE_LIMIT = 113
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 

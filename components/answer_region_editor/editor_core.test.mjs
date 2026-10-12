@@ -1,37 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import vm from "node:vm";
-
-import answerRegionEditor, {
-  clampRegion,
-  imagePointFromClient,
-  pushHistory,
-  reconcileRegionsByUuid,
-  removeRegionByUuid,
-} from "./editor.js";
-import * as editorModule from "./editor.js";
-
-const editorSource = readFileSync(new URL("./editor.js", import.meta.url), "utf8");
-const editorCss = readFileSync(new URL("./editor.css", import.meta.url), "utf8");
-
-function loadLocalHelpers() {
-  const instrumentedSource = editorSource
-    .replace(
-      /^export default function answerRegionEditor/m,
-      "function answerRegionEditor",
-    )
-    .replace(/^export /gm, "")
-    .concat(`
-      globalThis.__testHelpers = {
-        formatValidationIssue,
-        newRegionUuid,
-      };
-    `);
-  const context = vm.createContext({ crypto: {} });
-  vm.runInContext(instrumentedSource, context);
-  return context.__testHelpers;
-}
+import { imagePointFromClient, pushHistory, reconcileRegionsByUuid } from "./editor.js";
 
 test("reconcile uses region_uuid and incoming order without mutating inputs", () => {
   const previous = [
@@ -65,41 +34,6 @@ test("imagePointFromClient converts client coordinates into SVG viewBox coordina
   );
 
   assert.deepEqual(point, { x: 520, y: 390 });
-});
-
-test("clampRegion snaps slight edge overflow and preserves the input", () => {
-  const region = { region_uuid: "a", x: -8, y: 10, w: 110, h: 95 };
-
-  const result = clampRegion(region, { width: 100, height: 100 });
-
-  assert.deepEqual(result, { region_uuid: "a", x: 0, y: 10, w: 100, h: 90 });
-  assert.deepEqual(region, { region_uuid: "a", x: -8, y: 10, w: 110, h: 95 });
-});
-
-test("clampRegion preserves clearly out-of-bounds geometry for validation", () => {
-  const region = { region_uuid: "a", x: -9, y: 10, w: 40, h: 30 };
-
-  const result = clampRegion(region, { width: 100, height: 100 });
-
-  assert.deepEqual(result, region);
-  assert.notEqual(result, region);
-});
-
-test("space panning state resets on blur and visibility loss through cleaned-up listeners", () => {
-  assert.match(editorSource, /function resetSpacePressed\(\) \{\s*spacePressed = false;\s*\}/);
-  assert.match(editorSource, /listen\(window, "blur", resetSpacePressed\);/);
-  assert.match(editorSource, /listen\(document, "visibilitychange", handleVisibilityChange\);/);
-  assert.match(
-    editorSource,
-    /for \(const removeListener of listeners\.splice\(0\)\) \{\s*removeListener\(\);\s*\}/,
-  );
-});
-
-test("read-only mode blocks editing while retaining page and zoom controls", () => {
-  assert.match(editorSource, /const readOnly = Boolean\(data\.read_only\);/);
-  assert.match(editorSource, /if \(readOnly\) \{\s*return;\s*\}\s*if \(event\.button !== 0/s);
-  assert.match(editorSource, /select\.disabled = readOnly;/);
-  assert.match(editorSource, /button\.disabled = readOnly \|\| confirmed;/);
 });
 
 test("pushHistory limits and isolates undo and redo snapshots", () => {

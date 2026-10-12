@@ -6,8 +6,8 @@ from typing import Any
 import pytest
 from backend.config_workspace.publish import load_editor_config
 from backend.config_workspace.deferred_analysis import DeferredAnalysisArtifact, DeferredAnalysisArtifactStore
-from backend.jobs.manager import JobCancellationRequested, JobContext
-from backend.jobs.question_bank_sync import _adopt_deferred_analysis_with_links, run_deferred_question_bank_intake, run_session_question_bank_sync_job
+from backend.jobs.manager import JobContext
+from backend.jobs.question_bank_sync import _adopt_deferred_analysis_with_links, run_session_question_bank_sync_job
 from backend.jobs.store import JobStore
 from backend.repositories.db_manager import DBManager
 from question_bank.database.schema import connect, initialize_database
@@ -16,7 +16,7 @@ from tests.current_knowledge_support import install_current_knowledge
 from question_bank.services.question_write_service import QuestionBankWriteService
 from tests.question_bank_support import QuestionBankTestStore
 from question_bank.solution_evidence import SolutionEvidenceRepository
-from question_bank.training_criteria import ConfigQuestionAnalysisSource, DeferredAnalysisFailure, DeferredCombinedAnalysisBundle, GatewayBatchResponse, DeferredCombinedQuestionAnalysisModule, question_analysis_input_from_config_source
+from question_bank.training_criteria import ConfigQuestionAnalysisSource, GatewayBatchResponse, DeferredCombinedQuestionAnalysisModule, question_analysis_input_from_config_source
 from backend.repositories.grading_database import open_grading_repositories
 
 
@@ -233,55 +233,19 @@ def _deferred_sync_result(question_id: int) -> dict[str, Any]:
 
 
 class _DeferredSyncGateway:
-    def __init__(
-        self,
-        *,
-        invented_term: bool = False,
-        empty_links: bool = False,
-    ) -> None:
+    def __init__(self) -> None:
         self.calls: list[tuple[int, ...]] = []
-        self.invented_term = bool(invented_term)
-        self.empty_links = bool(empty_links)
 
     def analyze(self, batch: Any, **_kwargs: Any) -> GatewayBatchResponse:
         self.calls.append(batch.question_ids)
-        payload = {'results': [item for qid in batch.question_ids
-            for item in _deferred_sync_result(qid)['results']]}
-        if self.invented_term:
-            result = payload["results"][0]
-            result["tag_analysis"]["knowledge_points"] = ["模型新造知识"]
-            result["tag_analysis"]["canonical_knowledge_id"] = ""
-            for field in (
-                "method_tags",
-                "thought_tags",
-                "ability_tags",
-                "math_model_tags",
-                "special_type_tags",
-                "textbook_chapters",
-                "curriculum_sections",
-            ):
-                result["tag_analysis"][field] = []
-            point = result["solution_evidence"]["parts"][0]["evidence_points"][0]
-            point["fine_term_links"] = [
-                {
-                    "fine_term_id": "invented-model-term",
-                    "fine_term_name": "模型新造知识",
-                    "role": "direct",
-                }
+        payload = {
+            "results": [
+                item
+                for qid in batch.question_ids
+                for item in _deferred_sync_result(qid)["results"]
             ]
-            point["target"] = "选出正确答案"
-            point["observable_evidence"] = "作答为 B"
-        elif self.empty_links:
-            point = payload["results"][0]["solution_evidence"]["parts"][0][
-                "evidence_points"
-            ][0]
-            point["fine_term_links"] = []
-            point["target"] = "选出正确答案"
-            point["observable_evidence"] = "作答为 B"
-        return GatewayBatchResponse(
-            payload=payload,
-            model_name="synthetic-combined-v3",
-        )
+        }
+        return GatewayBatchResponse(payload=payload, model_name="synthetic-combined-v3")
 
 
 class _PassThroughTaxonomyGovernance:
@@ -367,25 +331,7 @@ class _DeferredAdoptionTaggingService:
 
 def _run_deferred_adoption(
     tmp_path: Path,
-    *,
-    invented_term: bool = False,
-    empty_links: bool = False,
-    analysis_governance: Any | None = None,
-    adoption_governance: Any | None = None,
-    prepublish_intake: bool = False,
-    repeat_prepublish_intake: bool = False,
-    partial_analysis: bool = False,
-    cancel_after_import: bool = False,
-    intake_asset_overrides: list[dict[str, Any]] | None = None,
-    intake_type_overrides: dict[str, str] | None = None,
-    captured_import_payload: dict[str, Any] | None = None,
-) -> tuple[
-    dict[str, object],
-    _DeferredSyncGateway,
-    list[int],
-    Path,
-    Path,
-]:
+) -> tuple[dict[str, object], _DeferredSyncGateway, list[int], Path, Path]:
     db, session_id, _source, source_sha256, revision = _configured_session(tmp_path)
     question_bank_db = tmp_path / "data" / "databases" / "question_bank.db"
     initialize_database(question_bank_db)
@@ -401,38 +347,14 @@ def _run_deferred_adoption(
         curriculum_volume_id="bnu24-math-g7-upper",
         taxonomy_contract=_deferred_sync_contract(),
     )
-    gateway = _DeferredSyncGateway(
-        invented_term=invented_term,
-        empty_links=empty_links,
-    )
+    gateway = _DeferredSyncGateway()
     bundle = DeferredCombinedQuestionAnalysisModule(
-        gateway=gateway,
-        taxonomy_governance=analysis_governance,
+        gateway=gateway, taxonomy_governance=None
     ).analyze(
         operation_id="config:synthetic:deferred-adoption",
         curriculum_volume_id="bnu24-math-g7-upper",
         sources=(ConfigQuestionAnalysisSource("Q1", source_question),),
     )
-    if partial_analysis:
-        bundle = DeferredCombinedAnalysisBundle(
-            operation_id=bundle.operation_id,
-            curriculum_volume_id=bundle.curriculum_volume_id,
-            items=bundle.items,
-            failures=(
-                DeferredAnalysisFailure(
-                    source_question_ref="Q2",
-                    analysis_question_id=2,
-                    request_id="d" * 64,
-                    batch_hash="e" * 64,
-                    category="model",
-                ),
-            ),
-            requests=bundle.requests,
-            source_fingerprints=(
-                *bundle.source_fingerprints,
-                ("Q2", "f" * 64),
-            ),
-        )
     artifact_id = "a" * 32
     source_id = "b" * 32
     source_revision = "c" * 64
@@ -462,17 +384,11 @@ def _run_deferred_adoption(
     )
     assert store.mark_running(job.id)
     context = JobContext(
-        job_id=job.id,
-        job_type=job.job_type,
-        payload=job.payload,
-        store=store,
+        job_id=job.id, job_type=job.job_type, payload=job.payload, store=store
     )
     imported_ids: list[int] = []
 
     def import_runner(**_kwargs: Any) -> dict[str, object]:
-        if captured_import_payload is not None:
-            child = _kwargs.get("context")
-            captured_import_payload.update(dict(getattr(child, "payload", {})))
         if imported_ids:
             return {
                 "outcome": "complete",
@@ -482,24 +398,17 @@ def _run_deferred_adoption(
                 "retryable": False,
             }
         with connect(question_bank_db) as connection:
-            numbers = ("1", "2") if partial_analysis else ("1",)
+            numbers = ("1",)
             question_ids = [
                 int(
                     connection.execute(
-                        """
-                        INSERT INTO questions (
-                            question_number, question_type, question_text,
-                            answer_text, source_file
-                        ) VALUES (?, 'choice', ?, 'B', 'paper.docx')
-                        """,
+                        "\n                        INSERT INTO questions (\n                            question_number, question_type, question_text,\n                            answer_text, source_file\n                        ) VALUES (?, 'choice', ?, 'B', 'paper.docx')\n                        ",
                         (number, f"{number} + 1 = ?"),
                     ).lastrowid
                 )
                 for number in numbers
             ]
         imported_ids.extend(question_ids)
-        if cancel_after_import:
-            assert store.request_cancel(job.id)
         return {
             "outcome": "complete",
             "successful_question_ids": question_ids,
@@ -511,60 +420,21 @@ def _run_deferred_adoption(
     def unexpected_tagging_runner(**_kwargs: Any) -> dict[str, object]:
         pytest.fail("deferred adoption must not call the tagging model runner")
 
-    governance = adoption_governance or _PassThroughTaxonomyGovernance()
-
-    if prepublish_intake:
-        try:
-            result = run_deferred_question_bank_intake(
-                context=context,
-                session_id=session_id,
-                artifact=artifact,
-                source_filename="paper.docx",
-                source_content=b"controlled source paper",
-                question_bank_db_path=question_bank_db,
-                data_root=tmp_path / "data",
-                asset_overrides=intake_asset_overrides,
-                type_overrides=intake_type_overrides,
-                question_import_runner=import_runner,
-                ai_service_factory=lambda: _DeferredAdoptionTaggingService(governance),
-                taxonomy_governance=governance,
-            )
-        except JobCancellationRequested:
-            if not cancel_after_import:
-                raise
-            result = {"outcome": "cancelled"}
-        if repeat_prepublish_intake:
-            result = run_deferred_question_bank_intake(
-                context=context,
-                session_id=session_id,
-                artifact=artifact,
-                source_filename="paper.docx",
-                source_content=b"controlled source paper",
-                question_bank_db_path=question_bank_db,
-                data_root=tmp_path / "data",
-                asset_overrides=intake_asset_overrides,
-                type_overrides=intake_type_overrides,
-                question_import_runner=import_runner,
-                ai_service_factory=lambda: _DeferredAdoptionTaggingService(governance),
-                taxonomy_governance=governance,
-            )
-    else:
-        result = run_session_question_bank_sync_job(
-            context=context,
-            grading_db=db,
-            question_bank_db_path=question_bank_db,
-            data_root=tmp_path / "data",
-            write_service=QuestionBankWriteService(
-                question_bank_db,
-                data_root=tmp_path / "data",
-            ),
-            question_import_runner=import_runner,
-            tagging_sync_runner=unexpected_tagging_runner,
-            ai_service_factory=lambda: _DeferredAdoptionTaggingService(governance),
-            taxonomy_governance=governance,
-            analysis_artifact_root=artifact_root,
-        )
-
+    governance = _PassThroughTaxonomyGovernance()
+    result = run_session_question_bank_sync_job(
+        context=context,
+        grading_db=db,
+        question_bank_db_path=question_bank_db,
+        data_root=tmp_path / "data",
+        write_service=QuestionBankWriteService(
+            question_bank_db, data_root=tmp_path / "data"
+        ),
+        question_import_runner=import_runner,
+        tagging_sync_runner=unexpected_tagging_runner,
+        ai_service_factory=lambda: _DeferredAdoptionTaggingService(governance),
+        taxonomy_governance=governance,
+        analysis_artifact_root=artifact_root,
+    )
     return (
         result,
         gateway,

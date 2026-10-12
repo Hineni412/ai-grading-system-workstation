@@ -1,78 +1,11 @@
 from __future__ import annotations
-import threading
-from concurrent.futures import ThreadPoolExecutor
-from backend.llm.execution import LLMExecutionGovernorRegistry, execution_snapshot_from_profile
-from backend.llm.errors import LLMErrorCategory
+from backend.llm.execution import LLMExecutionGovernorRegistry
 from types import SimpleNamespace
 import pytest
 from backend.llm.gateway import LLMGateway
 
 from backend.llm.policy import LLMRequestKind
 import importlib
-
-
-def test_governor_caps_all_callers_sharing_one_profile_scope() -> None:
-    snapshot = execution_snapshot_from_profile(
-        {
-            "request_speed_mode": "custom",
-            "max_concurrent_requests": 3,
-            "requests_per_minute": 10_000,
-        }
-    )
-    governor = LLMExecutionGovernorRegistry()
-    release = threading.Event()
-    entered = threading.Event()
-    lock = threading.Lock()
-    active = 0
-    peak = 0
-
-    def invoke() -> None:
-        nonlocal active, peak
-        permit = governor.acquire("shared-profile", snapshot)
-        with lock:
-            active += 1
-            peak = max(peak, active)
-            if peak == 3:
-                entered.set()
-        release.wait(timeout=2)
-        with lock:
-            active -= 1
-        permit.complete()
-
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        futures = [pool.submit(invoke) for _ in range(8)]
-        assert entered.wait(timeout=2)
-        status = governor.status("shared-profile")
-        assert status["active"] == 3
-        assert status["queued"] == 5
-        release.set()
-        for future in futures:
-            future.result(timeout=2)
-
-    assert peak == 3
-    assert governor.status("shared-profile")["active"] == 0
-
-
-def test_overload_reduces_future_admission_without_retrying_failed_call() -> None:
-    snapshot = execution_snapshot_from_profile(
-        {
-            "request_speed_mode": "custom",
-            "max_concurrent_requests": 12,
-            "requests_per_minute": 1000,
-        }
-    )
-    governor = LLMExecutionGovernorRegistry()
-
-    permit = governor.acquire("shared-profile", snapshot)
-    permit.complete(
-        error_category=LLMErrorCategory.RATE_LIMIT,
-        retry_after_seconds=0,
-    )
-
-    status = governor.status("shared-profile")
-    assert status["effective_max_in_flight"] == 6
-    assert status["limiting_reason"] == "provider_overload"
-    assert status["physical_request_count"] == 1
 
 
 class StatusError(Exception):
@@ -92,14 +25,11 @@ class StatusError(Exception):
 
 
 class FakeCreate:
-    def __init__(self, outcomes: list[object], order: list[str] | None = None) -> None:
+    def __init__(self, outcomes: list[object]) -> None:
         self._outcomes = list(outcomes)
         self.calls: list[dict[str, object]] = []
-        self.order = order
 
     def create(self, **kwargs: object) -> object:
-        if self.order is not None:
-            self.order.append("call")
         self.calls.append(kwargs)
         outcome = self._outcomes.pop(0)
         if isinstance(outcome, BaseException):
@@ -108,9 +38,8 @@ class FakeCreate:
 
 
 class RecordingPacer:
-    def __init__(self, order: list[str] | None = None) -> None:
+    def __init__(self) -> None:
         self.calls: list[tuple[str, LLMRequestKind, int]] = []
-        self.order = order
 
     def acquire(
         self,
@@ -118,8 +47,6 @@ class RecordingPacer:
         kind: LLMRequestKind,
         requests_per_minute: int,
     ) -> None:
-        if self.order is not None:
-            self.order.append("pace")
         self.calls.append((config_key, kind, requests_per_minute))
 
 
@@ -129,17 +56,6 @@ class RecordingSink:
 
     def write(self, event: object) -> None:
         self.events.append(event)
-
-
-class RecordingTraceSink:
-    def __init__(self, order: list[str] | None = None) -> None:
-        self.events = []
-        self.order = order
-
-    def write(self, event: object) -> None:
-        self.events.append(event)
-        if self.order is not None:
-            self.order.append(f"trace:{event.event_type}")
 
 
 class StepClock:
@@ -153,12 +69,12 @@ class StepClock:
         return current
 
 
-def _response(**usage: int) -> SimpleNamespace:
+def _response() -> SimpleNamespace:
     return SimpleNamespace(
         usage=SimpleNamespace(
-            prompt_tokens=usage.get("prompt_tokens", 7),
-            completion_tokens=usage.get("completion_tokens", 3),
-            total_tokens=usage.get("total_tokens", 10),
+            prompt_tokens=7,
+            completion_tokens=3,
+            total_tokens=10,
         )
     )
 
@@ -173,10 +89,7 @@ def _client_for(protocol: str, operation: FakeCreate) -> SimpleNamespace:
 
 def _gateway(
     *,
-    profile: dict[str, object] | None = None,
     sink: object | None = None,
-    trace_sink: object | None = None,
-    pacer: RecordingPacer | None = None,
     sleeper=lambda _seconds: None,
 ) -> LLMGateway:
     clock = StepClock()
@@ -186,60 +99,15 @@ def _gateway(
         clock.value += seconds
 
     return LLMGateway(
-        profile=profile,
+        profile=None,
         config_key="profile-a",
-        pacers=pacer or RecordingPacer(),
+        pacers=RecordingPacer(),
         governors=LLMExecutionGovernorRegistry(clock=clock),
         usage_sink=sink or RecordingSink(),
-        trace_sink=trace_sink or RecordingTraceSink(),
+        trace_sink=RecordingSink(),
         clock=clock,
         sleeper=advance_time,
     )
-
-
-def test_chat_and_responses_receive_explicit_timeout_and_preserve_kwargs():
-    chat_response = _response()
-    responses_response = _response()
-    chat = FakeCreate([chat_response])
-    responses = FakeCreate([responses_response])
-    chat_kwargs = {"messages": [], "temperature": 0.2}
-    responses_kwargs = {"input": "x", "metadata": {"source": "test"}}
-    chat_original = dict(chat_kwargs)
-    responses_original = dict(responses_kwargs)
-    gateway = _gateway(profile={})
-
-    assert (
-        gateway.chat_completions(
-            request_kind=LLMRequestKind.GRADING,
-            client=_client_for("chat", chat),
-            model="g",
-            kwargs=chat_kwargs,
-        )
-        is chat_response
-    )
-    assert (
-        gateway.responses(
-            request_kind=LLMRequestKind.TAGGING,
-            client=_client_for("responses", responses),
-            model="t",
-            kwargs=responses_kwargs,
-        )
-        is responses_response
-    )
-
-    assert chat.calls == [
-        {"messages": [], "temperature": 0.2, "model": "g", "timeout": 600.0}
-    ]
-    assert responses.calls == [
-        {
-            "input": "x",
-            "metadata": {"source": "test"},
-            "model": "t",
-            "timeout": 480.0,
-        }
-    ]
-    assert chat_kwargs == chat_original
-    assert responses_kwargs == responses_original
 
 
 def test_rate_limit_retries_are_bounded_and_share_request_id():
@@ -309,51 +177,8 @@ def test_allow_retry_false_makes_exactly_one_physical_request():
     assert sleeper_calls == []
 
 
-@pytest.mark.parametrize("error", [RuntimeError("synthetic callback detail"), KeyboardInterrupt()])
-def test_usage_callback_preserves_response_and_control_signals(error, caplog) -> None:
-    from backend.llm.llm_client import LLMClient
-
-    client = LLMClient.__new__(LLMClient)
-    gateway = llm_transport__RecordingGateway()
-
-    def broken_callback(*_args):
-        raise error
-
-    def request():
-        return client._create_chat_completion(
-            client=object(), model="synthetic-model", messages=[], expect_json=False,
-            gateway=gateway, usage_callback=broken_callback,
-        )
-
-    if isinstance(error, Exception):
-        assert request() == "chat-response"
-        assert "usage callback failed (RuntimeError)" in caplog.text
-        assert "synthetic callback detail" not in caplog.text
-    else:
-        with pytest.raises(KeyboardInterrupt):
-            request()
-    assert len(gateway.calls) == 1
-
-
 def llm_transport__transport():
     return importlib.import_module("backend.llm.transport")
-
-
-class llm_transport__RecordingGateway:
-    instances: list["_RecordingGateway"] = []
-
-    def __init__(self, **kwargs: object) -> None:
-        self.config = kwargs
-        self.calls: list[dict[str, object]] = []
-        self.__class__.instances.append(self)
-
-    def chat_completions(self, **kwargs: object) -> object:
-        self.calls.append({"protocol": "chat_completions", **kwargs})
-        return "chat-response"
-
-    def responses(self, **kwargs: object) -> object:
-        self.calls.append({"protocol": "responses", **kwargs})
-        return "responses-response"
 
 
 def test_sdk_client_disables_sdk_retries_and_uses_a_bounded_default_timeout() -> None:

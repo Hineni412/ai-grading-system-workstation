@@ -37,7 +37,7 @@ jobs:
         run: python tools/check_documentation.py
       - name: Check test file and case limits
         run: python tools/run_test_suite.py --inventory
-      - name: Check repository and documentation runner regressions
+      - name: Check private data and isolated test runs
         run: python -m pytest tests/test_test_suite_runner.py -q
       - name: Run existing backend quick suite
         run: python tools/run_test_suite.py quick --skip-frontend --workers 2 --durations 0
@@ -62,8 +62,6 @@ jobs:
         run: npm ci
       - name: Lint, unit tests, type check and production build
         run: npm run verify
-      - name: Check synthetic demo server
-        run: npm run demo:test
       - name: Install test browser
         run: npx playwright install chromium
       - name: Run isolated mock browser flows

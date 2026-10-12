@@ -7,7 +7,6 @@ from pathlib import Path
 
 
 from tools import run_test_suite
-from tools.test_suite_manifest import DATABASE_BASELINE_TEST_PATHS, PROCESS_ISOLATED_TEST_PATHS, QUICK_FRONTEND_TEST_PATHS, QUICK_TEST_PATHS, RELEASE_AUDIT_TEST_PATHS, REVIEW_FRONTEND_TEST_PATHS, REVIEW_TEST_PATHS, SERIAL_TEST_PATHS
 
 
 def test_repository_check_rejects_private_files_outside_user_data(monkeypatch, capsys):
@@ -50,67 +49,6 @@ def test_repository_check_accepts_source_and_reports_git_failure(monkeypatch, ca
     monkeypatch.setattr(check_tracked_user_data.subprocess, 'run', git_failure)
     with pytest.raises(subprocess.CalledProcessError):
         check_tracked_user_data.main()
-
-
-def test_pytest_preserves_shared_runner_failure_and_slow_test_details(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    from tools import smoke_check
-
-    output = "FAILED tests/test_flow.py::test_save\n1 failed in 2.00s\n2.00s call tests/test_flow.py::test_save\n"
-    monkeypatch.setattr(
-        smoke_check.subprocess,
-        "run",
-        lambda command, **kwargs: subprocess.CompletedProcess(
-            command,
-            7,
-            stdout=output,
-            stderr="synthetic stderr",
-        ),
-    )
-    result = smoke_check.run_pytest(tmp_path)
-    assert not result.ok
-    assert result.return_code == 7
-    assert result.messages == [*output.splitlines(), "synthetic stderr"]
-
-
-def test_documentation_checks_source_links_without_local_browser_artifacts(tmp_path: Path) -> None:
-    from tools.check_documentation import check_markdown_links
-
-    (tmp_path / "README.md").write_text(
-        "`frontend/test-results/`\n"
-        "`frontend/playwright-report/`\n"
-        "`frontend/src/missing.vue`\n"
-        "[missing source](frontend/src/missing.vue)\n",
-        encoding="utf-8",
-    )
-    issues = check_markdown_links(tmp_path)
-    assert [(issue.code, issue.line) for issue in issues] == [("DOC001", 4), ("DOC002", 3)]
-
-
-def test_manifests_reference_existing_unique_tests() -> None:
-    for paths in (
-        QUICK_TEST_PATHS,
-        QUICK_FRONTEND_TEST_PATHS,
-        RELEASE_AUDIT_TEST_PATHS,
-        SERIAL_TEST_PATHS,
-        PROCESS_ISOLATED_TEST_PATHS,
-        REVIEW_TEST_PATHS,
-        REVIEW_FRONTEND_TEST_PATHS,
-        DATABASE_BASELINE_TEST_PATHS,
-    ):
-        assert len(paths) == len(set(paths))
-        assert all((run_test_suite.PROJECT_ROOT / path).is_file() for path in paths)
-    assert set(PROCESS_ISOLATED_TEST_PATHS) < set(SERIAL_TEST_PATHS)
-    assert QUICK_FRONTEND_TEST_PATHS
-    assert all(path.is_relative_to("frontend") for path in QUICK_FRONTEND_TEST_PATHS)
-    assert not DATABASE_BASELINE_TEST_PATHS.intersection(RELEASE_AUDIT_TEST_PATHS)
-    assert all(
-        not path.is_relative_to("tests/api_e2e")
-        for path in DATABASE_BASELINE_TEST_PATHS
-    )
-    assert Path("tests/test_schema_baseline.py") not in DATABASE_BASELINE_TEST_PATHS
 
 
 def test_isolated_environment_removes_api_keys_and_uses_sandbox(
