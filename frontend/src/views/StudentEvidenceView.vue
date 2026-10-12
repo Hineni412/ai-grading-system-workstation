@@ -835,8 +835,8 @@ onBeforeUnmount(() => {
 .student-evidence__thumb { padding: 0; border: 1px solid var(--color-border-default); border-radius: calc(var(--radius) - 2px); background: var(--color-bg-subtle); cursor: zoom-in; }
 .student-evidence__thumb img { display: block; width: clamp(112px, 16vw, 224px); height: 96px; object-fit: contain; }
 .student-evidence__more { margin-bottom: var(--space-4); }
-.student-evidence__preview { width: min(94vw, 1200px); height: min(88dvh, 900px); }
-.student-evidence__preview :deep(.app-dialog__body) { display: flex; min-height: 0; overflow: hidden; padding: 0; }
+:global(.app-dialog.student-evidence__preview) { width: min(94vw, 1200px); height: min(88dvh, 900px); }
+:global(.app-dialog.student-evidence__preview .app-dialog__body) { display: flex; min-height: 0; overflow: hidden; padding: 0; }
 .student-evidence__preview-viewer { display: grid; flex: 1; min-width: 0; min-height: 0; grid-template-rows: auto minmax(0, 1fr); }
 .student-evidence__preview-tools { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-2) var(--space-3); background: var(--color-bg-surface); }
 .student-evidence__preview-tools output, .student-evidence__preview-tools span { font-size: var(--font-size-caption); color: var(--color-text-secondary); }
