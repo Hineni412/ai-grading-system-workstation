@@ -256,6 +256,24 @@ def _saved_criterion(workspace: Mapping[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+def _criterion_covered_by_current_evidence(
+    criterion: Mapping[str, Any] | None,
+    profile: Mapping[str, Any] | None,
+) -> bool:
+    """A stale criterion whose embedded evidence is the saved current evidence.
+
+    Such a row is a leftover parallel projection: the current solution
+    evidence already derives the same criteria, so no new model call is
+    needed to repair the stale mark.
+    """
+    if not isinstance(criterion, Mapping) or not profile or not profile.get("available"):
+        return False
+    embedded = criterion.get("criteria", {}).get("solution_evidence", {})
+    embedded_id = str(embedded.get("version_id") or "") if isinstance(embedded, Mapping) else ""
+    current_id = str((profile.get("evidence") or {}).get("version_id") or "")
+    return bool(embedded_id) and embedded_id == current_id
+
+
 def saved_criteria_states(
     connection: sqlite3.Connection,
     question_ids: Iterable[int],
@@ -300,7 +318,8 @@ def saved_criteria_states(
             profile = profiles.get(question_id)
             criteria_ready = (
                 usable is not None and str(usable.get("status") or "") != "stale"
-            ) or (head is None and not rows and bool(profile and profile.get("available")))
+            ) or _criterion_covered_by_current_evidence(usable, profile) or (
+                head is None and not rows and bool(profile and profile.get("available")))
             result[question_id] = {
                 "criteria_ready": criteria_ready,
                 "criteria_needs_review": not criteria_ready and bool(
