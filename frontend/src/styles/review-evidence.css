@@ -436,6 +436,7 @@
   pointer-events: none;
   transform-origin: center;
   will-change: transform;
+  background: var(--color-bg-surface);
 }
 
 .review-evidence-page img {
@@ -443,6 +444,8 @@
   width: 100%;
   height: 100%;
 }
+
+.review-evidence-paper { position: relative; }
 
 .review-evidence-canvas img.is-unavailable {
   visibility: hidden;

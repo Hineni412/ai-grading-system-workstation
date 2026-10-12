@@ -30,6 +30,7 @@ const sourceLabels: Record<EvidenceSource, string> = {
   original_front: '原卷正面',
   original_back: '原卷反面',
 }
+const scoreGutter = 132
 
 const viewer = useEvidenceViewer()
 const canvasElement = ref<HTMLElement | null>(null)
@@ -146,7 +147,7 @@ function onImageLoad(event: Event): void {
     height: image.naturalHeight,
   }
   viewer.acceptImage(activeLoad.generation, {
-    width: image.naturalWidth,
+    width: image.naturalWidth + (isOriginalSource.value ? scoreGutter : 0),
     height: image.naturalHeight,
   })
 }
@@ -314,27 +315,31 @@ onBeforeUnmount(() => {
         :key="imageRenderKey"
         class="review-evidence-page"
         :style="{
-          width: `${naturalSize.width}px`,
+          width: `${naturalSize.width + scoreGutter}px`,
           height: `${naturalSize.height}px`,
           transform: viewer.transform.value,
+          '--paper-score-gutter': `${scoreGutter}px`,
         }"
       >
-        <img
-          :src="sourceUrl ?? undefined"
-          :data-load-key="imageRenderKey"
-          :alt="`${item.student_name} 的${sourceLabel}`"
-          :class="{ 'is-unavailable': viewer.loadState.value === 'error' }"
-          draggable="false"
-          decoding="async"
-          @load="onImageLoad"
-          @error="onImageError"
-        >
-        <PaperMarksLayer
-          v-if="marksVisible && pageMarks.length"
-          :marks="pageMarks"
-          :selected-item-key="reviewItem.review_item_id"
-          :interactive="false"
-        />
+        <div class="review-evidence-paper" :style="{ marginInlineStart: `${scoreGutter}px`, width: `${naturalSize.width}px`, height: `${naturalSize.height}px` }">
+          <img
+            :src="sourceUrl ?? undefined"
+            :data-load-key="imageRenderKey"
+            :alt="`${item.student_name} 的${sourceLabel}`"
+            :class="{ 'is-unavailable': viewer.loadState.value === 'error' }"
+            draggable="false"
+            decoding="async"
+            @load="onImageLoad"
+            @error="onImageError"
+          >
+          <PaperMarksLayer
+            v-if="marksVisible && pageMarks.length"
+            :marks="pageMarks"
+            :selected-item-key="reviewItem.review_item_id"
+            :interactive="false"
+            presentation="scores"
+          />
+        </div>
       </div>
       <img
         v-else

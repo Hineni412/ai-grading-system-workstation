@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
+import { useResizeObserver } from '@vueuse/core'
 import type { ResultsCenterItem } from '../../api/results-center'
 import {
   formatScore,
@@ -16,8 +17,10 @@ const props = withDefaults(defineProps<{
   marks: PaperMark[]
   selectedItemKey: string | null
   interactive?: boolean
+  presentation?: 'regions' | 'scores'
 }>(), {
   interactive: true,
+  presentation: 'regions',
 })
 
 const emit = defineEmits<{
@@ -27,6 +30,32 @@ const emit = defineEmits<{
 const selectedMarkKeys = computed(() => new Set(props.marks
   .filter((mark) => mark.items.some((item) => item.review_item_id === props.selectedItemKey))
   .map((mark) => mark.key)))
+
+const layer = ref<HTMLElement | null>(null)
+const pageHeight = ref(0)
+const scoreLabelHeight = 26
+useResizeObserver(layer, ([entry]) => {
+  if (entry) pageHeight.value = entry.contentRect.height
+})
+
+const scoreLabels = computed(() => {
+  if (props.presentation !== 'scores') return []
+  return props.marks.filter((mark) => !hideOverlapMark(mark))
+    .sort((left, right) => left.top - right.top || left.left - right.left)
+    .map((mark) => ({
+      mark,
+      top: (mark.top + mark.height / 2) / 100 * pageHeight.value - scoreLabelHeight / 2,
+    }))
+})
+
+function scoreLabel(mark: PaperMark): string {
+  const selected = mark.items.find((item) => item.review_item_id === props.selectedItemKey)
+  if (selected && mark.items.length > 1) {
+    const score = resolvedItemScore(selected)
+    return `${selected.question_id.replace('(P', '(')} ${score === null ? '未出分' : `${formatScore(score)}/${formatScore(selected.max_score)}`}`
+  }
+  return `${mark.questionId} ${markLabel(mark)}`
+}
 
 function nearSameRegion(left: PaperMark, right: PaperMark): boolean {
   if (left.page !== right.page) return false
@@ -122,71 +151,84 @@ function markTitle(mark: PaperMark): string {
 
 <template>
   <div
+    ref="layer"
     class="paper-marks-layer"
-    :class="{ 'is-static': !interactive }"
+    :class="{ 'is-static': !interactive, 'is-scores': presentation === 'scores' }"
   >
-    <component
-      :is="interactive ? 'button' : 'span'"
-      v-for="mark in marks"
-      :id="`paper-mark-${mark.key}`"
-      :key="mark.key"
-      :type="interactive ? 'button' : undefined"
-      class="paper-mark"
-      :class="[`is-${mark.state}`, {
-        'is-selected': selectedMarkKeys.has(mark.key),
-        'is-overlap-hidden': hideOverlapMark(mark),
-        'is-overlap': overlapByMark.has(mark.key),
-      }]"
-      :style="{
-        left: `${mark.left}%`,
-        top: `${mark.top}%`,
-        width: `${mark.width}%`,
-        height: `${mark.height}%`,
-      }"
-      :aria-label="interactive ? markTitle(mark) : undefined"
-      :aria-hidden="hideOverlapMark(mark) ? 'true' : undefined"
-      :tabindex="interactive && hideOverlapMark(mark) ? -1 : undefined"
-      :title="markTitle(mark)"
-      @click="selectMark(mark)"
-    >
-      <span v-if="!overlapByMark.has(mark.key) || selectedMarkKeys.has(mark.key)" class="paper-mark__label">{{ mark.questionId }} {{ markLabel(mark) }}</span>
-      <span v-if="mark.needsReview && (!overlapByMark.has(mark.key) || selectedMarkKeys.has(mark.key))" class="paper-mark__review">待复核</span>
-    </component>
-    <div v-for="group in interactive ? overlapGroups : []" :key="`overlap-${group.key}`" class="paper-mark__overlap-items"
-      :style="{ left: `${group.anchor.left}%`, top: `${group.anchor.top + group.anchor.height}%`, width: `${group.anchor.width}%` }"
-      :aria-label="interactive ? '同一区域的题目，可逐题选择' : undefined">
-      <component :is="interactive ? 'button' : 'span'" v-for="item in group.items" :key="item.review_item_id"
-        :type="interactive ? 'button' : undefined" class="paper-mark__sub"
-        :class="[`is-${itemMarkState(item)}`, { 'is-selected': selectedItemKey === item.review_item_id }]"
-        :title="`${item.question_id} · ${subChipTitle(item)}`" :aria-current="selectedItemKey === item.review_item_id ? 'true' : undefined"
-        @click.stop="emit('select-item', item)">{{ overlapChipLabel(item) }}<i v-if="itemNeedsReview(item)" class="paper-mark__sub-dot"></i></component>
-    </div>
-    <div
-      v-for="mark in multiMarks"
-      :key="`subs-${mark.key}`"
-      class="paper-mark__subs"
-      :style="{
-        left: `${mark.left}%`,
-        top: `${mark.top}%`,
-        width: `${mark.width}%`,
-      }"
-    >
+    <template v-if="presentation === 'scores'">
+      <span v-for="entry in scoreLabels" :key="entry.mark.key" class="paper-score"
+        :data-region-key="entry.mark.key"
+        :class="[`is-${entry.mark.state}`, { 'is-current': selectedMarkKeys.has(entry.mark.key) }]"
+        :style="{ top: `${entry.top}px`, height: `${scoreLabelHeight}px` }"
+        :title="markTitle(entry.mark)"
+        :aria-current="selectedMarkKeys.has(entry.mark.key) ? 'true' : undefined">
+        {{ scoreLabel(entry.mark) }}<small v-if="selectedMarkKeys.has(entry.mark.key)">当前</small>
+      </span>
+    </template>
+    <template v-else>
       <component
         :is="interactive ? 'button' : 'span'"
-        v-for="item in mark.items"
-        :key="item.review_item_id"
+        v-for="mark in marks"
+        :id="`paper-mark-${mark.key}`"
+        :key="mark.key"
         :type="interactive ? 'button' : undefined"
-        class="paper-mark__sub"
-        :class="[`is-${itemMarkState(item)}`, {
-          'is-selected': selectedItemKey === item.review_item_id,
+        class="paper-mark"
+        :class="[`is-${mark.state}`, {
+          'is-selected': selectedMarkKeys.has(mark.key),
+          'is-overlap-hidden': hideOverlapMark(mark),
+          'is-overlap': overlapByMark.has(mark.key),
         }]"
-        :title="subChipTitle(item)"
-        @click.stop="emit('select-item', item)"
-      >{{ subChipLabel(item) }}<i
-        v-if="itemNeedsReview(item)"
-        class="paper-mark__sub-dot"
-      ></i></component>
-    </div>
+        :style="{
+          left: `${mark.left}%`,
+          top: `${mark.top}%`,
+          width: `${mark.width}%`,
+          height: `${mark.height}%`,
+        }"
+        :aria-label="interactive ? markTitle(mark) : undefined"
+        :aria-hidden="hideOverlapMark(mark) ? 'true' : undefined"
+        :tabindex="interactive && hideOverlapMark(mark) ? -1 : undefined"
+        :title="markTitle(mark)"
+        @click="selectMark(mark)"
+      >
+        <span v-if="!overlapByMark.has(mark.key) || selectedMarkKeys.has(mark.key)" class="paper-mark__label">{{ mark.questionId }} {{ markLabel(mark) }}</span>
+        <span v-if="mark.needsReview && (!overlapByMark.has(mark.key) || selectedMarkKeys.has(mark.key))" class="paper-mark__review">待复核</span>
+      </component>
+      <div v-for="group in interactive ? overlapGroups : []" :key="`overlap-${group.key}`" class="paper-mark__overlap-items"
+        :style="{ left: `${group.anchor.left}%`, top: `${group.anchor.top + group.anchor.height}%`, width: `${group.anchor.width}%` }"
+        :aria-label="interactive ? '同一区域的题目，可逐题选择' : undefined">
+        <component :is="interactive ? 'button' : 'span'" v-for="item in group.items" :key="item.review_item_id"
+          :type="interactive ? 'button' : undefined" class="paper-mark__sub"
+          :class="[`is-${itemMarkState(item)}`, { 'is-selected': selectedItemKey === item.review_item_id }]"
+          :title="`${item.question_id} · ${subChipTitle(item)}`" :aria-current="selectedItemKey === item.review_item_id ? 'true' : undefined"
+          @click.stop="emit('select-item', item)">{{ overlapChipLabel(item) }}<i v-if="itemNeedsReview(item)" class="paper-mark__sub-dot"></i></component>
+      </div>
+      <div
+        v-for="mark in multiMarks"
+        :key="`subs-${mark.key}`"
+        class="paper-mark__subs"
+        :style="{
+          left: `${mark.left}%`,
+          top: `${mark.top}%`,
+          width: `${mark.width}%`,
+        }"
+      >
+        <component
+          :is="interactive ? 'button' : 'span'"
+          v-for="item in mark.items"
+          :key="item.review_item_id"
+          :type="interactive ? 'button' : undefined"
+          class="paper-mark__sub"
+          :class="[`is-${itemMarkState(item)}`, {
+            'is-selected': selectedItemKey === item.review_item_id,
+          }]"
+          :title="subChipTitle(item)"
+          @click.stop="emit('select-item', item)"
+        >{{ subChipLabel(item) }}<i
+          v-if="itemNeedsReview(item)"
+          class="paper-mark__sub-dot"
+        ></i></component>
+      </div>
+    </template>
   </div>
 </template>
 
@@ -200,6 +242,30 @@ function markTitle(mark: PaperMark): string {
 .paper-marks-layer.is-static * {
   pointer-events: none;
 }
+
+.paper-score {
+  position: absolute;
+  inset-inline-start: calc(-1 * var(--paper-score-gutter));
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--space-1);
+  width: var(--paper-score-gutter);
+  padding-inline: var(--space-2);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.paper-score.is-full { color: var(--color-success); }
+.paper-score.is-partial { color: var(--color-warning); }
+.paper-score.is-zero { color: var(--color-danger); }
+.paper-score.is-pending { color: var(--color-text-muted); }
+.paper-score.is-current { color: var(--color-accent); font-weight: var(--font-weight-semibold); }
+.paper-score small { font-size: inherit; font-weight: inherit; }
 
 .paper-mark {
   position: absolute;
