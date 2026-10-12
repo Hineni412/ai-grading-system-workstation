@@ -17,7 +17,8 @@ import re
 import sqlite3
 import statistics
 import threading
-from collections import OrderedDict, defaultdict
+from collections import Counter, OrderedDict, defaultdict
+from itertools import chain
 from pathlib import Path
 from typing import Any
 
@@ -89,8 +90,11 @@ def _near_duplicates(gram_sets: dict[int, frozenset[str]]) -> dict[int, set[int]
         for qid, grams_set in gram_sets.items()
     }
     neighbors: dict[int, set[int]] = {qid: set() for qid in gram_sets}
-    for qid, grams_list in kept.items():
+    for qid in kept:
         _near_duplicates_around(qid, gram_sets, postings, kept, neighbors)
+        # 双向邻接已写入；后续题不再反向比较这一题。kept 保留原候选上界。
+        for gram in kept[qid]:
+            postings[gram].remove(qid)
     return neighbors
 
 
@@ -102,12 +106,9 @@ def _near_duplicates_around(
     neighbors: dict[int, set[int]],
 ) -> None:
     """重算一题的近重复邻接（与原全量算法逐对同价）。"""
-    shared: dict[int, int] = {}
     grams_list = kept[qid]
-    for gram in grams_list:
-        for other in postings[gram]:
-            if other != qid:
-                shared[other] = shared.get(other, 0) + 1
+    shared = Counter(chain.from_iterable(postings[gram] for gram in grams_list))
+    shared.pop(qid, None)
     for other, count in shared.items():
         # 候选上界按保留片段估算，再用完整片段 Dice 确认。
         if 2 * count < CANDIDATE_DICE_FLOOR * (len(grams_list) + len(kept[other])):

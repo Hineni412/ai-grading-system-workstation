@@ -264,6 +264,17 @@ def _coverage_materials(items, materials, difficulties, read_service):
         for chapter in profile["chapters"]:
             for section in chapter["sections"]:
                 sections[section["id"]] = {**section, "chapter": chapter["label"]}
+    reference_ids = {ref["question_id"] for section_id in touched if section_id in sections
+                     for skill in sections[section_id]["skills"]
+                     if skill.get("key") and int(skill.get("group_count") or 0) >= 2
+                     for ref in skill.get("typical") or [] if ref.get("question_id")}
+    reference_stems = {}
+    if reference_ids:
+        import sqlite3
+        from contextlib import closing
+        with closing(sqlite3.connect(f"{read_service.db_path.resolve().as_uri()}?mode=ro", uri=True)) as conn:
+            marks = ",".join("?" for _ in reference_ids)
+            reference_stems = dict(conn.execute(f"SELECT id, question_text FROM questions WHERE id IN ({marks})", tuple(reference_ids)))
     coverage, coverage_types = [], {}
     for section_id, item_ids in touched.items():
         section = sections.get(section_id)
@@ -281,12 +292,8 @@ def _coverage_materials(items, materials, difficulties, read_service):
             for ref in skill.get("typical") or []:
                 if not ref.get("question_id"):
                     continue
-                import sqlite3
-                from contextlib import closing
-                with closing(sqlite3.connect(f"{read_service.db_path.resolve().as_uri()}?mode=ro", uri=True)) as conn:
-                    question = conn.execute("SELECT question_text FROM questions WHERE id=?", (ref["question_id"],)).fetchone()
-                if question:
-                    typical.append({"role": ref.get("role") or "参考典型题", "stem": question[0] or ""})
+                if ref["question_id"] in reference_stems:
+                    typical.append({"role": ref.get("role") or "参考典型题", "stem": reference_stems[ref["question_id"]] or ""})
             types.append({"key": skill["key"], "name": skill["name"], "group_count": skill["group_count"],
                 "difficulty": round(st.median(diffs), 1) if diffs else None,
                 "covered_by": primary, "secondary_by": secondary})

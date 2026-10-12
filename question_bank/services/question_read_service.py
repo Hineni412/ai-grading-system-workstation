@@ -1308,7 +1308,7 @@ class QuestionBankReadService:
                          and self.persist_skill_snapshots
                          and self._cache_data_root and generation is not None)
             manifest = (asset_manifest if asset_manifest is not None
-                        and full and self.persist_skill_snapshots and self._cache_data_root and generation is not None else None)
+                        and (full or volume_id is not None) and self.persist_skill_snapshots and self._cache_data_root and generation is not None else None)
             stored = (self._read_local_skill_snapshot(generation, inventory, manifest, connection=conn)
                       if versioned or manifest is not None else None)
             snapshot = None
@@ -1320,8 +1320,8 @@ class QuestionBankReadService:
                 if state is not None:
                     changed = state.changed_since(stored["state"])
                     if changed is not None:
-                        if not changed and full:
-                            # 版本全部未动：整库快照直接复用（跳过重组装）。
+                        if not changed and (full or volume_id is not None):
+                            # 分册读取也接受完整投影；版本未动时直接复用，跳过重组装。
                             snapshot = stored["snapshot"]
                             LAST_INCREMENTAL["skill_snapshot"] = {
                                 "mode": "incremental",
@@ -1345,8 +1345,8 @@ class QuestionBankReadService:
                                     "recomputed": frozenset(changed & set(inventory["questions"])),
                                 }
             elif stored is not None:
-                # 精确命中（签名未变、无按题版本）：整库快照原样复用。
-                if full:
+                # 精确命中（签名未变、无按题版本）：完整投影也可供分册读取。
+                if full or volume_id is not None:
                     snapshot = stored["snapshot"]
             if snapshot is None:
                 from question_bank.services.file_cache import capture_file_reads
