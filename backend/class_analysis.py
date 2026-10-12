@@ -1343,20 +1343,25 @@ def _saved_evidence_members(
     if by_step is None:
         by_step = source.get("by_step") if isinstance(source.get("by_step"), bool) else any(item.get("failed_steps") for item in evidence)
     out: dict[str, set[int]] = {str(item.get("id") or ""): set() for item in evidence}
+    prepared = []
+    for item in evidence:
+        saved = {key: value for key, value in item.items() if key not in ("id", "student_ids")}
+        if not by_step:
+            saved.pop("failed_steps", None)
+        structured = any(key in saved for key in ("student_answer", "evidence_steps", "previous_answers"))
+        prepared.append((str(item.get("id") or ""), _evidence_key(saved) if structured else None, saved.get("text")))
+    uses_structured_evidence = any(key is not None for _, key, _ in prepared)
     question_id = str(source.get("question_id") or "")
     for student in data.students:
         for record in student.records:
             if record.question_id != question_id or not record.lost:
                 continue
             current = _cause_evidence(student, record, data, by_step=by_step)
-            for item in evidence:
-                saved = {key: value for key, value in item.items() if key not in ("id", "student_ids")}
-                if not by_step:
-                    saved.pop("failed_steps", None)
-                structured = any(key in saved for key in ("student_answer", "evidence_steps", "previous_answers"))
-                matches = _evidence_key(saved) == _evidence_key(current) if structured else saved.get("text") == _cause_text(record)
+            current_key = _evidence_key(current) if uses_structured_evidence else None
+            for evidence_id, saved_key, saved_text in prepared:
+                matches = saved_key == current_key if saved_key is not None else saved_text == current["text"]
                 if matches:
-                    out[str(item.get("id") or "")].add(student.student_id)
+                    out[evidence_id].add(student.student_id)
     return out
 
 
