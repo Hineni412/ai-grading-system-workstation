@@ -22,12 +22,25 @@
 .workbench-bar i { display: block; height: 100%; background: var(--color-accent); }
 .workbench-running-row > .workbench-bar { flex: 0 0 100px; }
 .workbench-bar--running i { background-image: linear-gradient(115deg, transparent 35%, var(--fx-shimmer-stripe) 50%, transparent 65%); background-size: 220% 100%; animation: fx-progress-shimmer 3s linear infinite; }
+.workbench-all-clear { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3) 0 var(--space-1); font-size: var(--font-size-dense); font-weight: var(--font-weight-medium); color: var(--color-success); }
+.workbench-ok-dot { display: inline-flex; width: 18px; height: 18px; flex: none; align-items: center; justify-content: center; border-radius: var(--radius-circle); background: var(--color-success); color: var(--color-bg-surface); font-size: 11px; }
 .workbench-quiet { padding: var(--space-4) 0 var(--space-2); text-align: center; font-size: var(--font-size-dense); color: var(--color-text-muted); }
 .workbench-quiet p { margin: 0 0 var(--space-2); }
 .workbench-quiet .workbench-meta { margin-top: var(--space-2); }
 .workbench-source-error { display: flex; align-items: center; gap: var(--space-2); color: var(--color-text-muted); font-size: var(--font-size-caption); }
 .workbench-exam-name { margin: var(--space-2) 0 0; font-size: var(--font-size-body); font-weight: var(--font-weight-semibold); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .workbench-current .step-progress { margin-top: var(--space-2); }
+.workbench-done-line { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-3); padding: 9px var(--space-3); border-radius: var(--radius-control); background: var(--color-success-subtle); color: var(--color-success); font-size: var(--font-size-dense); font-weight: var(--font-weight-medium); }
+.workbench-steps-more { margin-top: var(--space-1); }
+.workbench-steps-more summary { cursor: pointer; padding: var(--space-1) 0; color: var(--color-accent); font-size: var(--font-size-caption); list-style: none; }
+.workbench-steps-more summary::-webkit-details-marker { display: none; }
+.workbench-steps-more summary::before { content: '▸ '; }
+.workbench-steps-more[open] summary::before { content: '▾ '; }
+.workbench-card-acts { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-3); }
+.workbench-report-line { margin: var(--space-3) 0 0; padding-top: var(--space-2); border-top: 1px solid var(--color-border-subtle); font-size: var(--font-size-caption); color: var(--color-text-secondary); }
+.workbench-report-line b { color: var(--color-warning); font-weight: var(--font-weight-semibold); }
+.workbench-link-btn { border: 0; padding: 0; background: none; color: var(--color-accent); font: inherit; cursor: pointer; }
+.workbench-link-btn:hover { text-decoration: underline; }
 .workbench-view .workbench-footer-link.app-button { padding-left: 0; margin-top: var(--space-1); min-height: var(--control-height-small); height: auto; font-size: var(--font-size-caption); }
 .workbench-insight-stats { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-2); margin: var(--space-3) 0; }
 .workbench-insight-stats > div { padding: var(--space-2) var(--space-3); border-radius: var(--radius-control); background: var(--color-bg-subtle); }
@@ -51,29 +64,31 @@
 .workbench-target-count strong { color: var(--color-text-secondary); font-size: var(--font-size-dense); font-weight: var(--font-weight-semibold); }
 .workbench-exams-table { table-layout: fixed; }
 .workbench-exams-table td { overflow-wrap: anywhere; }
-.workbench-exams-table th:nth-child(1) { width: 29%; }
-.workbench-exams-table th:nth-child(2) { width: 16%; }
+.workbench-exams-table th:nth-child(1) { width: 30%; }
+.workbench-exams-table th:nth-child(2) { width: 14%; }
 .workbench-exams-table th:nth-child(3) { width: 9%; }
-.workbench-exams-table th:nth-child(4) { width: 16%; }
-.workbench-exams-table th:nth-child(5) { width: 18%; }
-.workbench-exams-table th:nth-child(6) { width: 12%; }
+.workbench-exams-table th:nth-child(4) { width: 32%; }
+.workbench-exams-table th:nth-child(5) { width: 15%; }
 .workbench-exams-table tr.is-current td { background: var(--color-accent-subtle); }
+.workbench-exams-table tr.is-current td:first-child { box-shadow: inset 3px 0 0 var(--color-accent); }
 .workbench-exams-name button { border: 0; padding: 0; background: transparent; font: inherit; font-weight: var(--font-weight-semibold); color: var(--color-text-primary); text-align: left; cursor: pointer; overflow-wrap: anywhere; }
 .workbench-exams-name button:hover { color: var(--color-accent); text-decoration: underline; }
-.workbench-exams-name .status-badge { margin-left: var(--space-1); }
 .workbench-table-progress { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-1); }
 .is-num .workbench-table-progress { justify-content: flex-end; }
 .workbench-table-progress .workbench-bar { max-width: 60px; min-width: 24px; flex: 1; }
-.workbench-exams-status { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.workbench-prog-cell { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-1); }
+.workbench-prog-ok { color: var(--color-success); font-weight: var(--font-weight-semibold); }
+.workbench-prog-none { color: var(--color-text-muted); }
 .workbench-exams-table .app-button { padding: 0; font-size: var(--font-size-caption); }
 .workbench-skeleton { display: grid; gap: var(--space-3); padding: var(--space-4) 0; }
 .workbench-skeleton span { display: block; height: 16px; border-radius: var(--radius-tag); background: var(--color-bg-subtle); }
 .workbench-skeleton span:last-child { width: 70%; }
 @media (max-width: 1199px) {
   .workbench-grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
-  .workbench-sidebar { grid-column: 1; grid-row: auto; position: static; }
+  .workbench-sidebar { grid-column: 1; grid-row: auto; position: static; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
 }
 @media (max-width: 600px) {
+  .workbench-sidebar { grid-template-columns: minmax(0, 1fr); }
   .workbench-content { padding: var(--space-3); }
   .workbench-todo-row { flex-wrap: wrap; }
   .workbench-todo-copy { flex-basis: calc(100% - 60px); }

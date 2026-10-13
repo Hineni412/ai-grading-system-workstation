@@ -28,7 +28,8 @@ export function activeJobs(jobs: JobResponse[]): JobResponse[] {
   return jobs.filter(job => !TERMINAL_JOB_STATUSES.has(job.status))
 }
 export function buildTodoRows({ sessionId, overview, readiness, analysis, jobs, training }: HomeInputs) {
-  const need: TodoRow[] = [], continued: TodoRow[] = []
+  const need: TodoRow[] = [], suggestions: TodoRow[] = []
+  let reports: TodoRow | null = null
   const row = (id: string, title: string, fact: string, action: string, path: string,
     module = '考试', tone: StatusTone = 'info'): TodoRow => ({ id, title, fact, action, path, module, tone })
   const trainingRows: TodoRow[] = []
@@ -43,7 +44,7 @@ export function buildTodoRows({ sessionId, overview, readiness, analysis, jobs, 
       `发布 ${item.draft_name} 证据 ${item.publish_submission_count} 份`,
       '判定已完成，当前修订的训练证据尚未全部发布', '去发布', `${path}&from=workbench&focus=publish`, '训练', 'success'))
   }
-  if (sessionId === null || overview?.current_session?.id !== sessionId) return { need: trainingRows, continued }
+  if (sessionId === null || overview?.current_session?.id !== sessionId) return { need: trainingRows, suggestions, reports }
   const p = overview.progress, r = overview.review, a = overview.anomalies
   const gradingPath = `/sessions/${sessionId}/grading-run`
   if (readiness && !(readiness.scoring_configured && readiness.template_ready)) {
@@ -70,20 +71,16 @@ export function buildTodoRows({ sessionId, overview, readiness, analysis, jobs, 
       '难度、标签、解题证据或判定点未完成', '去补齐', '/question-bank?tab=todo', '题库', 'ai'))
   }
   need.push(...trainingRows)
-  if (p && p.graded_papers > 0) {
-    continued.push(row('walkthrough', '看卷 10 分钟', `${overview.current_session.name} · 已批改 ${p.graded_papers}/${p.matched_papers} 份`,
-      '去看卷', '/results?tab=overview&open=walkthrough'))
-  }
-  const reports = overview.personal_reports
-  if (reports && reports.stale > 0) {
-    continued.push(row('reports', `个人报告：${reports.stale} 人需重新生成`,
-      `${reports.current} 人已是最新`, '去查看', '/results?tab=details'))
+  const personalReports = overview.personal_reports
+  if (personalReports && personalReports.stale > 0) {
+    reports = row('reports', `个人报告：${personalReports.stale} 人需重新生成`,
+      `${personalReports.current} 人已是最新`, '去查看', '/results?tab=details')
   }
   if (p && p.matched_papers > 0 && p.graded_papers + p.failed_papers === p.matched_papers && r?.item_count === 0) {
-    continued.push(row('assembly', '按失分题组讲义', '班级组卷默认依据最近两场考试，列出得分率低于 70% 的题',
+    suggestions.push(row('assembly', '按失分题组讲义', '班级组卷默认依据最近两场考试，列出得分率低于 70% 的题',
       '去组卷', '/question-assembly?mode=assistant', '组卷', 'ai'))
   }
-  return { need, continued }
+  return { need, suggestions, reports }
 }
 
 export function buildExamSteps({ sessionId, overview, readiness }: HomeInputs): StepProgressStep[] {

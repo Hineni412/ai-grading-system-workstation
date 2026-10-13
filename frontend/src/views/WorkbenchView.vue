@@ -47,6 +47,14 @@ const jobs = computed(() => activeJobs(Object.values(jobStore.jobs)))
 const inputs = computed(() => ({ sessionId: sessionStore.selectedSessionId, overview: workbenchStore.overview,
   readiness: readiness.value, analysis: analysis.value, jobs: jobs.value, training: training.value }))
 const todo = computed(() => buildTodoRows(inputs.value))
+const need = computed(() => todo.value.need)
+const suggestions = computed(() => todo.value.suggestions)
+const reports = computed(() => todo.value.reports)
+const isLatest = computed(() => sessionStore.selectedSessionId !== null
+  && workbenchStore.overview?.recent_sessions[0]?.session.id === sessionStore.selectedSessionId)
+const cardSuggestions = computed(() => (isLatest.value ? suggestions.value : []))
+const reportsStale = computed(() => workbenchStore.overview?.personal_reports?.stale ?? 0)
+const reportsCurrent = computed(() => workbenchStore.overview?.personal_reports?.current ?? 0)
 const steps = computed(() => buildExamSteps(inputs.value))
 const currentStep = computed(() => steps.value.find(step => step.status !== 'done')?.id ?? 'results')
 const failures = computed(() => [workbenchStore.overviewState === 'error' && '考试概况',
@@ -156,9 +164,9 @@ async function selectExam(id: number, results: boolean) {
       <FeedbackBanner v-if="workbenchStore.overviewState === 'stale-error'" tone="warning" title="考试数据可能不是最新" :description="`上次更新 ${workbenchStore.overviewUpdatedAt?.replace('T', ' ').replace('Z', '') ?? '时间暂不可用'}`" action-label="重新加载" @action="loadExam" />
       <FeedbackBanner v-else-if="workbenchStore.overviewState === 'error'" tone="warning" title="考试概况暂时无法读取，其他入口仍可使用。" action-label="重新加载" @action="loadExam" />
       <div class="workbench-grid fx-stagger">
-        <WorkbenchTodoList :need="todo.need" :continued="todo.continued" :jobs="jobs" :loading="todoLoading" :failures="failures" @open="openPath" @retry="retry" />
+        <WorkbenchTodoList :need="need" :jobs="jobs" :loading="todoLoading" :failures="failures" @open="openPath" @retry="retry" />
         <aside class="workbench-sidebar fx-stagger">
-          <WorkbenchCurrentExam :overview="workbenchStore.overview" :state="workbenchStore.overviewState" :session-id="sessionStore.selectedSessionId" :steps="steps" :current="currentStep" @open="openPath" @select="selectStep" @retry="loadExam" />
+          <WorkbenchCurrentExam :overview="workbenchStore.overview" :state="workbenchStore.overviewState" :session-id="sessionStore.selectedSessionId" :steps="steps" :current="currentStep" :suggestions="cardSuggestions" :reports="reports" :reports-stale="reportsStale" :reports-current="reportsCurrent" @open="openPath" @select="selectStep" @retry="loadExam" />
           <WorkbenchSemesterInsight :overview="mastery.overview" :state="mastery.loadState" :volume-id="curriculumScope.selectedVolumeId" :term-label="currentTermLabel" :scope="mastery.scopeSelection" @open="openPath" @retry="mastery.load(curriculumScope.selectedVolumeId, true, false)" />
         </aside>
         <WorkbenchRecentExams :items="workbenchStore.overview?.recent_sessions ?? []" :session-id="sessionStore.selectedSessionId" :loading="workbenchStore.overviewState === 'loading'" :error="workbenchStore.overviewState === 'error'" @select="selectExam" @create="openPath('/sessions')" />

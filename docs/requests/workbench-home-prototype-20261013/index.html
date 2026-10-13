@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>工作台首页改版原型（静态 · 合成数据）</title>
+<link rel="stylesheet" href="proto.css">
+</head>
+<body>
+
+<div class="proto-note">
+<details class="box">
+<summary>说明 · 本原型为静态演示（合成数据），用于比较工作台首页的三种版式；点这里收起</summary>
+<ul>
+<li><b>用途</b>：比较工作台首页改版效果。全部使用合成样例数据（考试名、题型名都不是真实数据）；点击页面中的任何按钮只弹出小提示「原型：将进入 …」，不会跳转、不改数据。底部悬浮工具条切换「版式 / 场景 / 宽度」，刷新后保持。</li>
+<li><b>版式「现状」</b>：与当前正式首页一致，供对照。</li>
+<li><b>版式「第1档整理」</b>（改动 5 条）：<br>
+　1）待处理面板改名「需要处理」，标题数字只算必办事项（复核、答卷异常、继续批改、上传、配置、补题库资料、训练核对/复核/发布）；正在运行的任务单列一组、不计入数字；必办为 0 时收成一行绿色提示。<br>
+　2）「看卷 10 分钟」「按失分题组讲义」从待办移入当前考试卡，且只在当前考试是最新一场时出现。<br>
+　3）考试全部完成后，5 个步骤收成一行「✓ 已全部完成 · N 份答卷已批改」，点「查看步骤」可展开原步骤；卡内按钮：成绩中心（主按钮）、看卷 10 分钟、按失分题组讲义（后两个限最新一场）。个人报告需重新生成时在卡内提示一行，不受场次限制。<br>
+　4）最近考试表：合并「批改+状态」为「进度」列（全部完成显示「✓ 已完成」，否则进度条+份数，有待复核加黄色标签）；去掉「当前」徽标，改用浅色底+左侧色条标当前行；每一行都有「看成绩」。<br>
+　5）窄屏（约 1100 宽）：需要处理占满宽 → 当前考试卡与学情卡并排 → 最近考试占满宽；步骤只在卡片宽度内显示。</li>
+<li><b>版式「第1档+平均得分率」</b>：在第1档整理基础上，最近考试表加「平均得分率」列（表头标注样例数据），显示与上一场相比的增减；悬停可看到口径说明。</li>
+<li><b>尚未实现</b>：以上全部是原型，正式页面未做任何改动；「平均得分率」列需后端在最近考试数据中新增字段后才可实现。</li>
+</ul>
+</details>
+</div>
+
+<div class="shell w-wide v-now" id="shell">
+
+<aside class="sb">
+  <a class="sb-brand" data-go="工作台首页">
+    <span class="sb-mark" aria-hidden="true">✳</span>
+    <span class="sb-brand-copy"><strong>阅知</strong><small>阅卷与教学</small></span>
+  </a>
+  <div class="sb-exam">
+    <div class="sb-exam-label"><span>当前考试</span><span class="sb-exam-status" id="sb-status"></span></div>
+    <div class="sb-exam-name"><span id="sb-exam-name"></span><span class="sb-chev">⌄</span></div>
+    <div class="sb-exam-meta" id="sb-exam-meta"></div>
+  </div>
+  <button type="button" class="sb-link sb-cmd" data-go="快速跳转（Ctrl K）">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="7" cy="7" r="4.2"/><path d="m10.4 10.4 3.4 3.4"/></svg>
+    <span>快速跳转</span><kbd>Ctrl K</kbd>
+  </button>
+  <nav class="sb-nav" aria-label="主要导航">
+    <p class="sb-group">考试与阅卷</p>
+    <a class="sb-link" data-go="考试配置"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3.5" width="10" height="11" rx="1.5"/><path d="M6 3.5v-1.6h4v1.6M5.6 7.4h4.8M5.6 10.4h4.8"/></svg><span>考试配置</span></a>
+    <a class="sb-link" data-go="考试批改"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="8" cy="8" r="5.6"/><path d="m5.4 8.1 1.8 1.8 3.4-3.7"/></svg><span>考试批改</span></a>
+    <a class="sb-link" data-go="成绩中心"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2.5 13.5v-11M2.5 13.5h11"/><path d="M5.5 11.5v-3M8.3 11.5V5.5M11 11.5V7.5"/></svg><span>成绩中心</span></a>
+    <p class="sb-group">题库与组卷</p>
+    <a class="sb-link" data-go="题库管理"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2.6 4.4A1.4 1.4 0 0 1 4 3h9v10.4H4A1.4 1.4 0 0 0 2.6 14.8z"/><path d="M2.6 14.6V4.4M13 10.4H4a1.4 1.4 0 0 0-1.4 1.4"/></svg><span>题库管理</span></a>
+    <a class="sb-link" data-go="组卷工作台"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m8 2.2 5.4 2.9L8 8 2.6 5.1z"/><path d="m2.6 8 5.4 2.9L13.4 8M2.6 10.9 8 13.8l5.4-2.9"/></svg><span>组卷工作台</span></a>
+    <p class="sb-group">教学分析</p>
+    <a class="sb-link" data-go="知识与训练·学情"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="4" cy="4" r="1.7"/><circle cx="12" cy="8" r="1.7"/><circle cx="5" cy="12.2" r="1.7"/><path d="m5.5 4.8 4.9 2.3M11 9.4 6.4 11"/></svg><span>知识与训练</span></a>
+    <a class="sb-link" data-go="教研提升"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 1.8a4.1 4.1 0 0 0-2.5 7.4c.4.3.5.8.5 1.3h4c0-.5.1-1 .5-1.3A4.1 4.1 0 0 0 8 1.8z"/><path d="M6.4 12.6h3.2M7 14.4h2"/></svg><span>教研提升</span></a>
+  </nav>
+  <div class="sb-foot">
+    <a class="sb-link" data-go="设置"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="8" cy="8" r="2.1"/><path d="M8 1.6v1.9M8 12.5v1.9M1.6 8h1.9M12.5 8h1.9M3.5 3.5 4.8 4.8M11.2 11.2l1.3 1.3M12.5 3.5l-1.3 1.3M4.8 11.2l-1.3 1.3"/></svg><span>设置</span></a>
+    <a class="sb-link" data-go="收起导航"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.5"/><path d="M6.6 2.8v10.4"/></svg><span>收起导航</span></a>
+  </div>
+</aside>
+
+<main class="main">
+  <header class="ph">
+    <div class="ph-lead"><h1>工作台</h1><div class="ph-meta" id="ph-meta"></div></div>
+    <div class="ph-actions"><button type="button" class="btn secondary" data-go="考试配置页（新建考试）">新建考试</button></div>
+  </header>
+  <div class="wb-content">
+    <div class="wb-grid">
+      <section class="panel" id="todo-panel"></section>
+      <aside class="wb-side" id="wb-side"></aside>
+      <section class="panel wb-recent" id="recent-panel"></section>
+    </div>
+  </div>
+</main>
+</div>
+
+<div class="proto-toolbar" id="toolbar"></div>
+<div class="proto-toast" id="toast" role="status"></div>
+
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
