@@ -136,14 +136,17 @@ def serve_with_refresh(
     )
     key = (endpoint, request_json)
     flight_key = (endpoint, request_json, str(data_root.resolve(strict=False)))
+    created = False
     with _FLIGHTS_LOCK:
         flight = _FLIGHTS.get(flight_key)
         if flight is None:
             flight = _Flight(
                 _EXECUTOR.submit(_compute_and_store, compute, store, key)
             )
-            flight.future.add_done_callback(_complete(flight_key, flight))
             _FLIGHTS[flight_key] = flight
+            created = True
+    if created:
+        flight.future.add_done_callback(_complete(flight_key, flight))
     try:
         return flight.future.result(timeout=wait_seconds), False
     except TimeoutError:
