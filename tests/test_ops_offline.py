@@ -192,8 +192,17 @@ def _prepare_restore(
 
 def test_restore_rechecks_source_overlays_files_and_backs_up_latest_state(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     paths = _paths(tmp_path)
+    from backend.files.session_originals import measure_session_originals
+    from backend.repositories.access import GradingRepositoryAccess
+    original = data_transfer_service__write(paths.exams_dir / "session_1" / "page.png", "synthetic original")
+    repositories = GradingRepositoryAccess.__new__(GradingRepositoryAccess)
+    full_backup = create_safety_backup(paths=paths, reason="manual", operation_id=OPERATION_ID,
+                                      archive_names=("user_data/exams/session_1/page.png",))
+    assert measure_session_originals(repositories, paths.data_root, 1, shared_refs=set(),
+                                     backup_path=full_backup)["backup_covers_originals"] is True
     paths.taxonomy_state_path = tmp_path / "account-config" / "taxonomy_state_v2.json"
     paths.taxonomy_state_path.parent.mkdir()
     paths.taxonomy_state_path.write_text('{"decision":"old"}', encoding="utf-8")
@@ -234,14 +243,48 @@ def test_restore_rechecks_source_overlays_files_and_backs_up_latest_state(
         "backup_20200101_000000_manual.zip",
     ):
         _write_zip(paths.backups_dir / name, {"x.txt": b"x"})
-    journal = _prepare_restore(
-        paths,
-        {
-            "user_data/config/keep.txt": b"restored",
-            "user_data/config/new.txt": b"new",
-            "config/taxonomy-governance/state.json": b'{"decision":"restored"}',
-        },
-    )
+    import threading
+    from backend.ops.jobs import delete_backup
+    from backend.ops.journal import OpsOperationBusy
+    from backend.ops.lock import OpsOperationLock
+    reached_lock = threading.Event()
+    acquire = OpsOperationLock._acquire_process
+    deletion = []
+
+    def observe_lock(lock, deadline, cancel_check):
+        if threading.current_thread().name == "pending-backup-delete":
+            reached_lock.set()
+        return acquire(lock, deadline, cancel_check)
+
+    def delete_during_prepare():
+        try:
+            delete_backup(paths, "backup_20200101_000000_manual.zip")
+        except OpsOperationBusy:
+            deletion.append("blocked")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(OpsOperationLock, "_acquire_process", observe_lock)
+        with OpsOperationLock(paths.ops_state_dir).acquire():
+            worker = threading.Thread(target=delete_during_prepare, name="pending-backup-delete")
+            worker.start()
+            assert reached_lock.wait(2)
+            journal = _prepare_restore(
+                paths,
+                {
+                    "user_data/config/keep.txt": b"restored",
+                    "user_data/config/new.txt": b"new",
+                    "config/taxonomy-governance/state.json": b'{"decision":"restored"}',
+                },
+            )
+        worker.join(3)
+        assert not worker.is_alive()
+    assert deletion == ["blocked"]
+    partial_backup = paths.backups_dir / "backup_source_manual.zip"
+    assert measure_session_originals(repositories, paths.data_root, 1, shared_refs=set(),
+                                     backup_path=partial_backup)["backup_covers_originals"] is False
+    original.write_text("changed original content", encoding="utf-8")
+    assert measure_session_originals(repositories, paths.data_root, 1, shared_refs=set(),
+                                     backup_path=full_backup)["backup_covers_originals"] is False
     (paths.config_dir / "keep.txt").write_text("latest", encoding="utf-8")
     (paths.config_dir / "unlisted.txt").write_text("preserved", encoding="utf-8")
 

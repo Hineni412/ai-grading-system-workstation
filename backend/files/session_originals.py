@@ -5,6 +5,7 @@ import json
 import os
 import re
 import stat
+import zipfile
 from collections.abc import Callable, Iterator
 from datetime import datetime
 from pathlib import Path
@@ -167,15 +168,32 @@ def _candidates(db: Any, data_root: Path, session_id: int, *, shared_refs: set[P
     return candidates, release, kept
 
 
-def measure_session_originals(db: Any, data_root: Path, session_id: int, *, shared_refs: set[Path] | None = None) -> dict[str, int]:
+def measure_session_originals(db: Any, data_root: Path, session_id: int, *, shared_refs: set[Path] | None = None,
+                              backup_path: Path | None = None) -> dict[str, int | bool]:
     candidates, release, kept = _candidates(db, Path(data_root), session_id, shared_refs=shared_refs)
-    sizes = {path: path.stat().st_size for path in candidates}
+    stats = {path: path.stat() for path in candidates}
+    sizes = {path: info.st_size for path, info in stats.items()}
     scans = sum(size for path, size in sizes.items() if candidates[path] == "scans")
     pages = sum(size for path, size in sizes.items() if candidates[path] == "pages")
     annotations = sum(size for path, size in sizes.items() if candidates[path] == "annotations")
+    originals = {path: info for path, info in stats.items() if candidates[path] != "annotations"}
+    covered = False
+    if backup_path is not None and originals:
+        try:
+            with zipfile.ZipFile(backup_path) as archive:
+                members = {item.filename: item for item in archive.infolist() if not item.is_dir()}
+                covered = all(
+                    (member := members.get("user_data/" + path.relative_to(data_root.resolve()).as_posix())) is not None
+                    and member.file_size == info.st_size
+                    # ZIP timestamps have two-second precision.
+                    and member.date_time >= tuple(datetime.fromtimestamp(info.st_mtime).timetuple()[:5]) + (int(info.st_mtime) % 60 // 2 * 2,)
+                    for path, info in originals.items()
+                )
+        except (OSError, ValueError, zipfile.BadZipFile):
+            covered = False
     return {"scan_bytes": scans, "page_bytes": pages, "annotation_bytes": annotations,
             "release_bytes": sum(sizes[p] for p in release), "clear_bytes": scans + pages + annotations,
-            "kept_unrendered": kept}
+            "kept_unrendered": kept, "backup_covers_originals": covered}
 
 
 def _delete_files(data_root: Path, session_id: int, receipt: dict[str, Any], candidates: dict[Path, str]) -> dict[str, int]:

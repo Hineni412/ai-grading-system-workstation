@@ -106,7 +106,6 @@ def _originals_snapshot(session_id, db, data_root, workspace, review_service, ba
     if session.get("is_deleted"):
         raise ApiError(404, "session_not_found", "未找到这场考试。")
     state = originals_state(data_root, session_id)
-    measured = measure_session_originals(db, data_root, session_id, shared_refs=shared_refs)
     with closing(db._connect()) as conn:
         unmatched = conn.execute("SELECT COUNT(*) FROM exam_papers WHERE session_id = ? AND COALESCE(match_status, '') != 'matched'", (session_id,)).fetchone()[0]
         latest_paper = conn.execute("SELECT MAX(created_at) FROM exam_papers WHERE session_id = ?", (session_id,)).fetchone()[0]
@@ -125,17 +124,22 @@ def _originals_snapshot(session_id, db, data_root, workspace, review_service, ba
         if any(q.needs_review_count + q.ungraded_count + q.failed_count for q in questions):
             reason = "复核完成后可清理"
     latest_backup = None
+    backup_path = None
     covered = False
     if backup_service is not None:
         backups = [item for item in backup_service.list_backups(100)["items"] if item["kind"] == "zip"]
         if backups:
             latest_backup = backups[0]["created_at"]
+            backup_path = backup_service.paths.backups_dir / backups[0]["filename"]
             try:
                 stamp = datetime.fromisoformat(latest_backup)
                 dates = [latest_paper, _receipt(data_root, session_id).get("scans_released_at")]
                 covered = bool(latest_paper) and all(stamp > datetime.fromisoformat(t) for t in dates if t)
             except (ValueError, TypeError):
                 covered = False
+    measured = measure_session_originals(db, data_root, session_id, shared_refs=shared_refs,
+                                         backup_path=backup_path if covered else None)
+    covered = covered and measured["backup_covers_originals"]
     return {**measured, "originals_state": state, "revision": f"{impact['revision']}:{state}",
             "can_release_scans": reason is None and measured["release_bytes"] > 0 and state not in {"clearing", "cleared"},
             "can_clear": reason is None and state != "cleared", "blocked_reason": reason,

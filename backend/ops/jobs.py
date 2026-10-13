@@ -89,9 +89,9 @@ def delete_backup(paths: Any, filename: str) -> int:
     if name != Path(name).name or _BACKUP_NAME.fullmatch(name) is None:
         raise ValueError("backup filename is invalid")
     journal = OpsOperationJournal(Path(paths.ops_state_dir))
-    if journal.pending_exists():
-        raise OpsOperationBusy("another ops operation is pending")
     with OpsOperationLock(Path(paths.ops_state_dir), timeout_seconds=2).acquire():
+        if journal.pending_exists():
+            raise OpsOperationBusy("another ops operation is pending")
         target = Path(paths.backups_dir) / name
         if target.is_symlink() or not target.is_file():
             raise FileNotFoundError(name)
