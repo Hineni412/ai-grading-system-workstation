@@ -11,6 +11,7 @@ import sqlite3
 import threading
 from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Iterable, Mapping
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -1338,11 +1339,28 @@ class DiagnosisProfileService:
                 for section in chapter["sections"]
             }
         )
-        bank_ids = {p.bank_question_id for projection in projections.values() for p in projection.items if p.bank_question_id}
-        from question_bank.services.question_read_service import QuestionBankReadService
+        bank_ids = sorted({p.bank_question_id for projection in projections.values() for p in projection.items
+                           if p.bank_question_id and p.bank_question_id > 0})
+        from question_bank.services.question_read_service import _read_connection
         from question_bank.services.standard_difficulty import difficulty_level
-        bank_difficulty = {int(q['id']): difficulty_level(q.get('difficulty')) for q in
-            QuestionBankReadService(self.question_bank_db_path).get_questions(sorted(bank_ids))} if bank_ids else {}
+        bank_difficulty: dict[int, int | None] = {}
+        if bank_ids:
+            connection_scope = (nullcontext(self.question_bank_connection)
+                                if self.question_bank_connection is not None
+                                else _read_connection(self.question_bank_db_path))
+            with connection_scope as connection:
+                for offset in range(0, len(bank_ids), 500):
+                    batch = bank_ids[offset:offset + 500]
+                    placeholders = ",".join("?" for _ in batch)
+                    rows = connection.execute(
+                        f"""SELECT q.id, q.difficulty
+                            FROM questions q LEFT JOIN papers p ON p.id = q.paper_id
+                            WHERE q.id IN ({placeholders})
+                              AND COALESCE(q.is_deleted, 0) = 0
+                              AND COALESCE(p.import_status, '') <> 'deleted'""",
+                        batch,
+                    ).fetchall()
+                    bank_difficulty.update({int(row["id"]): difficulty_level(row["difficulty"]) for row in rows})
         categories = ("概念理解", "计算与化简", "审题与条件", "方法与思路", "过程与依据", "书写与规范", "未作答")
         exams = []
         for session in sorted(sessions, key=lambda s: (str(s.get("created_at") or ""), int(s["id"])), reverse=True):
