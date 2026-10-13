@@ -15,7 +15,6 @@ import QuestionSortControl from './QuestionSortControl.vue'
 import QuestionLedger from './QuestionLedger.vue'
 import FeedbackBanner from '../design-system/FeedbackBanner.vue'
 import StatePanel from '../design-system/StatePanel.vue'
-import AppIconButton from '../design-system/AppIconButton.vue'
 import AppButton from '../design-system/AppButton.vue'
 import '../../styles/knowledge-overview.css'
 
@@ -28,7 +27,6 @@ const route = useRoute()
 const router = useRouter()
 const selection = computed(() => parseTagSelection(route.query))
 const selectionKey = computed(() => JSON.stringify(selection.value))
-const railOpen = ref(false)
 const layout = ref<HTMLElement | null>(null)
 const results = ref<HTMLElement | null>(null)
 const notice = ref('')
@@ -44,13 +42,6 @@ const volumeLabel = computed(() => {
   return volume ? `${volume.grade}${volume.semester.startsWith('上') ? '上册' : volume.semester.startsWith('下') ? '下册' : ''}` : ''
 })
 const chapters = computed(() => props.index?.chapters ?? [])
-const railLabel = computed(() => {
-  if (!selection.value.sections.length) return '全部章节'
-  if (selection.value.sections.length > 1) return '多个章节'
-  const id = selection.value.sections[0]
-  const chapter = chapters.value.find(chapter => chapter.id === id || chapter.sections.some(section => section.id === id))
-  return chapter?.label.match(/^第[^章]+章/)?.[0] ?? chapter?.label ?? '所选章节'
-})
 const duplicateCount = computed(() => bank.questions.reduce((count, question) => count + (question.duplicate_members?.length ?? 0), 0))
 const sourcePapers = computed(() => bank.papers.filter(paper => paper.curriculum_volume_id === scope.selectedVolumeId))
 const filteredSourcePapers = computed(() => {
@@ -197,12 +188,8 @@ onBeforeUnmount(() => {
   <StatePanel v-if="!scope.selectedVolumeId" kind="empty" title="请先选择教学学期" description="在左侧栏“当前考试”中选择教学学期。" />
   <StatePanel v-else-if="loading && !index" kind="loading" title="正在读取题目…" />
   <StatePanel v-else-if="error && !index" kind="error" :title="error" retry-label="重新加载" @retry="emit('retry')" />
-  <div v-else-if="index" ref="layout" class="qb-tag-layout" :class="{ 'is-reading': bank.selectedQuestionId, 'is-chapter-narrow': bank.selectedQuestionId && !railOpen }">
+  <div v-else-if="index" ref="layout" class="qb-tag-layout">
     <aside class="qb-chapter-pane qb-browse-pane">
-      <div v-if="bank.selectedQuestionId" class="qb-chapter-rail">
-        <AppIconButton class="qb-rail-toggle" :label="railOpen ? '收窄章节列表' : `展开章节列表 · ${railLabel}`" icon="book-open" variant="secondary" :aria-expanded="railOpen" @click="railOpen = !railOpen" />
-        <span v-if="!railOpen">{{ railLabel }}</span>
-      </div>
       <div class="qb-chapter-overview-scope">
         <OverviewScopeBar />
         <p class="qb-chapter-evidence-note">掌握度与人数按所选学生统计；需关注 = 还不稳 + 明显薄弱。</p>

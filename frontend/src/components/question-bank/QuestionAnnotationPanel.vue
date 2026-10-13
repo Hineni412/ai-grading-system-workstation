@@ -451,13 +451,14 @@ watch(() => store.selectedQuestionId, () => { typeEditing.value = false; typeErr
 
 </script>
 <template>
-  <div class="qb-annotation">
+  <div class="qb-annotation" :class="{ 'is-editing': editing || typeEditing || patternEdit }">
     <p v-if="store.detailState === 'loading'" role="status">正在打开题目详情…</p>
     <div v-else-if="store.detailState === 'error'" role="alert">{{ store.detailError }} <AppButton variant="ghost" size="small" @click="store.selectQuestion(store.selectedQuestionId)">重新打开</AppButton></div>
     <template v-else-if="store.detail">
       <div class="qb-expanded-body">
         <QuestionInsights :question="question" expandable />
         <div class="qb-expanded-columns">
+          <div class="qb-expanded-main">
           <div class="qb-expanded-stem">
             <QuestionContentRenderer :blocks="store.detail.rich_content.question_blocks" :fallback="store.detail.question_text" image-alt="题目配图" media-mode="detail" />
             <details class="qb-answer-section"><summary>答案与解析</summary><QuestionContentRenderer :blocks="store.detail.rich_content.answer_blocks" :fallback="store.detail.answer_text" empty-label="暂未录入答案或解析" image-alt="答案配图" media-mode="detail" /></details>
@@ -466,6 +467,32 @@ watch(() => store.selectedQuestionId, () => { typeEditing.value = false; typeErr
               <slot name="similar" />
             </div>
           </div>
+          <section ref="pointsSection" class="qb-evidence-summary">
+            <header class="qb-section-heading">
+              <h3>判定点（评分依据） <small v-if="points.length && criterion?.available && criterion.current_version?.quality_status === 'passed' && !store.detail.criteria_needs_review">{{ points.length }} 个判定点 · 全部质检通过</small><small v-else-if="points.length">{{ points.length }} 个判定点</small></h3>
+              <div v-if="editing"><AppButton variant="primary" @click="saveAnnotation">保存</AppButton><AppButton variant="ghost" @click="cancelAnnotation">取消</AppButton></div>
+            </header>
+            <p v-if="editing" class="qb-help">修改不会改写已有考试成绩与报告</p>
+            <FeedbackBanner v-if="evidenceError" role="alert" tone="error" :description="evidenceError" />
+            <p v-else-if="!points.length" class="qb-help">尚无可用判定点，请核对判定点。</p>
+            <template v-for="part in evidence?.available ? evidence.evidence?.parts ?? [] : []" :key="part.part_id">
+            <p v-show="!editing" class="qb-part-heading">{{ part.label || part.part_id }} · {{ responseModeLabels[part.response_mode] }} · 小问难度 {{ partDifficulty(part.part_id) }}</p>
+            <div v-for="(point, index) in part.evidence_points" v-show="!editing" :key="point.evidence_point_id" class="qb-evidence-row">
+              <span>{{ index + 1 }}</span>
+              <div><strong>{{ point.target }}</strong><span v-if="store.detail.criteria_needs_review" class="qb-review-badge">待审核</span><p v-if="point.observable_evidence !== point.target">{{ point.observable_evidence }}</p>
+                <p v-if="point.answer_kind === 'conditions'" class="qb-help">按条件判对，参考答案只是示例。</p>
+                <div v-if="pointKnowledge(point).length" class="qb-tagpanel__values">
+                  <span v-for="name in pointKnowledge(point)" :key="name" class="qb-dim-tag is-kp">{{ name }}</span>
+                </div>
+                <p v-if="pointPrerequisites(point).length" class="qb-help">前置知识 · {{ pointPrerequisites(point).join('、') }}</p>
+                <div v-for="item in mappedPatterns(point.evidence_point_id)" :key="item.id" class="qb-point-error"><strong>↳ {{ item.pattern }}</strong><p>{{ item.explanation }}</p><AppButton variant="ghost" size="small" @click="beginPatternEdit(item)">调整</AppButton> <AppButton :disabled="patternSaving" variant="ghost" size="small" @click="changePattern(item, 'reject')">驳回</AppButton></div>
+              </div>
+            </div>
+            </template>
+            <div v-show="editing"><TrainingCriterionReview v-if="store.selectedQuestionId" ref="review" :question-id="store.selectedQuestionId" :skill-labels="skillLabels" :loader="loadCriterion" :evidence-loader="loadEvidence" @updated="criterion = $event" /></div>
+          </section>
+          </div>
+          <div class="qb-expanded-side">
           <aside class="qb-tagpanel" aria-label="题目标签">
             <div class="qb-section-heading"><h3>题目标签</h3>
               <details class="qb-card-menu is-text"><summary>编辑 ▾</summary><div @click="($event.currentTarget as HTMLElement).closest('details')?.removeAttribute('open')">
@@ -495,33 +522,7 @@ watch(() => store.selectedQuestionId, () => { typeEditing.value = false; typeErr
               <AppButton variant="primary" :disabled="!primaryType || typeSaving" @click="saveTypes">{{ typeSaving ? '正在保存…' : '保存题型' }}</AppButton><AppButton variant="ghost" :disabled="typeSaving" @click="typeEditing = false">取消</AppButton>
             </div><FeedbackBanner v-if="typeError" role="alert" tone="error" :description="typeError" />
           </aside>
-        </div>
-        <div class="qb-evidence-grid" :class="{ 'has-patterns': showPatterns }">
-          <section ref="pointsSection" class="qb-evidence-summary">
-            <header class="qb-section-heading">
-              <h3>判定点（评分依据） <small v-if="points.length && criterion?.available && criterion.current_version?.quality_status === 'passed' && !store.detail.criteria_needs_review">{{ points.length }} 个判定点 · 全部质检通过</small><small v-else-if="points.length">{{ points.length }} 个判定点</small></h3>
-              <div v-if="editing"><AppButton variant="primary" @click="saveAnnotation">保存</AppButton><AppButton variant="ghost" @click="cancelAnnotation">取消</AppButton></div>
-            </header>
-            <p v-if="editing" class="qb-help">修改不会改写已有考试成绩与报告</p>
-            <FeedbackBanner v-if="evidenceError" role="alert" tone="error" :description="evidenceError" />
-            <p v-else-if="!points.length" class="qb-help">尚无可用判定点，请核对判定点。</p>
-            <template v-for="part in evidence?.available ? evidence.evidence?.parts ?? [] : []" :key="part.part_id">
-            <p v-show="!editing" class="qb-part-heading">{{ part.label || part.part_id }} · {{ responseModeLabels[part.response_mode] }} · 小问难度 {{ partDifficulty(part.part_id) }}</p>
-            <div v-for="(point, index) in part.evidence_points" v-show="!editing" :key="point.evidence_point_id" class="qb-evidence-row">
-              <span>{{ index + 1 }}</span>
-              <div><strong>{{ point.target }}</strong><span v-if="store.detail.criteria_needs_review" class="qb-review-badge">待审核</span><p v-if="point.observable_evidence !== point.target">{{ point.observable_evidence }}</p>
-                <p v-if="point.answer_kind === 'conditions'" class="qb-help">按条件判对，参考答案只是示例。</p>
-                <div v-if="pointKnowledge(point).length" class="qb-tagpanel__values">
-                  <span v-for="name in pointKnowledge(point)" :key="name" class="qb-dim-tag is-kp">{{ name }}</span>
-                </div>
-                <p v-if="pointPrerequisites(point).length" class="qb-help">前置知识 · {{ pointPrerequisites(point).join('、') }}</p>
-                <div v-for="item in mappedPatterns(point.evidence_point_id)" :key="item.id" class="qb-point-error"><strong>↳ {{ item.pattern }}</strong><p>{{ item.explanation }}</p><AppButton variant="ghost" size="small" @click="beginPatternEdit(item)">调整</AppButton> <AppButton :disabled="patternSaving" variant="ghost" size="small" @click="changePattern(item, 'reject')">驳回</AppButton></div>
-              </div>
-            </div>
-            </template>
-            <div v-show="editing"><TrainingCriterionReview v-if="store.selectedQuestionId" ref="review" :question-id="store.selectedQuestionId" :skill-labels="skillLabels" :loader="loadCriterion" :evidence-loader="loadEvidence" @updated="criterion = $event" /></div>
-          </section>
-          <section v-if="wrongOptionRows.length || otherPatterns.length || patternEdit || patternError || patternMessage" class="qb-paper-section qb-patterns" aria-labelledby="qb-patterns-title">
+          <section v-if="showPatterns" class="qb-paper-section qb-patterns" aria-labelledby="qb-patterns-title">
             <header class="qb-section-heading">
               <div>
                 <h3 id="qb-patterns-title">本题典型错法</h3>
@@ -581,8 +582,7 @@ watch(() => store.selectedQuestionId, () => { typeEditing.value = false; typeErr
             <FeedbackBanner v-if="patternError" role="alert" tone="error" :description="patternError" />
             <FeedbackBanner v-if="patternMessage" role="status" tone="info" :description="patternMessage" />
           </section>
-
-
+          </div>
         </div>
 
         <details ref="propertyEditor" class="qb-tags qb-property-editor"><summary>编辑题目属性 / 选择小节</summary>
@@ -697,7 +697,7 @@ watch(() => store.selectedQuestionId, () => { typeEditing.value = false; typeErr
 </template>
 
 <style scoped>
-.qb-part-heading { margin: 12px 0 4px; padding: 7px 10px; background: var(--color-bg-subtle); color: var(--color-text-secondary); font-size: var(--font-size-caption); }
+.qb-part-heading { margin: 6px 0 2px; padding: 4px 8px; background: var(--color-bg-subtle); color: var(--color-text-secondary); font-size: var(--font-size-caption); }
 .qb-type-editor { display: grid; gap: 10px; margin-top: 12px; }
 .qb-type-editor fieldset { max-height: 180px; overflow: auto; border: 1px solid var(--color-border-subtle); }
 .qb-type-editor fieldset label { display: block; font-size: var(--font-size-caption); }

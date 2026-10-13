@@ -58,10 +58,21 @@ function openSimilar(question: QuestionBankListItem): void {
 function closeSimilar(): void {
   similarSource.value = null
 }
+
+const BLANK_IN_CARD = '.qb-inline-card, .qb-annotation, .qb-expanded-body, .qb-expanded-columns, .qb-expanded-main, .qb-expanded-side, .qb-expanded-stem, .qb-evidence-summary, .qb-patterns'
+function collapseOnBlank(event: MouseEvent) {
+  const id = store.selectedQuestionId
+  const card = id ? document.getElementById(`qb-question-${id}`) : null
+  const target = event.target
+  if (!card || !(target instanceof Element) || !window.getSelection()?.isCollapsed) return
+  if (!target.matches(card.contains(target) ? BLANK_IN_CARD : '.qb-ledger, .qb-question-list')) return
+  if (card.querySelector('.qb-annotation.is-editing, details.qb-property-editor[open]')) return
+  void store.selectQuestion(null)
+}
 </script>
 
 <template>
-  <section class="qb-ledger" aria-labelledby="qb-ledger-title">
+  <section class="qb-ledger" aria-labelledby="qb-ledger-title" @click="collapseOnBlank">
     <header class="qb-section-heading">
       <div>
         <h2 id="qb-ledger-title">试题内容</h2>
