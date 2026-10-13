@@ -2368,3 +2368,19 @@ button.class-analysis__score-chip:focus-visible {
 .class-analysis__toolbar { flex-wrap: wrap; }
 .class-analysis__step-scope { flex: 1 0 100%; order: 1; margin: 0; color: var(--color-text-muted); font-size: var(--font-size-caption); white-space: normal; }
 .key-step__detail .class-analysis__note { color: var(--color-text-muted); }
+
+.overview__combined {
+  font-style: normal;
+  font-size: var(--font-size-caption);
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 0 4px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+.results-matrix__combined-note {
+  font-size: var(--font-size-caption);
+  color: var(--color-text-secondary);
+}

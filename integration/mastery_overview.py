@@ -69,6 +69,9 @@ def _exam_question_totals(
                 or float(assessment.get("evidence_weight", 1.0) or 0) < 0.999
             ):
                 continue
+            if ref.get("combined_group_id"):
+                # 合并给分成员的得分率只按组展示，不进入本场原题示例。
+                continue
             try:
                 session_id = int(ref.get("session_id") or 0)
                 score = float(ref.get("question_score_awarded", ref.get("score_awarded")))

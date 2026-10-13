@@ -335,6 +335,7 @@ def create_app(
         results_center_router,
         review_router,
         scan_router,
+        score_import_router,
         sessions_router,
         students_router,
         templates_router,
@@ -358,6 +359,7 @@ def create_app(
     api.include_router(results_center_router)
     api.include_router(review_router)
     api.include_router(scan_router)
+    api.include_router(score_import_router)
     api.include_router(sessions_router)
     api.include_router(students_router)
     api.include_router(templates_router)

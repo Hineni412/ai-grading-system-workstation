@@ -4,8 +4,10 @@ import { useRoute } from 'vue-router'
 
 import { TERMINAL_JOB_STATUSES } from '../api/jobs'
 import { fetchReviewQuestions, type ReviewQuestionSummary } from '../api/review'
+import { fetchScoreImportState } from '../api/score-import'
 import FeedbackBanner from '../components/design-system/FeedbackBanner.vue'
 import PageHeader from '../components/design-system/PageHeader.vue'
+import StatePanel from '../components/design-system/StatePanel.vue'
 import StepProgress, { type StepProgressStep } from '../components/design-system/StepProgress.vue'
 import ScanGradeStage from '../components/scan-grading/ScanGradeStage.vue'
 import ScanPreflightStage from '../components/scan-grading/ScanPreflightStage.vue'
@@ -27,6 +29,7 @@ const store = useScanGradingStore()
 const resultsStore = useResultsCenterStore()
 const sessionId = computed(() => Number(route.params.sessionId))
 const gradingSubmissionPending = ref(false)
+const isImportSession = ref(false)
 const interventionQuestions = ref<ReviewQuestionSummary[]>([])
 const interventionState = ref<InterventionState>('idle')
 // 工作区恢复超过 400ms 才显示横幅，常规重进不再闪提示。
@@ -144,6 +147,11 @@ async function loadInterventionSummary(id: number): Promise<void> {
 async function loadRoute(): Promise<void> {
   const id = sessionId.value
   if (!Number.isSafeInteger(id) || id <= 0) return
+  isImportSession.value = false
+  try {
+    isImportSession.value = (await fetchScoreImportState(id)).kind === 'zhixue_import'
+  } catch { /* kind probe failed: keep the normal scan flow */ }
+  if (sessionId.value !== id || isImportSession.value) return
   const cached = store.cachedInterventionSummary(id)
   interventionQuestions.value = cached ?? []
   interventionState.value = cached ? 'ready' : 'idle'
@@ -201,6 +209,7 @@ watch(
     <PageHeader title="考试批改">
       <template #actions>
         <StepProgress
+          v-if="!isImportSession"
           class="scan-stage-rail"
           aria-label="批改执行阶段"
           :steps="stageSteps"
@@ -211,7 +220,19 @@ watch(
     </PageHeader>
 
     <div class="scan-grading__body">
-      <main class="scan-grading__main"><FeedbackBanner v-if="store.errorMessage" role="alert" tone="info" :description="store.errorMessage" /><FeedbackBanner v-if="showRestoreBanner" role="status" tone="info" description="正在恢复本次批改工作区…" />
+      <main class="scan-grading__main">
+    <StatePanel
+      v-if="isImportSession"
+      kind="empty"
+      title="这是智学网成绩导入考试"
+      description="这场考试通过上传智学网成绩表录入成绩，没有答卷扫描和批改步骤。"
+    >
+      <template #actions>
+        <a class="import-link" :href="`/sessions/${sessionId}/import`">去导入成绩 →</a>
+      </template>
+    </StatePanel>
+    <template v-else>
+    <FeedbackBanner v-if="store.errorMessage" role="alert" tone="info" :description="store.errorMessage" /><FeedbackBanner v-if="showRestoreBanner" role="status" tone="info" description="正在恢复本次批改工作区…" />
 
     <Transition v-if="store.workspace" :name="stageTransition" mode="out-in">
       <ScanPreflightStage
@@ -237,9 +258,14 @@ watch(
         @select-stage="selectStage"
       />
     </Transition>
+    </template>
       </main>
     </div>
 
     <ScanViewerDialog :recon="preflight" />
   </article>
 </template>
+
+<style scoped>
+.import-link { font-weight: var(--font-weight-semibold); }
+</style>

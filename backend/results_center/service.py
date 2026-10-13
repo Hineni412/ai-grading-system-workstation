@@ -23,6 +23,7 @@ class ResultsCenterItem:
     result_id: int | None
     detail_id: int | None
     alternative_solution_detected: bool = False
+    combined_group: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +37,7 @@ class ResultsCenterQuestion:
     ai_ready_count: int
     teacher_final_count: int
     average_score: float | None
+    combined_group: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,7 +148,12 @@ class ResultsCenterService:
             average_score=_average(complete_scores),
             highest_score=max(complete_scores) if complete_scores else None,
             lowest_score=min(complete_scores) if complete_scores else None,
-            max_score=sum(question.max_score for question in questions),
+            # 合并给分组满分已包含在成员评分项内，不再重复计入卷面总分。
+        max_score=sum(
+            question.max_score
+            for question in questions
+            if not question.combined_group
+        ),
             ungraded_item_count=_count_status(public_items, "ungraded"),
             failed_item_count=_count_status(public_items, "failed"),
             needs_review_item_count=_count_status(public_items, "ai_review"),
@@ -194,6 +201,7 @@ def _public_item(item: ReviewItem) -> ResultsCenterItem:
             item.question_type not in {"choice", "fill_blank"}
             and item.metadata.get("alternative_solution_detected") is True
         ),
+        combined_group=item.metadata.get("combined_group_id") is not None,
     )
 
 
@@ -239,6 +247,7 @@ def _question_summary(
         ai_ready_count=_count_status(items, "ai_ready"),
         teacher_final_count=_count_status(items, "teacher_final"),
         average_score=_average(scored),
+        combined_group=any(item.combined_group for item in items),
     )
 
 

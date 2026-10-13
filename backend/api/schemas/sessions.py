@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import re
+from datetime import date
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from backend.api.schemas.config import ConfigAmbiguousAssetDecisionRequest
+
+SessionKind = Literal["scan", "zhixue_import"]
 
 
 class CreateSessionRequest(BaseModel):
@@ -14,6 +18,8 @@ class CreateSessionRequest(BaseModel):
     source_paper_path: str = ""
     source_paper_sha256: str = ""
     curriculum_volume_id: str | None = Field(default=None, max_length=80)
+    kind: SessionKind = "scan"
+    exam_date: date | None = None
 
     @field_validator("name", "rubric_path", "answer_key_path")
     @classmethod
@@ -34,6 +40,8 @@ class CreateSessionDraftRequest(BaseModel):
 
     name: str
     curriculum_volume_id: str | None = Field(default=None, max_length=80)
+    kind: SessionKind = "scan"
+    exam_date: date | None = None
 
 
 class RenameSessionRequest(BaseModel):
@@ -160,6 +168,8 @@ class SessionSummary(BaseModel):
     deleted_at: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    kind: SessionKind = "scan"
+    exam_date: str | None = None
 
 
 class SessionDetail(SessionSummary):

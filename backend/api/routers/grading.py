@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends
 
 from backend.api.app import ApiError
@@ -9,8 +11,10 @@ from backend.api.dependencies import (
     get_grading_db,
     get_job_manager,
     get_scan_grading_workspace,
+    get_templates_dir,
 )
 from backend.api.routers.jobs import _job_response
+from backend.api.routers.score_import import reject_if_import_session
 from backend.api.routers.sessions import _require_session
 from backend.api.schemas.grading import (
     GradingPlanRequest,
@@ -110,8 +114,10 @@ def preview_session_grading(
     request: GradingPlanRequest,
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
+    templates_dir: Path = Depends(get_templates_dir),
 ) -> GradingPlanResponse:
     session = _require_session(db.sessions, session_id)
+    reject_if_import_session(templates_dir, session_id)
     _require_exam_intake_complete(db, session_id)
     try:
         workspace_state = workspace.get_workspace(session_id)
@@ -425,8 +431,10 @@ def run_session_grading(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     manager: JobManager = Depends(get_job_manager),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
+    templates_dir: Path = Depends(get_templates_dir),
 ) -> JobResponse:
     _require_session(db.sessions, session_id)
+    reject_if_import_session(templates_dir, session_id)
     request = request or GradingRunRequest()
     _require_exam_intake_complete(db, session_id)
     if workspace.upload_batch_exists(session_id):

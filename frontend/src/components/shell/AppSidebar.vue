@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import brandMarkUrl from '../../assets/brand-mark.svg'
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { PanelLeftClose, PanelLeftOpen, Search } from '@lucide/vue'
 
 import {
   gradingRunRouteDefinition,
   navigationGroups,
+  scoreImportRouteDefinition,
   settingsNavigationItems,
   type WorkspaceRouteDefinition,
+  type WorkspaceNavigationGroup,
 } from '../../navigation'
 import { useSessionStore } from '../../stores/session'
 import AppIcon from './AppIcon.vue'
@@ -32,8 +34,20 @@ const emit = defineEmits<{
 const route = useRoute()
 const sessionStore = useSessionStore()
 
+// 导入考试没有扫描批改环节：侧栏把「考试批改」换成「导入成绩」。
+const visibleGroups = computed<readonly WorkspaceNavigationGroup[]>(() => {
+  if (sessionStore.currentSession?.kind !== 'zhixue_import') return navigationGroups
+  return navigationGroups.map((group) => (group.id !== 'exam' ? group : {
+    ...group,
+    items: group.items.map((item) => (
+      item.id === 'grading' ? scoreImportRouteDefinition : item
+    )),
+  }))
+})
+
 function isActive(item: WorkspaceRouteDefinition): boolean {
   if (route.name === gradingRunRouteDefinition.id) return item.id === 'grading'
+  if (route.name === scoreImportRouteDefinition.id) return item.id === 'score-import'
   if (
     item.id === 'knowledge-overview'
     && ['knowledge-graph', 'training', 'student-evidence'].includes(String(route.name))
@@ -165,7 +179,7 @@ onBeforeUnmount(() => {
         :style="navigationIndicator"
       />
       <section
-        v-for="group in navigationGroups"
+        v-for="group in visibleGroups"
         :key="group.id"
         class="app-sidebar__group"
         :aria-labelledby="`navigation-group-${group.id}`"

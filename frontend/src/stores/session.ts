@@ -7,6 +7,7 @@ import {
   renameSession,
   updateSessionMetadata,
   type SessionDraftCreator,
+  type SessionDraftOptions,
   type SessionLoader,
   type SessionMetadataUpdater,
   type SessionRenamer,
@@ -78,18 +79,17 @@ export const useSessionStore = defineStore('session', () => {
 
   async function createDraft(
     name: string,
+    options: SessionDraftOptions = {},
     creator: SessionDraftCreator = createSessionDraft,
     loader: SessionLoader = fetchSessions,
-    curriculumVolumeId: string | null = null,
   ): Promise<SessionSummary> {
     const normalized = name.trim()
     if (!normalized) throw new Error('考试名称不能为空')
+    const curriculumVolumeId = options.curriculumVolumeId ?? null
     const knownIds = new Set(sessions.value.map((session) => session.id))
     let created: SessionSummary
     try {
-      created = curriculumVolumeId
-        ? await creator(normalized, curriculumVolumeId)
-        : await creator(normalized)
+      created = await creator(normalized, options)
     } catch (error) {
       if (!isAmbiguousWriteError(error)) throw error
       let loaded: SessionSummary[]
@@ -101,6 +101,7 @@ export const useSessionStore = defineStore('session', () => {
       const reconciled = loaded.find((session) => !knownIds.has(session.id)
         && session.name.trim() === normalized
         && (!curriculumVolumeId || session.curriculum_volume_id === curriculumVolumeId)
+        && (session.kind ?? 'scan') === (options.kind ?? 'scan')
         && !session.is_deleted)
       sessions.value = loaded
       loadState.value = 'ready'

@@ -490,3 +490,133 @@ export function subQuestionLabelFor(
   ))
   return siblingSharesStem ? { index: sub.index, parentStem: stem } : null
 }
+
+/**
+ * 合并给分：识别每个组条目覆盖的成员题目。
+ * 成员的明细只出现在满分/零分等极端学生身上，中间分学生只有组条目——
+ * 因此成员题的学生集合与本组条目的学生集合互斥，可据此配对，无需组标签可解析。
+ */
+export function combinedGroupMembers(
+  questions: ReadonlyArray<{ question_id: string; combined_group?: boolean }>,
+  students: readonly ResultsCenterStudent[],
+): Map<string, Set<string>> {
+  const groupIds = questions
+    .filter((question) => question.combined_group === true)
+    .map((question) => question.question_id)
+  const groups = new Map<string, Set<string>>(
+    groupIds.map((groupId) => [groupId, new Set<string>()] as const),
+  )
+  if (groupIds.length === 0) return groups
+  const ordinaryIds = new Set(
+    questions
+      .filter((question) => question.combined_group !== true)
+      .map((question) => question.question_id),
+  )
+  const holders = new Map<string, Set<number>>()
+  for (const student of students) {
+    for (const item of student.items) {
+      const set = holders.get(item.question_id) ?? new Set<number>()
+      set.add(student.student_id)
+      holders.set(item.question_id, set)
+    }
+  }
+  const disjointGroups = new Map<string, string[]>()
+  for (const questionId of ordinaryIds) {
+    const memberStudents = holders.get(questionId)
+    if (!memberStudents) continue
+    const candidates: string[] = []
+    for (const groupId of groupIds) {
+      const groupStudents = holders.get(groupId) ?? new Set<number>()
+      let disjoint = true
+      for (const studentId of memberStudents) {
+        if (groupStudents.has(studentId)) { disjoint = false; break }
+      }
+      if (disjoint) candidates.push(groupId)
+    }
+    if (candidates.length > 0) disjointGroups.set(questionId, candidates)
+  }
+  for (const [questionId, candidates] of disjointGroups) {
+    const memberStudents = holders.get(questionId) ?? new Set<number>()
+    // 组条目与成员题理想上恰好分完所有学生，取覆盖最广的一组。
+    const best = candidates.reduce((winner, groupId) => {
+      const coverage = (holders.get(groupId)?.size ?? 0) + memberStudents.size
+      const bestCoverage = (holders.get(winner)?.size ?? 0) + memberStudents.size
+      return coverage > bestCoverage ? groupId : winner
+    })
+    groups.get(best)!.add(questionId)
+  }
+  return groups
+}
+
+/** 成员题号 → 所属组条目题号。 */
+export function combinedMemberMap(
+  groups: ReadonlyMap<string, Set<string>>,
+): Map<string, string> {
+  const map = new Map<string, string>()
+  for (const [groupId, members] of groups) {
+    for (const member of members) if (!map.has(member)) map.set(member, groupId)
+  }
+  return map
+}
+
+/**
+ * 学生的合并组得分：有组条目取组条目；否则取成员明细之和。
+ * 两端都取不到时为 null。
+ */
+export function groupScoreOf(
+  student: ResultsCenterStudent,
+  groupId: string,
+  members: ReadonlySet<string>,
+): { score: number; max: number } | null {
+  const entry = student.items.find((item) => item.question_id === groupId)
+  if (entry !== undefined) {
+    const score = resolvedItemScore(entry)
+    return score === null ? null : { score, max: entry.max_score }
+  }
+  const memberItems = student.items.filter((item) => members.has(item.question_id))
+  if (memberItems.length === 0) return null
+  let score = 0
+  let max = 0
+  for (const item of memberItems) {
+    const resolved = resolvedItemScore(item)
+    if (resolved === null) return null
+    score += resolved
+    max += item.max_score
+  }
+  return { score, max }
+}
+
+/** 合并组按全体的得分率；无人有组内任何得分时为 null。 */
+export function groupRateFor(
+  students: readonly ResultsCenterStudent[],
+  groupId: string,
+  members: ReadonlySet<string>,
+): number | null {
+  let score = 0
+  let max = 0
+  for (const student of students) {
+    const entry = groupScoreOf(student, groupId, members)
+    if (entry === null || entry.max <= 0) continue
+    score += entry.score
+    max += entry.max
+  }
+  return max > 0 ? score / max : null
+}
+
+/** 合并组按全体的满分/部分/0分人数结构。 */
+export function groupStructureFor(
+  students: readonly ResultsCenterStudent[],
+  groupId: string,
+  members: ReadonlySet<string>,
+): ScoreStructure {
+  const structure: ScoreStructure = { full: 0, partial: 0, zero: 0, resolved: 0 }
+  for (const student of students) {
+    const entry = groupScoreOf(student, groupId, members)
+    if (entry === null) continue
+    structure.resolved += 1
+    if (entry.score === 0) structure.zero += 1
+    else if (entry.max > 0 && entry.score >= entry.max) structure.full += 1
+    else structure.partial += 1
+  }
+  return structure
+}

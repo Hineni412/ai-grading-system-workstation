@@ -22,7 +22,12 @@ import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 import ReviewAnswerPanel from '../review/ReviewAnswerPanel.vue'
 import QuestionHtmlBlock from '../question-bank/QuestionHtmlBlock.vue'
-import { scoreStructureFor, subQuestionLabelFor } from './results-overview'
+import {
+  combinedGroupMembers,
+  groupStructureFor,
+  scoreStructureFor,
+  subQuestionLabelFor,
+} from './results-overview'
 import {
   cachedClassAnalysis,
   invalidateClassAnalysis,
@@ -33,7 +38,10 @@ const props = defineProps<{
   sessionId: number | null
   focusQuestion?: string | null
   initialClass?: string | null
+  importSession?: boolean
 }>()
+
+const IMPORT_CHOICE_TYPES = new Set(['choice', 'single_choice'])
 
 type QuestionRecord = ClassAnalysisQuestion['records'][number]
 
@@ -146,6 +154,8 @@ const diagnosticQuestions = computed(() => {
         subParentStem: sub?.parentStem ?? null,
         causeSections,
         structuredCauses,
+        importNoCauses: Boolean(props.importSession)
+          && !IMPORT_CHOICE_TYPES.has(String(question.question_type ?? '')),
         scoreBands: bands.map((band) => ({ ...band, share: records.length ? Number((band.records.length / records.length * 100).toFixed(1)) : 0 })),
         causes: [...(question.causes ?? [])].sort((a, b) => b.count - a.count),
       }
@@ -258,11 +268,21 @@ function onListKeydown(event: KeyboardEvent): void {
 const scopeStudents = computed(() => (resultsStore.results?.students ?? [])
   .filter((student) => !selectedClass.value || (student.class_name ?? '') === selectedClass.value))
 
+// 合并给分：组条目替代成员题；成员明细只在满分/零分学生身上，
+// 用成员明细算结构会偏差，结构按组口径（组条目或成员明细之和）统计。
+const panelCombinedGroups = computed(() => combinedGroupMembers(
+  resultsStore.results?.questions ?? [],
+  resultsStore.results?.students ?? [],
+))
+
 const selectedStructure = computed(() => {
   const question = selectedQuestion.value
   if (question === null) return null
-  const structure = scoreStructureFor(scopeStudents.value, [question.question_id])
-    .get(question.question_id)
+  const members = panelCombinedGroups.value.get(question.question_id)
+  const structure = members !== undefined
+    ? groupStructureFor(scopeStudents.value, question.question_id, members)
+    : scoreStructureFor(scopeStudents.value, [question.question_id])
+      .get(question.question_id)
   return structure !== undefined && structure.resolved > 0 ? structure : null
 })
 
@@ -277,7 +297,11 @@ function reviewTargetFor(questionId: string, record: QuestionRecord): {
   if (record.student_id === undefined) return null
   const student = resultsStore.results?.students
     .find((entry) => entry.student_id === record.student_id)
+  const members = panelCombinedGroups.value.get(questionId)
   const item = student?.items.find((entry) => entry.question_id === questionId)
+    ?? student?.items.find(
+      (entry) => members !== undefined && members.has(entry.question_id),
+    )
   return student !== undefined && item !== undefined
     ? { student, reviewItemId: item.review_item_id }
     : null
@@ -528,9 +552,9 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
           <p v-if="data" class="class-analysis__exam-meta">
             满分 {{ formatScore(data.exam.full_score) }} 分 · 参考 {{ data.present }} 人<template
               v-if="data.roster_absent.length"
-            > · 名册另有 {{ data.roster_absent.length }} 人未检测到答卷</template><template
+            > · 名册另有 {{ data.roster_absent.length }} 人{{ importSession ? '在成绩表中没有成绩' : '未检测到答卷' }}</template><template
               v-if="data.exam.graded_at"
-            > · 批改完成 {{ formatShortDate(data.exam.graded_at) }}</template>
+            > · {{ importSession ? '导入完成' : '批改完成' }} {{ formatShortDate(data.exam.graded_at) }}</template>
           </p>
           <p v-if="data?.step_diagnosis" class="class-analysis__step-scope" data-testid="step-diagnosis-scope">
             有逐步记录 {{ data.step_diagnosis.students }} 人 · 教师确认总分沿用 AI 步骤 {{ data.step_diagnosis.confirmed_ai_rows }} 条 ·
@@ -561,7 +585,7 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
         <StatePanel
           v-else-if="analysis?.status === 'no_data'"
           kind="empty"
-          title="当前范围尚无已批改成绩"
+          :title="importSession ? '当前范围尚无已导入成绩' : '当前范围尚无已批改成绩'"
           data-testid="class-analysis-empty"
         />
         <StatePanel
@@ -645,7 +669,14 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
                   @click="selectQuestion(question.question_id)"
                 >
                   <span class="class-analysis__list-head">
-                    <strong>{{ question.question_id }}</strong>
+                    <strong>
+                      {{ question.question_id }}
+                      <i
+                        v-if="panelCombinedGroups.has(question.question_id)"
+                        class="overview__combined"
+                        title="这几题合起来给一个总分"
+                      >合并</i>
+                    </strong>
                     <span class="class-analysis__list-rate">{{ formatPercent(question.class_rate) }}</span>
                   </span>
                   <span
@@ -839,7 +870,7 @@ function rateTone(rate: number): 'low' | 'mid' | 'high' {
                       </AppButton>
                     </details>
                     <span v-if="selectedQuestion.state === 'stale'" class="class-analysis__note" data-testid="cause-state">作答或批语已变化 · 显示上次整理结果</span>
-                    <span v-if="!selectedQuestion.causeSections.length" class="class-analysis__note">{{ selectedQuestion.records.length ? (selectedQuestion.causes_grouped ? '没有可确认的共同错因，见下方原始证据' : '未记录具体错因') : '—' }}</span>
+                    <span v-if="!selectedQuestion.causeSections.length" class="class-analysis__note">{{ selectedQuestion.importNoCauses ? '导入的成绩没有学生作答内容，本题不整理错因' : (selectedQuestion.records.length ? (selectedQuestion.causes_grouped ? '没有可确认的共同错因，见下方原始证据' : '未记录具体错因') : '—') }}</span>
                     <details
                       v-if="!selectedQuestion.structuredCauses && selectedQuestion.cause_review?.uncertain.length"
                       class="class-analysis__cause-review"

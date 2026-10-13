@@ -46,13 +46,21 @@ export function buildTodoRows({ sessionId, overview, readiness, analysis, jobs, 
   }
   if (sessionId === null || overview?.current_session?.id !== sessionId) return { need: trainingRows, suggestions, reports }
   const p = overview.progress, r = overview.review, a = overview.anomalies
+  const isImport = overview.current_session.kind === 'zhixue_import'
   const gradingPath = `/sessions/${sessionId}/grading-run`
-  if (readiness && !(readiness.scoring_configured && readiness.template_ready)) {
-    need.push(row('setup', '完成考试配置', setupHint(readiness), '继续配置', setupPath(sessionId, readiness)))
-  } else if (readiness && p?.total_papers === 0) {
+  const setupComplete = !!readiness && (isImport
+    ? readiness.scoring_configured
+    : readiness.scoring_configured && readiness.template_ready)
+  if (readiness && !setupComplete) {
+    need.push(row('setup', '完成考试配置',
+      isImport ? (readiness.scoring_configured ? '已完成' : '评分依据未完成') : setupHint(readiness),
+      '继续配置', setupPath(sessionId, readiness)))
+  } else if (isImport && readiness && !(p && p.matched_papers > 0)) {
+    need.push(row('import', '导入成绩', '评分依据已就绪，等待上传智学网成绩表', '去导入', `/sessions/${sessionId}/import`))
+  } else if (!isImport && readiness && p?.total_papers === 0) {
     need.push(row('upload', '上传答卷', '评分依据与样卷题框已就绪', '上传答卷', gradingPath))
   }
-  if (a && (a.unmatched_papers > 0 || a.scan_issue_students > 0 || a.failed_papers > 0)) {
+  if (!isImport && a && (a.unmatched_papers > 0 || a.scan_issue_students > 0 || a.failed_papers > 0)) {
     const fact = [a.unmatched_papers && `${a.unmatched_papers} 份答卷未匹配学生`,
       a.scan_issue_students && `${a.scan_issue_students} 名学生扫描页有问题`,
       a.failed_papers && `${a.failed_papers} 份批改失败`].filter(Boolean).join('，')
@@ -60,10 +68,10 @@ export function buildTodoRows({ sessionId, overview, readiness, analysis, jobs, 
   }
   const gradingActive = activeJobs(jobs).some(job => ['grading_run', 'grading'].includes(job.job_type)
     && Number(job.payload.session_id ?? job.result.session_id) === sessionId)
-  if (p && p.matched_papers > 0 && p.graded_papers + p.failed_papers < p.matched_papers && !gradingActive) {
+  if (!isImport && p && p.matched_papers > 0 && p.graded_papers + p.failed_papers < p.matched_papers && !gradingActive) {
     need.push(row('grade', '继续批改', `已批改 ${p.graded_papers}/${p.matched_papers} 份`, '继续批改', gradingPath))
   }
-  if (r && r.item_count > 0) {
+  if (!isImport && r && r.item_count > 0) {
     need.push(row('review', `复核 ${r.item_count} 项评分`, `涉及 ${r.question_count} 道题`, '开始复核', '/grading'))
   }
   if (analysis?.incomplete_question_ids.length) {
@@ -72,7 +80,7 @@ export function buildTodoRows({ sessionId, overview, readiness, analysis, jobs, 
   }
   need.push(...trainingRows)
   const personalReports = overview.personal_reports
-  if (personalReports && personalReports.stale > 0) {
+  if (!isImport && personalReports && personalReports.stale > 0) {
     reports = row('reports', `个人报告：${personalReports.stale} 人需重新生成`,
       `${personalReports.current} 人已是最新`, '去查看', '/results?tab=details')
   }
@@ -86,7 +94,21 @@ export function buildTodoRows({ sessionId, overview, readiness, analysis, jobs, 
 export function buildExamSteps({ sessionId, overview, readiness }: HomeInputs): StepProgressStep[] {
   const p = overview?.progress, r = overview?.review
   const available = sessionId !== null && overview?.current_session?.id === sessionId
-  const setupDone = !!readiness?.scoring_configured && readiness.template_ready
+  const isImport = overview?.current_session?.kind === 'zhixue_import'
+  const setupDone = !!readiness && (isImport
+    ? readiness.scoring_configured
+    : readiness.scoring_configured && readiness.template_ready)
+  if (isImport) {
+    const importDone = !!p && p.matched_papers > 0
+    return [
+      { id: 'setup', label: '考试配置', status: setupDone ? 'done' : readiness ? 'in_progress' : 'todo',
+        hint: readiness ? (setupDone ? '已完成' : '评分依据未完成') : '状态未读取' },
+      { id: 'import', label: '导入成绩', status: importDone ? 'done' : 'todo',
+        hint: importDone ? `${p!.matched_papers} 名学生已导入` : setupDone ? '待导入' : '完成配置后导入' },
+      { id: 'results', label: '成绩与讲评', status: importDone ? 'done' : 'todo',
+        hint: importDone ? '可查看' : '导入后可查看' },
+    ].map(step => ({ ...step, status: step.status as StepProgressStep['status'], available }))
+  }
   const prepareDone = !!p && p.total_papers > 0 && p.unmatched_papers === 0 && p.scan_issue_students === 0
   const gradeDone = !!p && p.matched_papers > 0 && p.graded_papers + p.failed_papers === p.matched_papers && p.failed_papers === 0
   const reviewDone = gradeDone && r?.item_count === 0

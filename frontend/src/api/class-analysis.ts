@@ -102,6 +102,8 @@ export interface ClassCauseAnalysis {
 
 export interface ClassAnalysisQuestion {
   question_id: string
+  /** 题型标识（choice/fill_blank/…）；合并给分行为 combined。 */
+  question_type?: string
   max_score: number
   class_rate: number
   stem_summary: string | null
@@ -326,6 +328,7 @@ function decodeQuestion(value: unknown): ClassAnalysisQuestion {
     || !isFiniteNumber(value.class_rate)
     || !isNullableString(value.stem_summary)
     || !isNullableString(value.canonical_answer)
+    || !(value.question_type === undefined || typeof value.question_type === 'string')
     || !Array.isArray(value.records)
     || !(value.causes_grouped === undefined || typeof value.causes_grouped === 'boolean')
     || !(value.causes_legacy === undefined || typeof value.causes_legacy === 'boolean')
@@ -345,6 +348,7 @@ function decodeQuestion(value: unknown): ClassAnalysisQuestion {
   }
   return {
     question_id: value.question_id,
+    ...(typeof value.question_type === 'string' ? { question_type: value.question_type } : {}),
     max_score: value.max_score,
     class_rate: value.class_rate,
     stem_summary: value.stem_summary,

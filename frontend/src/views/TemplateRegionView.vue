@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 
 import TemplateRegionEditor from '../components/template-regions/TemplateRegionEditor.vue'
@@ -8,7 +8,9 @@ import ConfigStageRail from '../components/config/ConfigStageRail.vue'
 import FeedbackBanner from '../components/design-system/FeedbackBanner.vue'
 import AppButton from '../components/design-system/AppButton.vue'
 import PageHeader from '../components/design-system/PageHeader.vue'
+import StatePanel from '../components/design-system/StatePanel.vue'
 import BackButton from '../components/design-system/BackButton.vue'
+import { fetchScoreImportState } from '../api/score-import'
 import { useConfirm } from '../composables/useConfirm'
 import { useTemplateRegionStore } from '../stores/template-regions'
 import type { PageRole } from '../api/template-regions'
@@ -19,6 +21,7 @@ const router = useRouter()
 const store = useTemplateRegionStore()
 const { confirm } = useConfirm()
 const routeSessionId = computed(() => Number(route.params.sessionId))
+const isImportSession = ref(false)
 const focusLayout = computed(() => store.workspace !== null && store.editorReady)
 let mainWorkspace: HTMLElement | null = null
 
@@ -63,9 +66,14 @@ async function regenerate(): Promise<void> {
 }
 
 function loadRoute(): void {
-  if (Number.isSafeInteger(routeSessionId.value) && routeSessionId.value > 0) {
-    void store.load(routeSessionId.value)
-  }
+  const id = routeSessionId.value
+  if (!Number.isSafeInteger(id) || id <= 0) return
+  isImportSession.value = false
+  void fetchScoreImportState(id).then((state) => {
+    if (routeSessionId.value !== id) return
+    isImportSession.value = state.kind === 'zhixue_import'
+    if (!isImportSession.value) void store.load(id)
+  }).catch(() => { void store.load(id) })
 }
 async function finish(): Promise<void> {
   if (!await confirm({ title: '保存为正式版本？', message: commitSummary.value, confirmLabel: '保存' })) return
@@ -81,8 +89,12 @@ async function openGradingRun(): Promise<void> {
   if (!Number.isSafeInteger(id) || id <= 0) return
   await router.push(`/sessions/${id}/grading-run`)
 }
-function selectStage(stage: 'draft' | 'source' | 'generation' | 'editor' | 'template'): void {
+function selectStage(stage: 'draft' | 'source' | 'generation' | 'editor' | 'template' | 'import'): void {
   if (stage === 'template') return
+  if (stage === 'import') {
+    void router.push(`/sessions/${routeSessionId.value}/import`)
+    return
+  }
   void router.push({ path: '/sessions', query: { stage } })
 }
 async function replaceTemplate(file: File, role: PageRole): Promise<void> {
@@ -137,17 +149,28 @@ watch(focusLayout, syncFocusLayout, { flush: 'post' })
           :editor-ready="store.scoringConfigured"
           :template-present="store.workspace !== null"
           :template-ready="store.workspace?.template_ready === true"
+          :import-session="isImportSession"
           @select="selectStage"
         />
       </template>
     </PageHeader>
 
-    <div v-if="store.loadState === 'loading'" class="template-regions-view__state" role="status">正在读取样卷工作区…</div>
+    <StatePanel
+      v-if="isImportSession"
+      kind="empty"
+      title="这是智学网成绩导入考试"
+      description="这场考试通过上传智学网成绩表录入成绩，不需要标定样卷题框。"
+    >
+      <template #actions>
+        <a class="import-link" :href="`/sessions/${routeSessionId}/import`">去导入成绩 →</a>
+      </template>
+    </StatePanel>
+    <div v-else-if="store.loadState === 'loading'" class="template-regions-view__state" role="status">正在读取样卷工作区…</div>
     <div v-else-if="store.loadState === 'error'" class="template-regions-view__state" role="alert">
       <p>{{ store.errorMessage }}</p>
       <AppButton type="button" variant="ghost" size="small" @click="store.load(routeSessionId)">重新读取</AppButton>
     </div>
-    <section v-else-if="store.workspace" class="template-regions-view__workspace">
+    <section v-else-if="store.workspace && !isImportSession" class="template-regions-view__workspace">
       <div class="template-regions-view__ruler" :data-state="store.readOnly ? 'confirmed' : 'draft'">
         <strong>{{ store.readOnly ? '正式版本 · 只读' : '草稿标定中' }}</strong>
         <span>{{ store.saveState === 'saving' ? '正在保存草稿' : store.saveState === 'saved' ? '草稿已保存' : '按原图像素记录' }}</span>
@@ -223,3 +246,7 @@ watch(focusLayout, syncFocusLayout, { flush: 'post' })
       @upload="replaceTemplate" />
   </article>
 </template>
+
+<style scoped>
+.import-link { font-weight: var(--font-weight-semibold); }
+</style>

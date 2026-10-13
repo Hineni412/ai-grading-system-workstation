@@ -1966,6 +1966,53 @@ def validate_generated_config(
         if abs(part_total - max_score) > 1e-6:
             raise ValueError(f"rubric.questions[{idx - 1}] part total does not equal max_score")
 
+    combined_groups = rubric.get("combined_scoring_groups")
+    if combined_groups is not None:
+        if not isinstance(combined_groups, list):
+            raise ValueError("rubric.combined_scoring_groups must be a list")
+        claimed_members: set[str] = set()
+        for gidx, group in enumerate(combined_groups, start=1):
+            if not isinstance(group, dict):
+                raise ValueError(
+                    f"rubric.combined_scoring_groups[{gidx - 1}] must be an object"
+                )
+            if not str(group.get("group_id") or "").strip():
+                raise ValueError(
+                    f"rubric.combined_scoring_groups[{gidx - 1}] is missing field: group_id"
+                )
+            members = group.get("question_ids")
+            if not isinstance(members, list) or len(members) < 2:
+                raise ValueError(
+                    f"rubric.combined_scoring_groups[{gidx - 1}].question_ids "
+                    "must list at least two member questions"
+                )
+            expected_max = 0.0
+            for member_id in members:
+                member_id = str(member_id or "")
+                member = rubric_q_map.get(member_id)
+                if member is None:
+                    raise ValueError(
+                        f"rubric.combined_scoring_groups[{gidx - 1}] member "
+                        f"{member_id} does not exist in rubric.questions"
+                    )
+                if len(member.get("parts") or []) != 1:
+                    raise ValueError(
+                        f"rubric.combined_scoring_groups[{gidx - 1}] member "
+                        f"{member_id} must be a single-item question without sub-parts"
+                    )
+                if member_id in claimed_members:
+                    raise ValueError(
+                        f"rubric.combined_scoring_groups member {member_id} "
+                        "appears in more than one group"
+                    )
+                claimed_members.add(member_id)
+                expected_max += float(member["max_score"])
+            if abs(float(group.get("max_score") or -1) - expected_max) > 1e-6:
+                raise ValueError(
+                    f"rubric.combined_scoring_groups[{gidx - 1}].max_score "
+                    "must equal the sum of member max scores"
+                )
+
     answer_q_map: dict[str, dict[str, Any]] = {}
     for idx, item in enumerate(answer_questions, start=1):
         if not isinstance(item, dict):

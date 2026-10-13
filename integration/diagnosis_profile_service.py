@@ -132,7 +132,7 @@ def _normalized_profile_scope(
 
 
 def _profile_semantics() -> tuple:
-    return ("exam-source-scores-v2", str(week_of(datetime.now(UTC))))
+    return ("exam-source-scores-v3", str(week_of(datetime.now(UTC))))
 
 
 class DiagnosisSnapshot(TypedDict, total=False):
@@ -614,6 +614,8 @@ class DiagnosisProfileService:
                         else "historical_exam"
                     ),
                 }
+                if row.get("combined_group_id"):
+                    reference["combined_group_id"] = row["combined_group_id"]
                 # 新错因体系：同场次同学同题的物化记录按证据挂到来源引用上，
                 # 只引用当前答卷仍有效的实际错因，不把题库预测当作学生表现。
                 cause_rows = cause_index.get(
@@ -1297,6 +1299,7 @@ class DiagnosisProfileService:
     def assembly_exam_questions(self, *, class_ids: list[str], volume_id: str) -> dict[str, Any]:
         """Read scored exam items through the existing evidence boundary; no persistence."""
         from backend.config_generation.contract import iter_effective_rubric_item_refs
+        from backend.scan_grading.grading_completeness import combined_scoring_groups
         from question_bank.current_knowledge import CurrentKnowledgeResolver
         classes = set(class_ids)
         students = {str(s["id"]): s for s in self.db.students.list_students()
@@ -1369,8 +1372,28 @@ class DiagnosisProfileService:
             questions = []
             participants: set[str] = set()
             totals: dict[str, float] = {}
-            for qid, _parent, question, item in iter_effective_rubric_item_refs(self.db.results._load_session_rubric(sid)):
+            sid_rubric = self.db.results._load_session_rubric(sid)
+            sid_rubric_doc = (
+                sid_rubric.get("rubric")
+                if isinstance(sid_rubric, dict) and isinstance(sid_rubric.get("rubric"), dict)
+                else sid_rubric
+            )
+            member_group = {
+                member: group
+                for group in combined_scoring_groups(sid_rubric_doc)
+                for member in group["question_ids"]
+            }
+            for qid, _parent, question, item in iter_effective_rubric_item_refs(sid_rubric):
                 scored = by_item.get((sid, qid), {})
+                if qid in member_group:
+                    # 合并给分组成员不展示单独得分率（只用极端学生会高估）；
+                    # 成员明细仍计入本场总分。
+                    for student, row in scored.items():
+                        participants.add(student)
+                        maximum = float(row.get("teacher_final_max_score") or row.get("full_score") or 0)
+                        awarded = min(max(float(row["score_awarded"]), 0), maximum)
+                        totals[student] = totals.get(student, 0.0) + awarded
+                    continue
                 if not scored:
                     continue
                 participants.update(scored)
@@ -1432,6 +1455,16 @@ class DiagnosisProfileService:
                         "in_volume": volume_sections is None or anchors.get(key, {}).get("section") in volume_sections}
                         for key in keys],
                     "question_text": str(question.get("question_text") or item.get("question_text") or "")})
+            # 只存组总分的学生：合并给分计入本场总分与参与人数。
+            for student_id, entries in (
+                self.db.results.get_session_combined_scores(sid).items()
+            ):
+                student_key = str(student_id)
+                participants.add(student_key)
+                for entry in entries.values():
+                    totals[student_key] = (
+                        totals.get(student_key, 0.0) + float(entry["score"])
+                    )
             if participants:
                 exams.append({"session_id": sid, "title": session.get("session_name") or session.get("exam_name") or session.get("name") or session.get("title") or f"考试 {sid}",
                     "date": str(session.get("created_at") or ""), "class_ids": sorted({students[s].get("class_name") for s in participants}),
@@ -1648,6 +1681,9 @@ class DiagnosisProfileService:
             student_ids=tuple(student_ids),
             session_ids=tuple(session_ids),
         )
+        from backend.scan_grading.grading_completeness import combined_scoring_groups
+
+        combined_members: dict[int, dict[str, str]] = {}
         result: list[dict[str, Any]] = []
         for row in rows:
             key = (
@@ -1658,6 +1694,27 @@ class DiagnosisProfileService:
             if projected is None or not projected.is_graph_eligible:
                 continue
             enriched = dict(row)
+            sid = int(row.get("session_id") or 0)
+            members = combined_members.get(sid)
+            if members is None:
+                rubric_doc = self.db.results._load_session_rubric(sid)
+                rubric = (
+                    rubric_doc.get("rubric")
+                    if isinstance(rubric_doc, dict)
+                    and isinstance(rubric_doc.get("rubric"), dict)
+                    else rubric_doc
+                )
+                members = {
+                    str(member): str(group["group_id"])
+                    for group in combined_scoring_groups(
+                        rubric if isinstance(rubric, dict) else {}
+                    )
+                    for member in group["question_ids"]
+                }
+                combined_members[sid] = members
+            group_id = members.get(str(row.get("question_id") or ""))
+            if group_id:
+                enriched["combined_group_id"] = group_id
             enriched["bank_question_id"] = projected.bank_question_id
             enriched["source_practice_metadata"] = projected.source_practice_metadata
             from question_bank.solution_evidence.part_assessments import (

@@ -15,6 +15,7 @@ import {
   knowledgeOverviewRouteDefinition,
   teachingResearchRouteDefinition,
   reviewRouteDefinition,
+  scoreImportRouteDefinition,
   workbenchRouteDefinition,
   modelProfilesRouteDefinition,
   settingsRouteDefinition,
@@ -118,6 +119,16 @@ const routes: RouteRecordRaw[] = [
       title: gradingRunRouteDefinition.title,
       description: gradingRunRouteDefinition.description,
       breadcrumb: gradingRunRouteDefinition.breadcrumb,
+    },
+  },
+  {
+    path: scoreImportRouteDefinition.path,
+    name: scoreImportRouteDefinition.id,
+    component: () => import('../views/ImportScoresView.vue'),
+    meta: {
+      title: scoreImportRouteDefinition.title,
+      description: scoreImportRouteDefinition.description,
+      breadcrumb: scoreImportRouteDefinition.breadcrumb,
     },
   },
   {

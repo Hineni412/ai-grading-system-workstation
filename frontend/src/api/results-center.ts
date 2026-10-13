@@ -42,6 +42,7 @@ export interface ResultsCenterQuestion {
   ai_ready_count: number
   teacher_final_count: number
   average_score: number | null
+  combined_group?: boolean
 }
 
 export interface ResultsCenterItem {
@@ -57,6 +58,7 @@ export interface ResultsCenterItem {
   result_id: number | null
   detail_id: number | null
   alternative_solution_detected?: boolean
+  combined_group?: boolean
 }
 
 export interface ResultsCenterStudent {
@@ -192,10 +194,12 @@ function isSummary(value: unknown): value is ResultsCenterSummary {
 }
 
 function isQuestion(value: unknown): value is ResultsCenterQuestion {
-  if (!isRecord(value) || !hasExactKeys(value, QUESTION_KEYS)) return false
+  if (!isRecord(value) || !hasExactKeys(value, value.combined_group === undefined
+    ? QUESTION_KEYS : [...QUESTION_KEYS, 'combined_group'])) return false
   return (
     typeof value.question_id === 'string'
     && value.question_id.trim().length > 0
+    && (value.combined_group === undefined || typeof value.combined_group === 'boolean')
     && isNonnegativeNumber(value.max_score)
     && isNonnegativeInteger(value.total_count)
     && isNonnegativeInteger(value.ungraded_count)
@@ -213,8 +217,12 @@ function isQuestion(value: unknown): value is ResultsCenterQuestion {
 }
 
 function isItem(value: unknown): value is ResultsCenterItem {
-  if (!isRecord(value) || !hasExactKeys(value, value.alternative_solution_detected === undefined
-    ? ITEM_KEYS : [...ITEM_KEYS, 'alternative_solution_detected'])) return false
+  if (!isRecord(value)) return false
+  const optionalKeys = [
+    value.alternative_solution_detected === undefined ? [] : ['alternative_solution_detected'],
+    value.combined_group === undefined ? [] : ['combined_group'],
+  ].flat()
+  if (!hasExactKeys(value, [...ITEM_KEYS, ...optionalKeys])) return false
   return (
     typeof value.review_item_id === 'string'
     && value.review_item_id.trim().length > 0
@@ -231,6 +239,8 @@ function isItem(value: unknown): value is ResultsCenterItem {
     && isNullablePositiveInteger(value.detail_id)
     && (value.alternative_solution_detected === undefined
       || typeof value.alternative_solution_detected === 'boolean')
+    && (value.combined_group === undefined
+      || typeof value.combined_group === 'boolean')
   )
 }
 

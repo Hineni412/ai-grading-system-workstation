@@ -487,3 +487,332 @@ def test_restart_marks_inflight_jobs_failed_and_preserves_terminal(
         assert ops_factory_calls == 0
     finally:
         restarted.shutdown()
+
+
+def test_zhixue_score_import_writes_teacher_final_scores_and_combined_groups(
+    api_e2e,
+) -> None:
+    from io import BytesIO
+    import json
+    from openpyxl import Workbook
+    from backend.repositories.students import StudentRecord
+
+    client = api_e2e.client
+    # A third student is needed for the three combined-score cases
+    # (full, zero and intermediate); put the roster into class 1 so the
+    # workbook title's 「1班」 hint participates in matching.
+    api_e2e.db.students.upsert_students(
+        [
+            StudentRecord("SYN-001", "Synthetic Student A", "1"),
+            StudentRecord("SYN-002", "Synthetic Student B", "1"),
+            StudentRecord("SYN-003", "Synthetic Student C", "1"),
+        ]
+    )
+    created = client.post(
+        "/api/sessions",
+        json={
+            "name": "Synthetic Zhixue Import Exam",
+            "rubric_path": str(api_e2e.paths.bootstrap_rubric),
+            "answer_key_path": str(api_e2e.paths.bootstrap_answer),
+            "kind": "zhixue_import",
+            "exam_date": "2026-07-01",
+        },
+    )
+    assert created.status_code == 201, created.json()
+    session_id = int(created.json()["id"])
+    assert created.json()["kind"] == "zhixue_import"
+    assert created.json()["exam_date"] == "2026-07-01"
+
+    # 17+17+18+16+16+16 = 100. Q3 stays multi-part so the workbook's
+    # single 「3」 total column forces the grade-wide 「whole」 decision;
+    # Q4-Q6 are fill-blank single items covered only by the 「4-6」 column.
+    payload = api_e2e.config_payload()
+    q3 = payload["rubric"]["questions"][2]
+    q3["max_score"] = 18
+    q3["parts"] = [
+        {
+            "part_id": "Q3-1",
+            "part_score": 9,
+            "response_mode": "short_answer_points",
+            "visual_requirements": [],
+            "steps": [
+                {
+                    "step_id": "S1",
+                    "step_score": 9,
+                    "core_goal": "synthetic answer",
+                    "required_elements": ["synthetic evidence"],
+                    "allow_alternative_methods": True,
+                }
+            ],
+        },
+        {
+            "part_id": "Q3-2",
+            "part_score": 9,
+            "response_mode": "short_answer_points",
+            "visual_requirements": [],
+            "steps": [
+                {
+                    "step_id": "S1",
+                    "step_score": 9,
+                    "core_goal": "synthetic answer",
+                    "required_elements": ["synthetic evidence"],
+                    "allow_alternative_methods": True,
+                }
+            ],
+        },
+    ]
+    answer_q3 = payload["answer_key"]["questions"][2]
+    answer_q3["parts"] = [
+        {
+            "part_id": "Q3-1",
+            "answer": "synthetic answer Q3",
+            "accepted_forms": [],
+            "analysis": "synthetic analysis",
+            "step_milestones": ["synthetic evidence"],
+        },
+        {
+            "part_id": "Q3-2",
+            "answer": "synthetic answer Q3",
+            "accepted_forms": [],
+            "analysis": "synthetic analysis",
+            "step_milestones": ["synthetic evidence"],
+        },
+    ]
+    for question in payload["rubric"]["questions"][3:]:
+        question["question_type"] = "fill_blank"
+        question["max_score"] = 16
+        question["parts"][0]["part_score"] = 16
+        question["parts"][0]["steps"][0]["step_score"] = 16
+    configured = client.put(f"/api/sessions/{session_id}/config", json=payload)
+    assert configured.status_code == 200, configured.json()
+
+    def build_scores_workbook(student_b_q1: float = 17) -> bytes:
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "小题得分明细"
+        sheet.append(["【测试】八年级1班数学学生小题得分明细"])
+        sheet.append(
+            ["姓名", "客观分", "主观分", "总分", "1", "2", "3", "4-6"]
+        )
+        student_b_total = 32.5 + float(student_b_q1)
+        sheet.append(
+            ["Synthetic Student A", 0, 100, 100, 17, 17, 18, 48]
+        )
+        sheet.append(
+            [
+                "Synthetic Student B",
+                0,
+                student_b_total,
+                student_b_total,
+                student_b_q1,
+                15.5,
+                17,
+                0,
+            ]
+        )
+        sheet.append(["Synthetic Student C", 0, 71, 71, 15, 14, 12, 30])
+        buffer = BytesIO()
+        workbook.save(buffer)
+        workbook.close()
+        return buffer.getvalue()
+
+    upload = client.post(
+        f"/api/sessions/{session_id}/score-import/uploads",
+        content=build_scores_workbook(),
+        headers={"x-upload-filename": "scores.xlsx"},
+    )
+    assert upload.status_code == 201, upload.json()
+    upload_id = upload.json()["upload_id"]
+
+    preview = client.post(
+        f"/api/sessions/{session_id}/score-import/preview",
+        json={"upload_ids": [upload_id]},
+    )
+    assert preview.status_code == 200, preview.json()
+    plan = preview.json()
+    assert [
+        issue for issue in plan["issues"] if issue["level"] == "block"
+    ] == []
+    plan_by_question = {
+        question["question_id"]: question
+        for question in plan["questions"]
+    }
+    assert plan_by_question["Q3"]["choice"] == "whole"
+    assert plan_by_question["Q4"]["choice"] == "combined"
+    group = plan["groups"][0]
+    assert group["group_id"] == "G4-6"
+    assert group["question_ids"] == ["Q4", "Q5", "Q6"]
+    assert group["max_score"] == 48.0
+    assert group["counts"] == {
+        "full": 1,
+        "zero": 1,
+        "intermediate": 1,
+        "derived": 0,
+    }
+    assert plan["students"]["matched"] == 3
+
+    confirmed = client.post(
+        f"/api/sessions/{session_id}/score-import/confirm",
+        json={
+            "upload_ids": [upload_id],
+            "preview_revision": plan["preview_revision"],
+            "replace_existing": False,
+        },
+    )
+    assert confirmed.status_code == 200, confirmed.json()
+
+    assert api_e2e.result_scores(session_id) == {
+        "SYN-001": 100.0,
+        "SYN-002": 49.5,
+        "SYN-003": 71.0,
+    }
+    details = api_e2e.result_details(session_id)
+    assert [question_id for question_id, _ in details["SYN-003"]] == [
+        "Q1",
+        "Q2",
+        "Q3",
+    ]
+    assert dict(details["SYN-001"])["Q4"] == 16.0
+    assert dict(details["SYN-002"])["Q4"] == 0.0
+
+    with api_e2e.db._connect() as connection:
+        raw_payloads = {
+            str(row["student_code"]): json.loads(row["raw_json"])
+            for row in connection.execute(
+                "SELECT s.student_code, sr.raw_json FROM session_results sr "
+                "JOIN students s ON s.id = sr.student_id "
+                "WHERE sr.session_id = ?",
+                (session_id,),
+            )
+        }
+        lock_keys = {
+            (str(row["student_code"]), str(row["question_id"]))
+            for row in connection.execute(
+                "SELECT s.student_code, l.question_id "
+                "FROM teacher_score_locks l "
+                "JOIN students s ON s.id = l.student_id "
+                "WHERE l.session_id = ?",
+                (session_id,),
+            )
+        }
+        student_ids = {
+            str(row["student_code"]): int(row["id"])
+            for row in connection.execute(
+                "SELECT id, student_code FROM students"
+            )
+        }
+    combined = raw_payloads["SYN-003"].get("combined_scores")
+    assert combined is not None
+    assert combined["G4-6"]["score"] == 30.0
+    assert combined["G4-6"]["max_score"] == 48.0
+    assert "combined_scores" not in raw_payloads["SYN-001"]
+    # Extreme students keep member details and teacher locks; the
+    # intermediate student carries only the combined group score.
+    assert ("SYN-001", "Q4") in lock_keys
+    assert ("SYN-002", "Q5") in lock_keys
+    assert ("SYN-003", "Q4") not in lock_keys
+    assert raw_payloads["SYN-003"]["grading_completeness"]["status"] == (
+        "complete"
+    )
+
+    center = client.get(f"/api/sessions/{session_id}/results-center")
+    assert center.status_code == 200
+    center_body = center.json()
+    center_scores = {
+        student["student_code"]: student["current_score"]
+        for student in center_body["students"]
+    }
+    assert center_scores == {
+        "SYN-001": 100.0,
+        "SYN-002": 49.5,
+        "SYN-003": 71.0,
+    }
+    student_c = next(
+        student
+        for student in center_body["students"]
+        if student["student_code"] == "SYN-003"
+    )
+    group_cell = next(
+        item
+        for item in student_c["items"]
+        if item["question_id"] == "4-6"
+    )
+    assert group_cell["score_awarded"] == 30.0
+    assert group_cell["max_score"] == 48.0
+    assert group_cell["combined_group"] is True
+    assert all(
+        item["question_id"] not in {"Q4", "Q5", "Q6"}
+        for item in student_c["items"]
+    )
+    student_a = next(
+        student
+        for student in center_body["students"]
+        if student["student_code"] == "SYN-001"
+    )
+    assert {"Q4", "Q5", "Q6"} <= {
+        item["question_id"] for item in student_a["items"]
+    }
+
+    assessment_rows = api_e2e.db.results.get_active_assessment_rows(
+        student_ids=list(student_ids.values()),
+        session_ids=[session_id],
+    )
+    member_rows = {
+        (str(row["student_code"]), str(row["question_id"]))
+        for row in assessment_rows
+        if str(row["question_id"]) in {"Q4", "Q5", "Q6"}
+    }
+    assert ("SYN-001", "Q4") in member_rows
+    assert ("SYN-002", "Q4") in member_rows
+    assert all(student_code != "SYN-003" for student_code, _ in member_rows)
+    assert {str(row["exam_created_at"]) for row in assessment_rows} == {
+        "2026-07-01 08:00:00"
+    }
+
+    changed = client.post(
+        f"/api/sessions/{session_id}/score-import/uploads",
+        content=build_scores_workbook(student_b_q1=16),
+        headers={"x-upload-filename": "scores-v2.xlsx"},
+    )
+    assert changed.status_code == 201, changed.json()
+    second_upload_id = changed.json()["upload_id"]
+    second_preview = client.post(
+        f"/api/sessions/{session_id}/score-import/preview",
+        json={"upload_ids": [second_upload_id]},
+    )
+    assert second_preview.status_code == 200, second_preview.json()
+    diff = second_preview.json()["diff"]
+    assert diff == [
+        {
+            "student_id": student_ids["SYN-002"],
+            "item_id": "Q1",
+            "old_score": 17.0,
+            "new_score": 16.0,
+            "teacher_edited": False,
+        }
+    ]
+
+    rejected = client.post(
+        f"/api/sessions/{session_id}/score-import/confirm",
+        json={
+            "upload_ids": [second_upload_id],
+            "preview_revision": second_preview.json()["preview_revision"],
+            "replace_existing": False,
+        },
+    )
+    assert rejected.status_code == 422
+    replaced = client.post(
+        f"/api/sessions/{session_id}/score-import/confirm",
+        json={
+            "upload_ids": [second_upload_id],
+            "preview_revision": second_preview.json()["preview_revision"],
+            "replace_existing": True,
+        },
+    )
+    assert replaced.status_code == 200, replaced.json()
+    assert api_e2e.result_scores(session_id) == {
+        "SYN-001": 100.0,
+        "SYN-002": 48.5,
+        "SYN-003": 71.0,
+    }
+    assert api_e2e.controls.fake_llm_calls == []

@@ -11,6 +11,7 @@ export type WorkspaceRouteId =
   | 'results'
   | 'files'
   | 'grading'
+  | 'score-import'
   | 'model-profiles'
   | 'settings'
   | 'ai-trace'
@@ -30,6 +31,7 @@ export type WorkspaceNavigationIcon =
   | 'model'
   | 'settings'
   | 'ai-trace'
+  | 'download'
 
 export type AppIconName =
   | WorkspaceNavigationIcon
@@ -134,6 +136,16 @@ export const gradingRunRouteDefinition = {
   description: '上传整班答卷、完成扫描预检并控制批改运行',
   breadcrumb: '考试批改 / 批改执行',
 } as const
+
+export const scoreImportRouteDefinition = {
+  id: 'score-import',
+  label: '导入成绩',
+  path: '/sessions/:sessionId/import',
+  title: '导入成绩',
+  description: '上传智学网成绩表并确认导入',
+  breadcrumb: '考试配置 / 导入成绩',
+  icon: 'download',
+} as const satisfies WorkspaceRouteDefinition
 
 export const reviewRouteDefinition = {
   id: 'grading',

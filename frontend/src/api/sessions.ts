@@ -1,3 +1,5 @@
+export type SessionKind = 'scan' | 'zhixue_import'
+
 export interface SessionSummary {
   id: number
   name: string
@@ -7,6 +9,14 @@ export interface SessionSummary {
   deleted_at: string | null
   created_at: string | null
   updated_at: string | null
+  kind: SessionKind
+  exam_date: string | null
+}
+
+export interface SessionDraftOptions {
+  curriculumVolumeId?: string | null
+  kind?: SessionKind
+  examDate?: string | null
 }
 
 export interface SessionListResponse {
@@ -17,7 +27,7 @@ export interface SessionListResponse {
 export type SessionLoader = () => Promise<SessionSummary[]>
 export type SessionDraftCreator = (
   name: string,
-  curriculumVolumeId?: string | null,
+  options?: SessionDraftOptions,
 ) => Promise<SessionSummary>
 export type SessionRenamer = (id: number, name: string) => Promise<SessionSummary>
 export interface SessionMetadataUpdate {
@@ -79,7 +89,7 @@ export function isSessionSummary(value: unknown): value is SessionSummary {
 
   if (!hasExactKeys(value, [
     'id', 'name', 'status', 'curriculum_volume_id', 'is_deleted', 'deleted_at',
-    'created_at', 'updated_at',
+    'created_at', 'updated_at', 'kind', 'exam_date',
   ])) return false
 
   return (
@@ -91,13 +101,15 @@ export function isSessionSummary(value: unknown): value is SessionSummary {
     typeof value.is_deleted === 'boolean' &&
     isNullableString(value.deleted_at) &&
     isNullableString(value.created_at) &&
-    isNullableString(value.updated_at)
+    isNullableString(value.updated_at) &&
+    (value.kind === 'scan' || value.kind === 'zhixue_import') &&
+    isNullableString(value.exam_date)
   )
 }
 
 const sessionSummaryKeys = [
   'id', 'name', 'status', 'curriculum_volume_id', 'is_deleted', 'deleted_at',
-  'created_at', 'updated_at',
+  'created_at', 'updated_at', 'kind', 'exam_date',
 ] as const
 
 const legacySessionDetailKeys = [
@@ -129,6 +141,8 @@ function projectRenameResponse(value: unknown): SessionSummary {
     deleted_at: value.deleted_at,
     created_at: value.created_at,
     updated_at: value.updated_at,
+    kind: value.kind,
+    exam_date: value.exam_date,
   }
   if (!isSessionSummary(summary)) throw new Error('invalid session rename response')
   return summary
@@ -264,13 +278,19 @@ function requireSessionName(name: string): string {
 
 export async function createSessionDraft(
   name: string,
-  curriculumVolumeId?: string | null,
+  options: SessionDraftOptions = {},
 ): Promise<SessionSummary> {
+  const kind = options.kind ?? 'scan'
+  const examDate = options.examDate?.trim() || null
   return apiClient.request('/api/sessions/drafts', {
     method: 'POST',
     body: {
       name: requireSessionName(name),
-      ...(curriculumVolumeId ? { curriculum_volume_id: curriculumVolumeId } : {}),
+      ...(options.curriculumVolumeId
+        ? { curriculum_volume_id: options.curriculumVolumeId }
+        : {}),
+      kind,
+      ...(kind === 'zhixue_import' && examDate ? { exam_date: examDate } : {}),
     },
     decode: (value) => {
       if (!isSessionSummary(value)) throw new Error('invalid session draft response')

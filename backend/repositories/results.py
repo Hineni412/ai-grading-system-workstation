@@ -20,8 +20,10 @@ from backend.repositories.papers import (
 from backend.scan_grading.grading_completeness import (
     safe_json_loads,
     audit_grading_details,
+    combined_scores_total,
     details_require_review,
     merge_detail_metadata,
+    raw_combined_scores,
     resolve_grading_completeness,
 )
 from path_manager import resolve_stored_file_path
@@ -76,8 +78,13 @@ class ResultRepository:
         scan_batch_id: str | None = None,
     ) -> int:
         # 在覆盖既有成绩、合并教师锁之前拒绝无效的新 AI 结果。
-        # 历史读取和锁定的教师最终分不经过这条新成绩校验。
-        _validate_new_ai_details(grading_result.grading_details, grading_result.raw_json or {})
+        # 历史读取和锁定的教师最终分不经过这条新成绩校验；智学网导入
+        # 写入的就是教师最终分（允许半分），在导入预览里已校验范围。
+        if (grading_result.raw_json or {}).get("source") != "score_import":
+            _validate_new_ai_details(
+                grading_result.grading_details,
+                grading_result.raw_json or {},
+            )
         details, student_score, raw_json = self._merge_teacher_locks(
             session_id=session_id,
             student_id=student_id,
@@ -203,6 +210,9 @@ class ResultRepository:
             )
 
         locked_question_ids: list[str] = []
+        imported = str(
+            (grading_result.raw_json or {}).get("source") or ""
+        ) == "score_import"
         for row in rows:
             question_id = str(row["question_id"])
             previous = details_by_qid.get(question_id)
@@ -210,9 +220,13 @@ class ResultRepository:
                 question_id=question_id,
                 score_awarded=float(row["score_awarded"]),
                 deduction_reason=(
-                    str(row["deduction_reason"])
-                    if row["deduction_reason"] is not None
-                    else "教师人工批改已确认"
+                    None
+                    if imported
+                    else (
+                        str(row["deduction_reason"])
+                        if row["deduction_reason"] is not None
+                        else "教师人工批改已确认"
+                    )
                 ),
                 knowledge_id=(
                     previous.knowledge_id if previous is not None else "UNKNOWN"
@@ -240,7 +254,12 @@ class ResultRepository:
             "scan_batch_id": str(scan_batch_id),
             "question_ids": locked_question_ids,
         }
-        return details, sum(float(item.score_awarded) for item in details), raw_json
+        return (
+            details,
+            sum(float(item.score_awarded) for item in details)
+            + combined_scores_total(raw_json),
+            raw_json,
+        )
 
     def current_assignment_matches(
         self,
@@ -396,6 +415,22 @@ class ResultRepository:
             (result_id,),
         ).fetchone()
         return dict(row) if row else None
+
+    def get_session_combined_scores(
+        self,
+        session_id: int,
+    ) -> dict[int, dict[str, dict[str, Any]]]:
+        """Per-student 合并给分组总分 written by the score import."""
+        rows = self.session.connection.execute(
+            "SELECT student_id, raw_json FROM session_results WHERE session_id = ?",
+            (int(session_id),),
+        ).fetchall()
+        result: dict[int, dict[str, dict[str, Any]]] = {}
+        for row in rows:
+            combined = raw_combined_scores(row["raw_json"])
+            if combined:
+                result[int(row["student_id"])] = combined
+        return result
 
     def get_session_completeness_source(
         self,
@@ -890,9 +925,21 @@ class ResultRepository:
                 (result_id,),
             ).fetchall()
         ]
+        persisted_raw_json = merge_detail_metadata(owner["raw_json"], raw_json,
+            [*question_ids, *(str(d.question_id) for d in replacement_details)])
+        old_payload = safe_json_loads(owner["raw_json"])
+        # 部分明细替换不重建合并给分；沿用结果里已有的组总分。
+        if (
+            isinstance(old_payload, dict)
+            and "combined_scores" not in persisted_raw_json
+            and isinstance(old_payload.get("combined_scores"), dict)
+        ):
+            persisted_raw_json["combined_scores"] = old_payload[
+                "combined_scores"
+            ]
         recalculated_score = sum(
             float(detail["score_awarded"]) for detail in stored_details
-        )
+        ) + combined_scores_total(persisted_raw_json)
         known_ai_scores = [
             float(detail["ai_score_awarded"])
             for detail in stored_details
@@ -901,10 +948,7 @@ class ResultRepository:
         recalculated_ai_score = (
             float(sum(known_ai_scores)) if known_ai_scores else None
         )
-        persisted_raw_json = merge_detail_metadata(owner["raw_json"], raw_json,
-            [*question_ids, *(str(d.question_id) for d in replacement_details)])
         persisted_raw_json.pop("teacher_reviews", None)
-        old_payload = safe_json_loads(owner["raw_json"])
         if isinstance(old_payload, dict) and isinstance(old_payload.get("teacher_reviews"), dict):
             persisted_raw_json["teacher_reviews"] = old_payload["teacher_reviews"]
         if scan_batch_id and locked_rows:
@@ -915,7 +959,15 @@ class ResultRepository:
                 ],
             }
         if rubric is not None:
-            completeness = audit_grading_details(rubric, stored_details)
+            completeness = audit_grading_details(
+                rubric,
+                stored_details,
+                combined_scores=(
+                    persisted_raw_json.get("combined_scores")
+                    if isinstance(persisted_raw_json, dict)
+                    else None
+                ),
+            )
             if completeness["status"] != "complete":
                 raise ValueError(
                     "Atomic replacement must leave a complete grading result; "
@@ -1129,6 +1181,15 @@ class ResultRepositoryGateway:
             return ResultRepository(
                 session
             ).get_session_completeness_source(session_id)
+
+    def get_session_combined_scores(
+        self,
+        session_id: int,
+    ) -> dict[int, dict[str, dict[str, Any]]]:
+        with self._sessions.session(read_only=True) as session:
+            return ResultRepository(session).get_session_combined_scores(
+                session_id
+            )
 
     def get_session_weak_point_rows(
         self,

@@ -9,6 +9,7 @@ import {
   type ReviewConfirmInput,
   type ReviewItemLike,
 } from '../api/review'
+import { fetchScoreImportState } from '../api/score-import'
 import AppButton from '../components/design-system/AppButton.vue'
 import BackButton from '../components/design-system/BackButton.vue'
 import FeedbackBanner from '../components/design-system/FeedbackBanner.vue'
@@ -84,6 +85,18 @@ const resultsReturnPath = computed(() => {
   }).fullPath
 })
 const resultsReturnLabel = computed(() => (resultsReturnPath.value ? '成绩明细' : ''))
+
+const isImportSession = ref(false)
+watch(() => sessionStore.selectedSessionId, async (sessionId) => {
+  isImportSession.value = false
+  if (sessionId === null) return
+  try {
+    const state = await fetchScoreImportState(sessionId)
+    if (sessionStore.selectedSessionId === sessionId) {
+      isImportSession.value = state.kind === 'zhixue_import'
+    }
+  } catch { /* kind probe failed: keep the normal queue flow */ }
+}, { immediate: true })
 
 async function returnToResults(): Promise<void> {
   const target = resultsReturnPath.value
@@ -306,7 +319,7 @@ onBeforeUnmount(() => {
       </template>
       <template #actions>
         <AppButton
-          v-if="!resultsReturnPath"
+          v-if="!resultsReturnPath && !isImportSession"
           class="review-page__run-switch"
           :disabled="sessionStore.selectedSessionId === null"
           :title="sessionStore.selectedSessionId === null ? '请先选择考试' : '进入当前考试的批改执行'"
@@ -350,8 +363,23 @@ onBeforeUnmount(() => {
     <StatePanel
       v-else-if="noQuestions"
       kind="empty"
-      title="当前考试还没有可干预的评分题目"
-    />
+      :title="isImportSession ? '导入的考试没有可干预的评分题目' : '当前考试还没有可干预的评分题目'"
+      :description="isImportSession ? '智学网成绩已是教师最终分，无需人工干预。' : undefined"
+    >
+      <template v-if="isImportSession" #actions>
+        <a class="import-link" :href="`/sessions/${sessionStore.selectedSessionId}/import`">去导入成绩 →</a>
+      </template>
+    </StatePanel>
+    <StatePanel
+      v-else-if="isImportSession && !hasValidatedQuestion"
+      kind="empty"
+      title="这是智学网成绩导入考试"
+      description="这场考试通过上传智学网成绩表录入成绩，没有人工干预队列。"
+    >
+      <template #actions>
+        <a class="import-link" :href="`/sessions/${sessionStore.selectedSessionId}/import`">去导入成绩 →</a>
+      </template>
+    </StatePanel>
 
     <ReviewDeepWorkspace
       v-else-if="hasValidatedQuestion && deepItem"
@@ -420,3 +448,7 @@ onBeforeUnmount(() => {
     />
   </section>
 </template>
+
+<style scoped>
+.import-link { font-weight: var(--font-weight-semibold); }
+</style>

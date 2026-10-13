@@ -43,6 +43,7 @@ class WorkbenchService:
     ) -> dict[str, Any]:
         """Aggregate existing read models without internal HTTP calls."""
         recent_sessions = []
+        data_root = infer_data_root(self.db.db_path)
         sessions = self.db.sessions.list_grading_sessions()
         if curriculum_volume_id:
             sessions = [session for session in sessions
@@ -51,7 +52,7 @@ class WorkbenchService:
         for session in sessions[: int(recent_limit)]:
             recent_sessions.append(
                 {
-                    "session": _session_summary(session),
+                    "session": _session_summary(session, data_root),
                     "progress": self.db.papers.get_session_progress(int(session["id"])),
                     "review": self._review_summary(int(session["id"]), session, workspace),
                 }
@@ -66,7 +67,7 @@ class WorkbenchService:
         if session_id is not None:
             session = self.db.sessions.get_grading_session(int(session_id))
             if session is not None:
-                current_session = _session_summary(session)
+                current_session = _session_summary(session, data_root)
                 progress = self.db.papers.get_session_progress(int(session_id))
                 review = next((row["review"] for row in recent_sessions
                                if row["session"]["id"] == session_id), None)
@@ -126,7 +127,16 @@ class WorkbenchService:
         return items
 
 
-def _session_summary(row: dict[str, Any]) -> dict[str, Any]:
+def _session_summary(row: dict[str, Any], data_root: Path | None = None) -> dict[str, Any]:
+    kind = "scan"
+    exam_date = None
+    if data_root is not None:
+        from backend.score_import.context import read_import_context
+
+        context = read_import_context(Path(data_root) / "templates", int(row["id"]))
+        if context is not None:
+            kind = str(context.get("kind") or "zhixue_import")
+            exam_date = str(context.get("exam_date") or "").strip() or None
     return {
         "id": int(row["id"]),
         "name": str(row["session_name"]),
@@ -136,6 +146,8 @@ def _session_summary(row: dict[str, Any]) -> dict[str, Any]:
         "deleted_at": row.get("deleted_at"),
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
+        "kind": kind,
+        "exam_date": exam_date,
     }
 
 

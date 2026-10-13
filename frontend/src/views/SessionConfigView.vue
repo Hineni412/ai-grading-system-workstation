@@ -29,6 +29,8 @@ import {
   type ConfigGenerationRequest,
 } from '../api/config-workspace'
 import type { JobResponse } from '../api/jobs'
+import type { SessionKind } from '../api/sessions'
+import { fetchScoreImportState } from '../api/score-import'
 import { fetchRegionReadiness, type RegionReadiness } from '../api/template-regions'
 import { chapterTypeCostNote } from '../api/question-bank'
 import { useConfirm } from '../composables/useConfirm'
@@ -67,7 +69,7 @@ useResizeObserver(pageHeader, () => {
 })
 const { confirm } = useConfirm()
 const requestedStage = ref(new URLSearchParams(window.location.search).get('stage'))
-type StageId = 'draft' | 'source' | 'generation' | 'editor' | 'template'
+type StageId = 'draft' | 'source' | 'generation' | 'editor' | 'template' | 'import'
 const activePanel = ref<'source' | 'editor'>('source')
 const sourceStage = ref<'draft' | 'source' | 'generation'>('draft')
 const transitionName = ref<'fx-stage-forward' | 'fx-stage-back'>('fx-stage-forward')
@@ -84,7 +86,14 @@ const scoreReviewRequiredQuestions = ref(new Set<string>())
 const scoreReviewSatisfiedQuestions = ref(new Set<string>())
 const templatePresent = ref(false)
 const templateReady = ref(false)
+const importDone = ref(false)
 let templateLoadGeneration = 0
+
+const draftKind = ref<SessionKind>('scan')
+const isImportSession = computed(
+  () => draftKind.value === 'zhixue_import'
+    || sessionStore.currentSession?.kind === 'zhixue_import',
+)
 
 const saving = computed(() => configStore.saveStatus === 'saving')
 const saveUnknown = computed(() => configStore.saveStatus === 'unknown')
@@ -194,6 +203,13 @@ watch(
 )
 
 async function selectStage(stage: StageId): Promise<void> {
+  if (stage === 'import') {
+    const sessionId = sessionStore.currentSession?.id
+    if (sessionId !== undefined && configStore.editor?.configured) {
+      window.location.assign(`/sessions/${sessionId}/import`)
+    }
+    return
+  }
   if (stage === 'template') {
     const sessionId = sessionStore.currentSession?.id
     if (sessionId !== undefined && configStore.editor?.configured) {
@@ -242,7 +258,17 @@ watch([
   const generation = ++templateLoadGeneration
   templatePresent.value = false
   templateReady.value = false
+  importDone.value = false
   if (sessionId === null) return
+  if (sessionStore.currentSession?.kind === 'zhixue_import') {
+    try {
+      const state = await fetchScoreImportState(sessionId)
+      if (generation !== templateLoadGeneration
+        || sessionStore.currentSession?.id !== sessionId) return
+      importDone.value = state.has_results
+    } catch { /* keep the conservative not-imported state */ }
+    return
+  }
   try {
     const readiness = await props.templateReadinessLoader(sessionId)
     if (generation !== templateLoadGeneration
@@ -667,6 +693,8 @@ watch(
           :editor-ready="configStore.editor?.configured === true"
           :template-present="templatePresent"
           :template-ready="templateReady"
+          :import-session="isImportSession"
+          :import-done="importDone"
           @select="selectStage"
         />
       </template>
@@ -695,7 +723,7 @@ watch(
         <section v-if="activePanel === 'source'" key="source" class="config-workspace__panel" aria-label="试卷准备">
           <div id="config-source-stage" tabindex="-1">
             <div class="config-intake-bar">
-              <SessionDraftPanel />
+              <SessionDraftPanel v-model:kind="draftKind" />
               <ConfigSourceUpload
                 v-if="sessionStore.currentSession"
                 :session-id="sessionStore.currentSession.id"
@@ -794,15 +822,22 @@ watch(
             <span v-else-if="saving" class="config-editor__save-state">正在保存…</span>
             <div class="config-editor__save-actions">
               <a
+                v-if="isImportSession"
                 class="config-editor__next-link"
-                :href="`/sessions/${sessionStore.currentSession.id}/regions`"
-                :title="templateSummary"
-              >样卷题框 · {{ templateAction }} →</a>
-              <a
-                v-if="templateReady"
-                class="config-editor__next-link"
-                :href="`/sessions/${sessionStore.currentSession.id}/grading-run`"
-              >批改执行 →</a>
+                :href="`/sessions/${sessionStore.currentSession.id}/import`"
+              >导入成绩 →</a>
+              <template v-else>
+                <a
+                  class="config-editor__next-link"
+                  :href="`/sessions/${sessionStore.currentSession.id}/regions`"
+                  :title="templateSummary"
+                >样卷题框 · {{ templateAction }} →</a>
+                <a
+                  v-if="templateReady"
+                  class="config-editor__next-link"
+                  :href="`/sessions/${sessionStore.currentSession.id}/grading-run`"
+                >批改执行 →</a>
+              </template>
               <AppButton
                 type="button"
                 variant="primary"

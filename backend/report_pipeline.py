@@ -47,8 +47,13 @@ def run_report_pipeline(
         raise ValueError(state["read_error"])
     db = open_grading_repositories(Path(db_path))
 
+    # 成绩导入考试只走选择题选项映射（题库错法已有时零调用），且不生成个人报告。
+    from backend.score_import.context import is_import_session_data_root
+
+    import_option_only = is_import_session_data_root(data_root, session_id)
+
     client = llm_client_factory() if llm_client_factory is not None else None
-    if client is None:
+    if client is None and not import_option_only:
         # 未配置内容生成模型：不静默换模型，记 not_configured 供页面降级显示；
         # 只写状态字段，已有内容原样保留。
         store.save(
@@ -84,19 +89,22 @@ def run_report_pipeline(
         causes = {"kind": "causes", "status": "error"}
 
     context.raise_if_cancelled()
-    context.report(0.5, "report_pipeline", "正在生成个人报告")
-    personal_summary = generate_pending_personal_reports(
-        context,
-        db=db,
-        session_id=session_id,
-        reports_dir=Path(reports_dir),
-        data_root=data_root,
-        client=client,
-        exporter_factory=exporter_factory,
-        regenerate_existing=context.payload.get("regenerate_existing") is True and mode == "manual",
-        progress_band=(0.5, 0.98),
-        progress_stage="report_pipeline",
-    )
+    if import_option_only:
+        personal_summary = {"generated": 0, "failed": 0, "skipped": 0}
+    else:
+        context.report(0.5, "report_pipeline", "正在生成个人报告")
+        personal_summary = generate_pending_personal_reports(
+            context,
+            db=db,
+            session_id=session_id,
+            reports_dir=Path(reports_dir),
+            data_root=data_root,
+            client=client,
+            exporter_factory=exporter_factory,
+            regenerate_existing=context.payload.get("regenerate_existing") is True and mode == "manual",
+            progress_band=(0.5, 0.98),
+            progress_stage="report_pipeline",
+        )
 
     ready = (
         causes.get("status") == "ready"
@@ -242,14 +250,27 @@ def build_report_pipeline_status(
         regenerate_existing=regenerate_existing,
     )
 
+    # 成绩导入考试不生成个人报告。
+    from backend.score_import.context import is_import_session_data_root
+    from backend.session_analysis import infer_data_root
+
+    import_option_only = is_import_session_data_root(
+        infer_data_root(repositories.db_path),
+        session_id,
+    )
+
     personal_states = personal_report_states(
         repositories, int(session_id), Path(reports_dir)
     )["students"]
-    personal_pending_ids = {
-        int(entry["student_id"])
-        for entry in personal_states
-        if (entry["status"] == "missing" and not entry.get("read_error")) or (regenerate_existing and entry["status"] != "unavailable")
-    }
+    personal_pending_ids = (
+        set()
+        if import_option_only
+        else {
+            int(entry["student_id"])
+            for entry in personal_states
+            if (entry["status"] == "missing" and not entry.get("read_error")) or (regenerate_existing and entry["status"] != "unavailable")
+        }
+    )
     personal_total = sum(
         1 for entry in personal_states if entry["status"] != "unavailable"
     )

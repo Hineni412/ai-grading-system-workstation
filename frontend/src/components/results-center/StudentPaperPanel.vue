@@ -100,6 +100,11 @@ const markByItem = computed(() => {
   return map
 })
 
+// 导入的考试没有样卷题框，任何题都没有框选标记时不逐题提示。
+const hasAnyMark = computed(() => props.items.some(
+  (item) => markByItem.value.has(item.review_item_id),
+))
+
 const unexpectedIds = computed(() => {
   const peers = props.results.students.filter(
     (peer) => (peer.class_name ?? '') === (props.student.class_name ?? '')
@@ -277,11 +282,16 @@ watch(() => props.student.student_id, () => {
           <span class="results-status" :data-status="item.score_status">
             {{ scoreStatusLabel(item.score_status) }}
           </span>
+          <span
+            v-if="item.combined_group"
+            class="paper-list__tag"
+            title="这几题合起来给一个总分"
+          >合并给分</span>
           <span v-if="unexpectedIds.has(item.question_id)" class="paper-list__tag">
             意外失分
           </span>
           <span
-            v-if="!markByItem.has(item.review_item_id)"
+            v-if="!markByItem.has(item.review_item_id) && hasAnyMark"
             class="paper-list__tag is-muted"
           >卷面未框选</span>
         </button>

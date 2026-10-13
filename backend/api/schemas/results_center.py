@@ -33,6 +33,7 @@ class ResultsCenterItemResponse(BaseModel):
     result_id: int | None = None
     detail_id: int | None = None
     alternative_solution_detected: bool = Field(default=False, exclude_if=lambda value: not value)
+    combined_group: bool = Field(default=False, exclude_if=lambda value: not value)
 
 
 class ResultsCenterQuestionResponse(BaseModel):
@@ -45,6 +46,7 @@ class ResultsCenterQuestionResponse(BaseModel):
     ai_ready_count: int
     teacher_final_count: int
     average_score: float | None = None
+    combined_group: bool = Field(default=False, exclude_if=lambda value: not value)
 
 
 class ResultsCenterStudentResponse(BaseModel):

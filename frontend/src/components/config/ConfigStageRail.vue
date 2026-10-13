@@ -4,7 +4,7 @@ import { computed } from 'vue'
 import StepProgress, { type StepProgressStep } from '../design-system/StepProgress.vue'
 import type { ConfigPhase } from '../../stores/config-workspace'
 
-type StageId = 'draft' | 'source' | 'generation' | 'editor' | 'template'
+type StageId = 'draft' | 'source' | 'generation' | 'editor' | 'template' | 'import'
 
 const props = defineProps<{
   phase: ConfigPhase
@@ -15,6 +15,8 @@ const props = defineProps<{
   editorReady: boolean
   templatePresent?: boolean
   templateReady?: boolean
+  importSession?: boolean
+  importDone?: boolean
 }>()
 const emit = defineEmits<{
   select: [stage: StageId]
@@ -22,41 +24,54 @@ const emit = defineEmits<{
 
 // Completion comes only from real readiness flags; `currentStage` below only
 // marks the step being viewed and never changes another step's status.
-const steps = computed<StepProgressStep[]>(() => [
-  {
-    id: 'draft', label: '考试草稿',
-    status: props.sessionReady ? 'done' : 'todo',
-    available: true,
-    hint: props.sessionReady ? '已创建' : '待创建',
-  },
-  {
-    id: 'source', label: '上传与拆题',
-    status: props.sourceReady ? 'done' : 'todo',
-    available: props.sessionReady,
-    hint: props.sourceReady ? '来源已读取' : '待上传',
-  },
-  {
-    id: 'generation', label: '分析并入库',
-    status: props.editorReady ? 'done' : props.generationSubmitted ? 'in_progress' : 'todo',
-    available: props.sourceReady || props.generationSubmitted || props.editorReady,
-    hint: props.editorReady ? '已入库并赋分'
-      : props.generationSubmitted ? '任务已提交' : '待提交',
-  },
-  {
-    id: 'editor', label: '本场赋分',
-    status: props.editorReady ? 'done' : 'todo',
-    available: props.editorReady,
-    hint: props.editorReady ? '可检查分值' : '待入库成功',
-  },
-  {
+const steps = computed<StepProgressStep[]>(() => {
+  const shared: StepProgressStep[] = [
+    {
+      id: 'draft', label: '考试草稿',
+      status: props.sessionReady ? 'done' : 'todo',
+      available: true,
+      hint: props.sessionReady ? '已创建' : '待创建',
+    },
+    {
+      id: 'source', label: '上传与拆题',
+      status: props.sourceReady ? 'done' : 'todo',
+      available: props.sessionReady,
+      hint: props.sourceReady ? '来源已读取' : '待上传',
+    },
+    {
+      id: 'generation', label: '分析并入库',
+      status: props.editorReady ? 'done' : props.generationSubmitted ? 'in_progress' : 'todo',
+      available: props.sourceReady || props.generationSubmitted || props.editorReady,
+      hint: props.editorReady ? '已入库并赋分'
+        : props.generationSubmitted ? '任务已提交' : '待提交',
+    },
+    {
+      id: 'editor', label: '本场赋分',
+      status: props.editorReady ? 'done' : 'todo',
+      available: props.editorReady,
+      hint: props.editorReady ? '可检查分值' : '待入库成功',
+    },
+  ]
+  if (props.importSession) {
+    shared.push({
+      id: 'import', label: '导入成绩',
+      status: props.importDone ? 'done' : props.editorReady ? 'todo' : 'todo',
+      available: props.editorReady,
+      hint: props.importDone ? '已导入'
+        : props.editorReady ? '可开始' : '待本场赋分',
+    })
+    return shared
+  }
+  shared.push({
     id: 'template', label: '样卷题框',
     status: props.templateReady ? 'done' : props.templatePresent ? 'in_progress' : 'todo',
     available: props.editorReady,
     hint: props.templateReady ? '已确认'
       : props.templatePresent ? '标定中'
         : props.editorReady ? '可开始' : '待本场赋分',
-  },
-])
+  })
+  return shared
+})
 
 const currentStage = computed<StageId>(() => props.activeStage ?? props.phase)
 

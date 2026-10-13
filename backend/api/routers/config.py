@@ -21,6 +21,7 @@ from backend.api.dependencies import (
     get_upload_config_dir,
 )
 from backend.api.routers.jobs import _job_response
+from backend.api.routers.score_import import require_import_config_editable
 from backend.api.routers.sessions import _require_session
 from backend.api.schemas.config import (
     ConfigEditorResponse,
@@ -426,8 +427,10 @@ def save_session_config(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     manager: JobManager = Depends(get_job_manager),
     upload_config_dir: Path = Depends(get_upload_config_dir),
+    templates_dir: Path = Depends(get_config_mapping_output_dir),
 ) -> SessionConfigResponse:
     _require_active_session(db, session_id)
+    require_import_config_editable(db, templates_dir, session_id)
     payload = request.model_dump()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     try:
@@ -571,6 +574,7 @@ def save_config_editor(
     templates_dir: Path = Depends(get_config_mapping_output_dir),
 ) -> dict[str, Any]:
     _require_active_session(db, session_id)
+    require_import_config_editable(db, templates_dir, session_id)
     try:
         current, saved, mapping_result = save_editor_config_and_refresh_mapping(
             db,
@@ -927,8 +931,10 @@ def generate_session_config_from_source(
     source_service: ConfigSourceService = Depends(get_config_source_service),
     question_bank_db_path: Path = Depends(get_question_bank_db_path),
     data_root: Path = Depends(get_data_root),
+    templates_dir: Path = Depends(get_config_mapping_output_dir),
 ) -> JobResponse:
     session = _require_active_session(db, session_id)
+    require_import_config_editable(db, templates_dir, session_id)
     if request.generation_mode != "batched" or not request.sync_to_question_bank:
         raise ApiError(
             409,
@@ -1075,8 +1081,10 @@ def retry_session_config_generation(
     request: ConfigGenerationRetryRequest,
     db: GradingRepositoryAccess = Depends(get_grading_db),
     manager: JobManager = Depends(get_job_manager),
+    templates_dir: Path = Depends(get_config_mapping_output_dir),
 ) -> JobResponse:
     _require_active_session(db, session_id)
+    require_import_config_editable(db, templates_dir, session_id)
     replay = _replay_config_request(manager, session_id, request)
     if replay is not None:
         return replay

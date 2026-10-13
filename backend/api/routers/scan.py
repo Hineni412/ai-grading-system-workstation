@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from tempfile import SpooledTemporaryFile
 from urllib.parse import unquote
 
@@ -11,8 +12,10 @@ from backend.api.dependencies import (
     get_grading_db,
     get_scan_grading_workspace,
     get_template_upload_service,
+    get_templates_dir,
 )
 from backend.api.routers.jobs import _job_response
+from backend.api.routers.score_import import reject_if_import_session
 from backend.api.routers.sessions import _require_session
 from backend.api.schemas.jobs import JobResponse
 from backend.api.schemas.scan import (
@@ -125,8 +128,10 @@ async def upload_session_scan(
     append: bool = False,
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
+    templates_dir: Path = Depends(get_templates_dir),
 ) -> ScanUploadResponse:
     _require_session(db.sessions, session_id)
+    reject_if_import_session(templates_dir, session_id)
     if replacement and append:
         raise ApiError(422, "scan_upload_mode_conflict", "Conflicting upload modes")
     filename = unquote(str(request.headers.get("x-upload-filename") or ""))
@@ -208,8 +213,10 @@ def remove_session_scan_upload(
     append: bool = False,
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
+    templates_dir: Path = Depends(get_templates_dir),
 ) -> ScanUploadBatchResponse:
     _require_session(db.sessions, session_id)
+    reject_if_import_session(templates_dir, session_id)
     if not append:
         return _mutate_draft_uploads(
             lambda: workspace.remove_upload(
@@ -259,8 +266,10 @@ def clear_session_scan_uploads(
     replacement: bool = False,
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
+    templates_dir: Path = Depends(get_templates_dir),
 ) -> ScanUploadBatchResponse:
     _require_session(db.sessions, session_id)
+    reject_if_import_session(templates_dir, session_id)
     return _mutate_draft_uploads(
         lambda: workspace.clear_uploads(
             session_id,
@@ -279,8 +288,10 @@ def freeze_session_scan_uploads(
     request: ScanUploadFreezeRequest,
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
+    templates_dir: Path = Depends(get_templates_dir),
 ) -> ScanUploadBatchResponse:
     _require_session(db.sessions, session_id)
+    reject_if_import_session(templates_dir, session_id)
     try:
         batch = workspace.freeze_uploads(
             session_id,
@@ -303,8 +314,10 @@ def start_new_session_scan_batch(
     session_id: int,
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
+    templates_dir: Path = Depends(get_templates_dir),
 ) -> ScanUploadBatchResponse:
     _require_session(db.sessions, session_id)
+    reject_if_import_session(templates_dir, session_id)
     try:
         batch = workspace.start_new_upload_batch(session_id)
     except ActiveScanAnalysisError as exc:
@@ -326,8 +339,10 @@ def begin_session_scan_replacement(
     session_id: int,
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
+    templates_dir: Path = Depends(get_templates_dir),
 ) -> ScanUploadBatchResponse:
     _require_session(db.sessions, session_id)
+    reject_if_import_session(templates_dir, session_id)
     try:
         batch = workspace.begin_replacement_upload(session_id)
     except ActiveScanAnalysisError as exc:
@@ -352,8 +367,10 @@ def cancel_session_scan_replacement(
     session_id: int,
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
+    templates_dir: Path = Depends(get_templates_dir),
 ) -> dict[str, bool]:
     _require_session(db.sessions, session_id)
+    reject_if_import_session(templates_dir, session_id)
     workspace.cancel_replacement_upload(session_id)
     return {"cancelled": True}
 
@@ -367,8 +384,10 @@ def commit_session_scan_replacement(
     request: ScanUploadFreezeRequest,
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
+    templates_dir: Path = Depends(get_templates_dir),
 ) -> ScanUploadBatchResponse:
     _require_session(db.sessions, session_id)
+    reject_if_import_session(templates_dir, session_id)
     try:
         batch = workspace.commit_replacement_upload(
             session_id,
@@ -478,8 +497,10 @@ def analyze_session_scans(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     workspace: ScanGradingWorkspace = Depends(get_scan_grading_workspace),
     template_service: TemplateUploadService = Depends(get_template_upload_service),
+    templates_dir: Path = Depends(get_templates_dir),
 ) -> JobResponse:
     _require_session(db.sessions, session_id)
+    reject_if_import_session(templates_dir, session_id)
     request = request or ScanAnalyzeRequest()
     try:
         template = template_service.load_current(db=db, session_id=session_id)

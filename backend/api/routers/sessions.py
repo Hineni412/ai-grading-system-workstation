@@ -26,6 +26,7 @@ from backend.api.dependencies import (
     get_review_application_service,
     get_media_service,
     get_ops_self_check_service,
+    get_templates_dir,
 )
 from backend.api.routers.jobs import _job_response
 from backend.api.schemas.jobs import JobResponse
@@ -239,7 +240,19 @@ def _require_active_session(
     return session
 
 
-def _session_summary(row: dict[str, Any]) -> SessionSummary:
+def _session_summary(
+    row: dict[str, Any],
+    templates_dir: Path | None = None,
+) -> SessionSummary:
+    kind: str = "scan"
+    exam_date: str | None = None
+    if templates_dir is not None:
+        from backend.score_import.context import read_import_context
+
+        context = read_import_context(templates_dir, int(row["id"]))
+        if context is not None:
+            kind = str(context.get("kind") or "zhixue_import")
+            exam_date = str(context.get("exam_date") or "").strip() or None
     return SessionSummary(
         id=int(row["id"]),
         name=str(row["session_name"]),
@@ -251,11 +264,16 @@ def _session_summary(row: dict[str, Any]) -> SessionSummary:
         deleted_at=row.get("deleted_at"),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
+        kind=kind,
+        exam_date=exam_date,
     )
 
 
-def _session_detail(row: dict[str, Any]) -> SessionDetail:
-    summary = _session_summary(row).model_dump()
+def _session_detail(
+    row: dict[str, Any],
+    templates_dir: Path | None = None,
+) -> SessionDetail:
+    summary = _session_summary(row, templates_dir).model_dump()
     return SessionDetail(
         **summary,
         rubric_path=str(row.get("rubric_path") or ""),
@@ -513,9 +531,10 @@ def _submit_question_bank_sync(
 def list_sessions(
     include_deleted: bool = False,
     sessions: SessionRepositoryGateway = Depends(get_session_repository),
+    templates_dir: Path = Depends(get_templates_dir),
 ) -> SessionListResponse:
     items = [
-        _session_summary(row)
+        _session_summary(row, templates_dir)
         for row in sessions.list_grading_sessions(include_deleted)
     ]
     return SessionListResponse(items=items, total=len(items))
@@ -540,8 +559,9 @@ def list_pending_permanent_cleanups(
 def get_session(
     session_id: int,
     sessions: SessionRepositoryGateway = Depends(get_session_repository),
+    templates_dir: Path = Depends(get_templates_dir),
 ) -> SessionDetail:
-    return _session_detail(_require_session(sessions, session_id))
+    return _session_detail(_require_session(sessions, session_id), templates_dir)
 
 
 @router.get("/sessions/{session_id}/progress", response_model=SessionProgress)
@@ -608,11 +628,50 @@ def list_answer_regions(
     return AnswerRegionListResponse(items=items, total=len(items))
 
 
+def _validate_session_kind_request(kind: str, exam_date: Any) -> None:
+    if kind == "zhixue_import":
+        if exam_date is None:
+            raise ApiError(
+                422,
+                "exam_date_required",
+                "智学网成绩导入考试需要选择考试日期。",
+            )
+    elif exam_date is not None:
+        raise ApiError(
+            422,
+            "exam_date_not_allowed",
+            "只有智学网成绩导入考试需要考试日期。",
+        )
+
+
+def _apply_session_kind(
+    sessions: SessionRepositoryGateway,
+    templates_dir: Path,
+    session_id: int,
+    *,
+    kind: str,
+    exam_date: Any,
+) -> None:
+    if kind != "zhixue_import":
+        return
+    from backend.score_import.context import write_import_context
+
+    write_import_context(templates_dir, int(session_id), exam_date=str(exam_date))
+    # created_at carries the exam date so mastery evidence and history order
+    # by the real exam day, not the day the import was performed.
+    sessions.set_grading_session_created_at(
+        int(session_id),
+        f"{exam_date} 08:00:00",
+    )
+
+
 @router.post("/sessions", response_model=SessionDetail, status_code=201)
 def create_session(
     request: CreateSessionRequest,
     sessions: SessionRepositoryGateway = Depends(get_session_repository),
+    templates_dir: Path = Depends(get_templates_dir),
 ) -> SessionDetail:
+    _validate_session_kind_request(request.kind, request.exam_date)
     try:
         volume_id = _explicit_curriculum_volume_id(request.curriculum_volume_id)
         session_id = sessions.create_grading_session(
@@ -623,6 +682,13 @@ def create_session(
             source_paper_sha256=request.source_paper_sha256,
             curriculum_volume_id=volume_id,
         )
+        _apply_session_kind(
+            sessions,
+            templates_dir,
+            session_id,
+            kind=request.kind,
+            exam_date=request.exam_date,
+        )
     except SessionNameConflict as exc:
         raise ApiError(
             409,
@@ -631,7 +697,10 @@ def create_session(
         ) from exc
     except ValueError as exc:
         raise ApiError(400, "invalid_session", str(exc)) from exc
-    return _session_detail(_require_session(sessions, session_id))
+    return _session_detail(
+        _require_session(sessions, session_id),
+        templates_dir,
+    )
 
 
 @router.post("/sessions/drafts", response_model=SessionSummary, status_code=201)
@@ -639,7 +708,9 @@ def create_session_draft_route(
     request: CreateSessionDraftRequest,
     sessions: SessionRepositoryGateway = Depends(get_session_repository),
     upload_config_dir: Path = Depends(get_upload_config_dir),
+    templates_dir: Path = Depends(get_templates_dir),
 ) -> SessionSummary:
+    _validate_session_kind_request(request.kind, request.exam_date)
     try:
         volume_id = _explicit_curriculum_volume_id(request.curriculum_volume_id)
         session_id = create_session_draft(
@@ -647,6 +718,13 @@ def create_session_draft_route(
             upload_config_dir,
             name=request.name,
             curriculum_volume_id=volume_id,
+        )
+        _apply_session_kind(
+            sessions,
+            templates_dir,
+            session_id,
+            kind=request.kind,
+            exam_date=request.exam_date,
         )
     except SessionNameConflict as exc:
         raise ApiError(
@@ -656,7 +734,10 @@ def create_session_draft_route(
         ) from exc
     except ValueError as exc:
         raise ApiError(400, "invalid_session_draft", str(exc)) from exc
-    return _session_summary(_require_session(sessions, session_id))
+    return _session_summary(
+        _require_session(sessions, session_id),
+        templates_dir,
+    )
 
 
 @router.patch("/sessions/{session_id}", response_model=SessionSummary)
@@ -664,6 +745,7 @@ def rename_session(
     session_id: int,
     request: RenameSessionRequest,
     sessions: SessionRepositoryGateway = Depends(get_session_repository),
+    templates_dir: Path = Depends(get_templates_dir),
 ) -> SessionSummary:
     _require_active_session(sessions, session_id)
     curriculum_provided = "curriculum_volume_id" in request.model_fields_set
@@ -687,7 +769,10 @@ def rename_session(
             "session_name_conflict",
             _SESSION_NAME_CONFLICT_MESSAGE,
         ) from exc
-    return _session_summary(_require_active_session(sessions, session_id))
+    return _session_summary(
+        _require_active_session(sessions, session_id),
+        templates_dir,
+    )
 
 
 @router.post(
@@ -854,6 +939,7 @@ def get_session_deletion_impact(
     db: GradingRepositoryAccess = Depends(get_grading_db),
     data_root: Path = Depends(get_data_root),
     question_bank_db_path: Path = Depends(get_question_bank_db_path),
+    templates_dir: Path = Depends(get_templates_dir),
 ) -> SessionDeletionImpactResponse:
     # Preview can restore storage left by an interrupted delete. It must not
     # run while the same exam is between staging and database commit.
@@ -867,7 +953,7 @@ def get_session_deletion_impact(
                 "Session not found",
                 {"session_id": int(session_id)},
             ) from exc
-        session = _session_summary(impact["session"])
+        session = _session_summary(impact["session"], templates_dir)
         active_jobs = int(impact["active_jobs"])
         active_grading_runs = int(impact["active_grading_runs"])
         storage_counts = preview_session_permanent_deletion(
@@ -920,6 +1006,7 @@ def soft_delete_session(
     session_id: int,
     request: DeleteSessionRequest,
     sessions: SessionRepositoryGateway = Depends(get_session_repository),
+    templates_dir: Path = Depends(get_templates_dir),
 ) -> SessionDetail:
     try:
         with session_lifecycle_guard(int(session_id)):
@@ -960,7 +1047,7 @@ def soft_delete_session(
                 "active_grading_runs": exc.active_grading_runs,
             },
         ) from exc
-    return _session_detail(deleted)
+    return _session_detail(deleted, templates_dir)
 
 
 @router.delete(
@@ -1071,8 +1158,12 @@ def permanently_delete_session(
 def restore_session(
     session_id: int,
     sessions: SessionRepositoryGateway = Depends(get_session_repository),
+    templates_dir: Path = Depends(get_templates_dir),
 ) -> SessionDetail:
     with session_lifecycle_guard(int(session_id)):
         _require_session(sessions, session_id)
         sessions.restore_grading_session(int(session_id))
-    return _session_detail(_require_session(sessions, session_id))
+    return _session_detail(
+        _require_session(sessions, session_id),
+        templates_dir,
+    )

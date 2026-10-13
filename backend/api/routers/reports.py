@@ -451,10 +451,15 @@ def get_class_analysis(
     )
     active_job_id = active_jobs[0].id if active_jobs else None
     page_data = build_class_page_data(data, compact=view == "summary") if has_data else None
+    from backend.score_import.context import is_import_session_data_root
+    from backend.session_analysis import infer_data_root
+
     cause_analysis = apply_cause_results(
         page_data, data, cause_inputs, state,
         session_id=int(session_id),
         question_bank_path=question_bank_db_path(Path(db.db_path)),
+        option_only=is_import_session_data_root(
+            infer_data_root(Path(db.db_path)), int(session_id)),
     )
     bank_path = question_bank_db_path(Path(db.db_path))
     if page_data is not None and bank_path is not None:
@@ -606,6 +611,7 @@ def submit_report_pipeline(
     request: ReportPipelineRequest | None = None,
     db: GradingRepositoryAccess = Depends(get_grading_db),
     manager: JobManager = Depends(get_job_manager),
+    reports_dir: Path = Depends(get_reports_dir),
 ) -> JobResponse:
     """手动触发「AI 整理」：补齐缺失、失败或显式需要更新的内容；复用进行中任务。"""
     _require_session(db.sessions, session_id)
@@ -624,11 +630,26 @@ def submit_report_pipeline(
     )
 
     if resolve_content_generation_settings() is None:
-        raise ApiError(
-            422,
-            "content_generation_model_not_configured",
-            "Content generation model is not configured",
+        # 成绩导入考试的整理在题库错法齐全时不需要模型，可照常提交。
+        from backend.reporting.analysis_report_exporter import plan_cause_calls
+        from backend.score_import.context import is_import_session_data_root
+        from backend.session_analysis import infer_data_root
+
+        free_run = (
+            is_import_session_data_root(
+                infer_data_root(Path(db.db_path)), int(session_id))
+            and plan_cause_calls(
+                db, int(session_id), reports_dir=Path(reports_dir),
+                retry_failed=bool(request and request.regenerate_existing),
+                regenerate_existing=bool(request and request.regenerate_existing),
+            )["call_count"] == 0
         )
+        if not free_run:
+            raise ApiError(
+                422,
+                "content_generation_model_not_configured",
+                "Content generation model is not configured",
+            )
     job = submit_class_analysis_generate(
         manager=manager,
         session_id=int(session_id),

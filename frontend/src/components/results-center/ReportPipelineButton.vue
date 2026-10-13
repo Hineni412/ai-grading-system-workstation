@@ -10,10 +10,11 @@ import StatePanel from '../design-system/StatePanel.vue'
 import { formatTokenCount } from '../file-center/report-format'
 import { cachedPipelineStatus, invalidatePipelineStatus, requestPipelineStatus } from './pipeline-status-cache'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   sessionId: number
   activeJob: JobResponse | null
-}>()
+  importSession?: boolean
+}>(), { importSession: false })
 
 const jobs = useJobStore()
 const open = ref(false)
@@ -39,6 +40,9 @@ const totalTokens = computed(() => (
   (status.value?.causes.estimated_tokens ?? 0)
   + (status.value?.personal_reports.estimated_tokens ?? 0)
 ))
+// 导入的考试只按作答选项整理错因、不生成个人报告，全程不调用模型；
+// 没有模型配置也能整理，不显示「需要配置模型」的阻断提示。
+const noModelNeeded = computed(() => props.importSession && totalCalls.value === 0)
 
 const badgeCount = computed(() => {
   const value = status.value
@@ -130,7 +134,7 @@ async function updateScope(event: Event) {
 
 async function confirm() {
   if (loading.value || revalidating.value || submitting.value || pipelineActive.value
-    || status.value?.configured !== true || status.value.complete) return
+    || (status.value?.configured !== true && !noModelNeeded.value) || status.value?.complete) return
   submitting.value = true
   error.value = ''
   try {
@@ -178,12 +182,15 @@ onBeforeUnmount(() => controller?.abort())
       <template v-else-if="status">
         <p v-if="revalidating" role="status" data-testid="pipeline-revalidating">正在核对最新状态…</p>
         <p
-          v-if="!status.configured"
+          v-if="!status.configured && !noModelNeeded"
           class="file-center__warning"
           role="alert"
           data-testid="pipeline-not-configured"
         >
           未配置内容生成模型，请前往 设置→模型配置 绑定后重试。
+        </p>
+        <p v-if="noModelNeeded" class="excel-settings-dialog__explanation" data-testid="pipeline-no-model-needed">
+          本场只按作答选项整理选择题错因，不调用模型；导入的考试不生成个人报告。
         </p>
 
         <label class="excel-settings-dialog__explanation" data-testid="pipeline-update-existing">
@@ -212,7 +219,11 @@ onBeforeUnmount(() => controller?.abort())
           </div>
         </div>
 
-        <p class="excel-settings-dialog__explanation" data-testid="pipeline-breakdown">
+        <p v-if="importSession" class="excel-settings-dialog__explanation" data-testid="pipeline-breakdown">
+          错因整理 {{ status.causes.pending_questions }} 题（按作答选项整理，无需调用模型）；
+          导入的考试不生成个人报告。
+        </p>
+        <p v-else class="excel-settings-dialog__explanation" data-testid="pipeline-breakdown">
           错因整理 {{ status.causes.pending_questions }} 题（约 {{ status.causes.call_count }} 次调用）；
           个人报告 {{ status.personal_reports.pending }} 人（其中 {{ status.personal_reports.cache_hits }}
           份复用已生成内容）。
@@ -238,7 +249,7 @@ onBeforeUnmount(() => controller?.abort())
         >
           正在整理中，完成后各页面自动更新。
         </p>
-        <p class="excel-settings-dialog__explanation">
+        <p v-if="!noModelNeeded" class="excel-settings-dialog__explanation">
           将向上述服务发送题目资料和学生答卷图片，请使用支持图片的内容生成模型。
           图片用量另计，实际费用取决于服务商定价。AI 分析内容仅供参考，最终成绩保持教师确认结果。
         </p>
@@ -262,7 +273,7 @@ onBeforeUnmount(() => controller?.abort())
               || revalidating
               || submitting
               || pipelineActive
-              || status?.configured !== true
+              || (status?.configured !== true && !noModelNeeded)
               || status?.complete === true
             "
           >

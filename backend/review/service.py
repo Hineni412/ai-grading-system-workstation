@@ -11,7 +11,11 @@ from backend.repositories.access import GradingRepositoryAccess, as_grading_repo
 from backend.repositories.results import RubricUnreadableError
 from backend.repositories.review import ReviewAdjustmentOwnershipError
 from backend.review.rubric import ReviewRubricConfigError
-from backend.scan_grading.grading_completeness import is_objective_detail, review_confidence_threshold
+from backend.scan_grading.grading_completeness import (
+    combined_scoring_groups,
+    is_objective_detail,
+    review_confidence_threshold,
+)
 from path_manager import resolve_stored_file_path
 from backend.question_id_contract import (
     QuestionIdCatalog,
@@ -139,6 +143,7 @@ class ReviewApplicationService:
             question_catalog,
             current_id_by_resolved,
             question_type_by_id,
+            combined_groups,
         ) = (
             _load_scoring_item_map(session, self.db)
         )
@@ -152,6 +157,7 @@ class ReviewApplicationService:
                 question_catalog,
                 current_id_by_resolved,
                 question_type_by_id,
+                combined_groups,
                 requested_question_id=requested_question_id,
                 include_evidence=include_evidence,
             )
@@ -189,6 +195,8 @@ class ReviewApplicationService:
             if (
                 requested_question_id is None
                 or item.question_id == requested_question_id
+                or requested_question_id
+                in (item.metadata.get("combined_group_members") or ())
             )
             and _item_matches_scope(
                 item,
@@ -299,6 +307,7 @@ class ReviewApplicationService:
         question_catalog: QuestionIdCatalog | None,
         current_id_by_resolved: dict[str, str],
         question_type_by_id: dict[str, str | None],
+        combined_groups: list[dict[str, Any]],
         *,
         requested_question_id: str | None = None,
         include_evidence: bool = True,
@@ -321,8 +330,19 @@ class ReviewApplicationService:
             tuple[int, str],
             list[dict[str, Any]],
         ] = {}
+        combined_by_student: dict[int, dict[str, dict[str, Any]]] = {}
+        result_id_by_student: dict[int, int] = {}
         for row in raw_rows:
             student_id = int(row.get("student_id") or 0)
+            if student_id > 0:
+                result_id_by_student.setdefault(
+                    student_id, int(row.get("result_id") or 0)
+                )
+                row_raw = row.get("raw_json")
+                if isinstance(row_raw, dict):
+                    row_combined = row_raw.get("combined_scores")
+                    if isinstance(row_combined, dict):
+                        combined_by_student[student_id] = row_combined
             current_question_id = _current_scoring_item_id(
                 row.get("question_id"),
                 score_map,
@@ -378,11 +398,91 @@ class ReviewApplicationService:
         source_regions = {
             qid: _source_region_id(regions, qid) for qid in selected_scores
         }
+        member_group: dict[str, dict[str, Any]] = {
+            member: group
+            for group in combined_groups
+            for member in group["question_ids"]
+        }
         items: list[ReviewItem] = []
         for paper in papers:
             student_id = int(paper["student_id"])
             student = students.get(student_id, {})
+            student_combined = combined_by_student.get(student_id) or {}
+            emitted_groups: set[str] = set()
             for question_id, max_score in selected_scores.items():
+                group = member_group.get(question_id)
+                if group is not None:
+                    # 组内成员：中间分只记组总分，不出现成员明细行；
+                    # 满分/零分/可推算的学生成员明细照常显示。
+                    entry = student_combined.get(group["group_id"])
+                    if entry is not None:
+                        if group["group_id"] in emitted_groups:
+                            continue
+                        emitted_groups.add(group["group_id"])
+                        metadata = {
+                            "scan_batch_id": scan_batch_id,
+                            "preflight_target_type": str(
+                                paper.get("target_type") or ""
+                            ),
+                            "preflight_target_id": str(
+                                paper.get("target_id") or ""
+                            ),
+                            "preflight_front_media_url": str(
+                                paper.get("front_media_url") or ""
+                            ),
+                            "preflight_back_media_url": (
+                                str(paper.get("back_media_url"))
+                                if paper.get("back_media_url")
+                                else None
+                            ),
+                            "combined_group_id": group["group_id"],
+                            "combined_group_label": group["label"],
+                            "combined_group_members": list(
+                                group["question_ids"]
+                            ),
+                        }
+                        items.append(
+                            ReviewItem(
+                                review_item_id=(
+                                    f"{scan_batch_id}:{student_id}:"
+                                    f"{group['group_id']}"
+                                ),
+                                revision=0,
+                                session_id=session_id,
+                                student_id=student_id,
+                                result_id=result_id_by_student.get(student_id),
+                                detail_id=None,
+                                question_id=str(group["label"]),
+                                student_code=_clean_optional_text(
+                                    student.get("student_code")
+                                ),
+                                student_name=str(
+                                    student.get("name")
+                                    or paper.get("student_name")
+                                    or ""
+                                ),
+                                class_name=_clean_optional_text(
+                                    student.get("class_name")
+                                ),
+                                score_awarded=float(entry["score"]),
+                                max_score=float(
+                                    entry.get("max_score")
+                                    or group["max_score"]
+                                ),
+                                deduction_reason=None,
+                                error_category="教师已确认",
+                                error_summary="合并给分",
+                                confidence_score=None,
+                                needs_review=False,
+                                score_status="teacher_final",
+                                score_source="teacher",
+                                teacher_locked=True,
+                                candidate_scores=[],
+                                metadata=metadata,
+                                question_type=None,
+                            )
+                        )
+                        continue
                 matching_rows = ai_rows_by_key.get(
                     (student_id, question_id),
                     [],
@@ -1161,11 +1261,11 @@ def _load_scoring_item_map(
         data_root=_data_root(db),
     )
     if not rubric_path.exists():
-        return {}, None, {}, {}
+        return {}, None, {}, {}, []
     try:
         rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {}, None, {}, {}
+        return {}, None, {}, {}, []
     try:
         rubric = canonicalize_question_document(rubric)
     except QuestionIdContractError:
@@ -1174,7 +1274,7 @@ def _load_scoring_item_map(
         pass
     questions = rubric.get("questions") if isinstance(rubric, dict) else []
     if not isinstance(questions, list):
-        return {}, None, {}, {}
+        return {}, None, {}, {}, []
     try:
         question_catalog = QuestionIdCatalog.from_document(rubric)
     except QuestionIdContractError:
@@ -1237,6 +1337,7 @@ def _load_scoring_item_map(
         question_catalog,
         current_id_by_resolved,
         question_type_by_id,
+        combined_scoring_groups(rubric),
     )
 
 

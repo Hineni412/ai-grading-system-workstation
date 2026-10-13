@@ -265,6 +265,10 @@ def build_class_page_data(data: SessionAnalysisData, *, compact: bool = False) -
                     "class_name": student.class_name,
                     "score": record.score,
                 })
+                # 导入的成绩没有学生作答内容，不按扣分理由归并错因；
+                # 选择题的结构化错因由 apply_cause_results 另行写入。
+                if str(getattr(data, "session_kind", "") or "") == "zhixue_import":
+                    continue
                 reason = record.error_summary or record.deduction_reason or display_error_category(record.error_category) or "未记录具体错因"
                 # 仅归并已有记录中的相同错因，不把不同表述推断为同一知识错误。
                 seen = set()
@@ -3560,8 +3564,8 @@ def plan_cause_calls(
 
     retry_failed=False 对应导出前置阶段与自动管线：失败题不重发；
     已保存的整理结果照常复用，不按输入内容或分析方法变化重做。
-    待整理题目不少于 2 时，整理完成后还有一次统一错法名的小调用，
-    预估按 +1 计入 call_count。
+    统一错法名的小调用只在存在模型调用时出现（fresh 只来自模型结果）；
+    只要有一题需要发模型就按 +1 计入 call_count。
     """
     from backend.class_analysis import (
         CAUSE_ANALYSIS_PROMPT,
@@ -3592,6 +3596,11 @@ def plan_cause_calls(
     )
     qb_path = question_bank_db_path(repositories.db_path)
     option_scope = True
+    # 成绩导入考试：预估口径与执行一致，只保留选择题选项路径。
+    from backend.score_import.context import is_import_session_data_root
+
+    data_root = infer_data_root(repositories.db_path)
+    option_only = is_import_session_data_root(data_root, session_id)
     bank_context = session_bank_context(qb_path, int(session_id))
     confirmed_by_bank = bank_confirmed_triggers(
         qb_path,
@@ -3600,6 +3609,7 @@ def plan_cause_calls(
     qtypes = {info.question_id: str(info.question_type or "") for info in cause_data.questions}
     pending_questions = 0
     call_count = 0
+    fresh_name_call_possible = False
     estimated_tokens = 0
     for source in sources:
         saved = stored.get(source['question_id']) or {}
@@ -3617,6 +3627,7 @@ def plan_cause_calls(
             question_bank_path=qb_path,
             retry_failed=retry_failed,
             regenerate_existing=regenerate_existing,
+            option_only=option_only,
         )
         if plan["path"] == "skip":
             continue
@@ -3624,6 +3635,10 @@ def plan_cause_calls(
         if not plan["needs_call"]:
             continue
         call_count += 1
+        # 名称归并调用只发生在产生新错法名称的 v3/fill_v3 路径之后；
+        # 选项路径不产生新名称，不触发归并调用。
+        if plan["path"] in {"v3", "fill_v3"}:
+            fresh_name_call_possible = True
         if plan["path"] == "option":
             option = plan["option"]
             estimated_tokens += (
@@ -3644,7 +3659,7 @@ def plan_cause_calls(
     return {
         "total_questions": len(sources),
         "pending_questions": pending_questions,
-        "call_count": call_count + (1 if pending_questions >= 2 else 0),
+        "call_count": call_count + (1 if fresh_name_call_possible else 0),
         "estimated_tokens": estimated_tokens,
     }
 

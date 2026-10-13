@@ -26,7 +26,11 @@ from backend.repositories.access import (
 )
 from backend.repositories.grading_database import open_grading_repositories
 from backend.reporting.export_names import session_export_path_name
-from backend.scan_grading.grading_completeness import resolve_grading_completeness
+from backend.scan_grading.grading_completeness import (
+    combined_scoring_groups,
+    raw_combined_scores,
+    resolve_grading_completeness,
+)
 from path_manager import resolve_stored_file_path
 from backend.question_id_contract import resolve_known_question_id
 
@@ -193,26 +197,55 @@ class ReportGenerator:
             eligible_results,
             options,
         )
+        # 合并给分组：逐人/逐题明细里成员题目折叠成一个组条目；
+        # AI-人工对比与知识点归属仍按成员明细保留证据粒度。
+        groups = combined_scoring_groups(rubric)
+        if groups:
+            (
+                df_details_view,
+                eligible_details_view,
+                score_map_view,
+                type_map_view,
+            ) = self._collapse_combined_detail_frames(
+                df_results,
+                df_details,
+                eligible_details,
+                score_map,
+                type_map,
+                groups,
+            )
+        else:
+            df_details_view = df_details
+            eligible_details_view = eligible_details
+            score_map_view = score_map
+            type_map_view = type_map
         score_detail = self._build_compact_session_report(
             df_results,
-            df_details,
-            score_map,
+            df_details_view,
+            score_map_view,
             rubric=rubric,
             eligible_result_ids=eligible_result_ids,
         )
         error_records = self._session_error_records(int(session_id), score_map)
         question_print = self._build_question_print_analysis(
-            eligible_details,
-            score_map,
-            type_map,
+            eligible_details_view,
+            score_map_view,
+            type_map_view,
             hidden_student_ids,
             answer_map,
             error_records=error_records,
         )
+        from backend.score_import.context import is_import_session_data_root
+        from backend.session_analysis import infer_data_root
+
+        imported_session = is_import_session_data_root(
+            infer_data_root(self.db_path), int(session_id)
+        )
         error_detail = self._build_error_detail_sheet(
-            eligible_details,
-            score_map,
+            eligible_details_view,
+            score_map_view,
             error_records=error_records,
+            imported_session=imported_session,
         )
         ai_teacher_compare = self._build_ai_teacher_comparison_sheet(
             df_details,
@@ -317,6 +350,112 @@ class ReportGenerator:
         workbook.save(output_path)
 
         return output_path
+
+    def _collapse_combined_detail_frames(
+        self,
+        df_results: pd.DataFrame,
+        df_details: pd.DataFrame,
+        eligible_details: pd.DataFrame,
+        score_map: dict[str, float],
+        type_map: dict[str, str],
+        groups: list[dict[str, Any]],
+    ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, float], dict[str, str]]:
+        """合并给分组的成员明细行折叠成组行（中间分学生用组总分）。
+
+        满分/零分学生的组行得分取成员明细之和；只存组总分的学生补一条
+        合成的组行，使逐人与逐题表格按同一口径展示。
+        """
+        member_ids = {
+            member for group in groups for member in group["question_ids"]
+        }
+        group_by_member = {
+            member: group for group in groups for member in group["question_ids"]
+        }
+        combined_by_result: dict[int, dict[str, dict[str, Any]]] = {}
+        result_identity: dict[int, dict[str, Any]] = {}
+        for row in df_results.to_dict(orient="records"):
+            result_id = int(row.get("result_id") or 0)
+            result_identity[result_id] = row
+            combined = raw_combined_scores(row.get("raw_json"))
+            if combined:
+                combined_by_result[result_id] = combined
+
+        def _collapse(df: pd.DataFrame) -> pd.DataFrame:
+            if df.empty:
+                return df
+            kept: list[dict[str, Any]] = []
+            synthesized: dict[tuple[int, str], dict[str, Any]] = {}
+            for row in df.to_dict(orient="records"):
+                qid = str(row.get("question_id") or "")
+                group = group_by_member.get(qid)
+                if group is None:
+                    kept.append(row)
+                    continue
+                result_id = int(row.get("result_id") or 0)
+                key = (result_id, group["group_id"])
+                acc = synthesized.get(key)
+                if acc is None:
+                    acc = dict(row)
+                    acc["question_id"] = group["label"]
+                    acc["score_awarded"] = 0.0
+                    acc["ai_score_awarded"] = None
+                    acc["deduction_reason"] = None
+                    acc["error_category"] = None
+                    acc["error_summary"] = "合并给分"
+                    acc["knowledge_id"] = None
+                    acc["knowledge_ids"] = []
+                    synthesized[key] = acc
+                acc["score_awarded"] = float(acc["score_awarded"]) + float(
+                    row.get("score_awarded") or 0
+                )
+            for (result_id, group_id), acc in synthesized.items():
+                entry = (combined_by_result.get(result_id) or {}).get(group_id)
+                if entry is not None:
+                    acc["score_awarded"] = float(entry["score"])
+                kept.append(acc)
+            for result_id, entries in combined_by_result.items():
+                identity = result_identity.get(result_id) or {}
+                for group_id, entry in entries.items():
+                    if (result_id, group_id) in synthesized:
+                        continue
+                    group = next(
+                        (g for g in groups if g["group_id"] == group_id), None
+                    )
+                    if group is None:
+                        continue
+                    kept.append(
+                        {
+                            "result_id": result_id,
+                            "student_id": identity.get("student_id"),
+                            "student_code": identity.get("student_code"),
+                            "student_name": identity.get("student_name"),
+                            "class_name": identity.get("class_name"),
+                            "question_id": group["label"],
+                            "score_awarded": float(entry["score"]),
+                            "ai_score_awarded": None,
+                            "deduction_reason": None,
+                            "knowledge_id": None,
+                            "knowledge_ids": [],
+                            "error_category": "教师已确认",
+                            "error_summary": "合并给分",
+                        }
+                    )
+            return pd.DataFrame(kept, columns=list(df.columns))
+
+        score_map_view = {
+            key: value for key, value in score_map.items()
+            if key not in member_ids
+        }
+        type_map_view = dict(type_map)
+        for group in groups:
+            score_map_view[group["label"]] = float(group["max_score"])
+            type_map_view[group["label"]] = "合并给分"
+        return (
+            _collapse(df_details),
+            _collapse(eligible_details),
+            score_map_view,
+            type_map_view,
+        )
 
     def _result_statuses(
         self,
@@ -568,6 +707,8 @@ class ReportGenerator:
         df_details: pd.DataFrame,
         score_map: dict[str, float],
         error_records: dict[int, dict[str, list[dict[str, Any]]]] | None = None,
+        *,
+        imported_session: bool = False,
     ) -> pd.DataFrame:
         columns = [
             "班级",
@@ -606,7 +747,11 @@ class ReportGenerator:
             )
             deduction_reason = _translate_deduction_reason(
                 item.get("deduction_reason"),
-                fallback="AI 未提供明确扣分依据，建议教师复核",
+                fallback=(
+                    ""
+                    if imported_session
+                    else "AI 未提供明确扣分依据，建议教师复核"
+                ),
             )
             rows.append(
                 {

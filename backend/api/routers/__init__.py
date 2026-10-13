@@ -14,6 +14,7 @@ from .reports import router as reports_router
 from .results_center import router as results_center_router
 from .review import router as review_router
 from .scan import router as scan_router
+from .score_import import router as score_import_router
 from .sessions import router as sessions_router
 from .students import router as students_router
 from .templates import router as templates_router
@@ -37,6 +38,7 @@ __all__ = [
     "results_center_router",
     "review_router",
     "scan_router",
+    "score_import_router",
     "sessions_router",
     "students_router",
     "templates_router",

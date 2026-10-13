@@ -642,9 +642,12 @@ def _build_paper_review(db, session_id, reports_dir):
         return result
     bank_path = question_bank_db_path(db.db_path)
     bank_map = session_bank_map(bank_path, session_id)
+    from backend.score_import.context import is_import_session_data_root
+    option_only = is_import_session_data_root(infer_data_root(db.db_path), session_id)
     sources = build_cause_inputs(data, known_patterns=known_cause_patterns(store, bank_path, session_id))
     page = build_class_page_data(data)
-    apply_cause_results(page, data, sources, state, session_id=session_id, question_bank_path=bank_path)
+    apply_cause_results(page, data, sources, state, session_id=session_id,
+                        question_bank_path=bank_path, option_only=option_only)
     causes = {q["question_id"]: q.get("causes") or [] for q in page["questions"]}
     materials, difficulties = _bank_materials(bank_path, bank_map.values())
     evidence_parts = _evidence_parts(data, infer_data_root(db.db_path), bank_map)

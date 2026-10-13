@@ -18,7 +18,7 @@ export function dots(r: number | null): number {
 export function band(score: number | null): string {
   return score == null ? 'na' : score >= 80 ? 'good' : score >= 60 ? 'amber' : 'red'
 }
-const questionTypeNames: Record<string, string> = { choice: '选择题', multiple_choice: '多选题', fill_blank: '填空题' }
+const questionTypeNames: Record<string, string> = { choice: '选择题', multiple_choice: '多选题', fill_blank: '填空题', combined: '合并给分' }
 export function questionTypeName(type: string): string {
   return questionTypeNames[type] ?? (type.endsWith('题') ? type : '解答题')
 }

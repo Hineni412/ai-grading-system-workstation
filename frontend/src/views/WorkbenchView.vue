@@ -146,7 +146,10 @@ function retry(source: string) {
 function selectStep(step: string) {
   const id = sessionStore.selectedSessionId
   if (id === null) return
-  openPath(step === 'setup' ? setupPath(id, readiness.value) : step === 'review' ? '/grading'
+  const isImport = workbenchStore.overview?.current_session?.kind === 'zhixue_import'
+  if (isImport && step === 'setup') { openPath('/sessions'); return }
+  openPath(step === 'import' ? `/sessions/${id}/import`
+    : step === 'setup' ? setupPath(id, readiness.value) : step === 'review' ? '/grading'
     : step === 'results' ? '/results' : `/sessions/${id}/grading-run`)
 }
 async function selectExam(id: number, results: boolean) {

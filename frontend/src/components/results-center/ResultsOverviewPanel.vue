@@ -36,6 +36,7 @@ import {
   classDisplayLabel,
   classKeysOf,
   classRateGapOf,
+  combinedGroupMembers,
   compareByClassGap,
   compareByRate,
   compareByZeroShare,
@@ -44,6 +45,8 @@ import {
   displayAnswer,
   formatRate,
   formatScore,
+  groupRateFor,
+  groupStructureFor,
   isCompleteStudent,
   lineCrossings,
   questionRatesFor,
@@ -278,7 +281,19 @@ const classRows = computed<ClassSummary[]>(() => {
   return rows
 })
 
-const questionIds = computed(() => props.results.questions.map(
+// 合并给分：组条目替代成员题展示；成员明细只出现在满分/零分学生身上，
+// 单独给成员题算得分率会产生偏差，因此成员行折叠进组行。
+const combinedGroups = computed(() => combinedGroupMembers(
+  props.results.questions,
+  props.results.students,
+))
+const combinedMemberIds = computed(() => new Set(
+  [...combinedGroups.value.values()].flatMap((members) => [...members]),
+))
+const displayQuestions = computed(() => props.results.questions.filter(
+  (question) => !combinedMemberIds.value.has(question.question_id),
+))
+const questionIds = computed(() => displayQuestions.value.map(
   (question) => question.question_id,
 ))
 
@@ -313,6 +328,7 @@ const scopeAnalysisQuestions = computed(() => (
 interface QuestionRow {
   questionId: string
   maxScore: number
+  combinedGroup: boolean
   rate: number | null
   stem: string | null
   stemTitle: string | null
@@ -357,16 +373,25 @@ const questionRows = computed<QuestionRow[]>(() => {
       rates: classQuestionRates.value.get(key)!,
     }))
     : []
-  const stemList = props.results.questions.map((question) => ({
+  const stemList = displayQuestions.value.map((question) => ({
     question_id: question.question_id,
     stem_summary: analysisById.get(question.question_id)?.stem_summary ?? null,
   }))
-  const rows = props.results.questions.map((question) => {
+  const rows = displayQuestions.value.map((question) => {
     const analysisQuestion = analysisById.get(question.question_id)
+    const members = combinedGroups.value.get(question.question_id)
     const classRates = perClass.map((entry) => ({
       key: entry.key,
       label: entry.label,
-      rate: entry.rates.get(question.question_id) ?? null,
+      rate: members !== undefined
+        ? groupRateFor(
+            props.results.students.filter(
+              (student) => (student.class_name ?? '') === entry.key,
+            ),
+            question.question_id,
+            members,
+          )
+        : entry.rates.get(question.question_id) ?? null,
       isLow: false,
     }))
     const validRates = classRates
@@ -379,12 +404,17 @@ const questionRows = computed<QuestionRow[]>(() => {
     }
     const stem = analysisQuestion?.stem_summary ?? null
     const sub = subQuestionLabelFor(question.question_id, stem, stemList)
-    const structure = scopeScoreStructure.value.get(question.question_id)
-      ?? { full: 0, partial: 0, zero: 0, resolved: 0 }
+    const structure = members !== undefined
+      ? groupStructureFor(studentsInScope.value, question.question_id, members)
+      : scopeScoreStructure.value.get(question.question_id)
+        ?? { full: 0, partial: 0, zero: 0, resolved: 0 }
     return {
       questionId: question.question_id,
       maxScore: question.max_score,
-      rate: scopeQuestionRates.value.get(question.question_id) ?? null,
+      combinedGroup: members !== undefined,
+      rate: members !== undefined
+        ? groupRateFor(studentsInScope.value, question.question_id, members)
+        : scopeQuestionRates.value.get(question.question_id) ?? null,
       stem,
       stemTitle: sub?.parentStem ?? stem,
       subIndex: sub?.index ?? null,
@@ -845,10 +875,13 @@ function openReviewNote(note: AnalysisReviewNoteItem): void {
 // ---- 看卷 10 分钟 ----
 const WALKTHROUGH_RESUME_KEY = 'ai-grading:paper-walkthrough:v1'
 const walkthroughOpen = ref(false)
+const isImportSession = computed(
+  () => sessionStore.currentSession?.kind === 'zhixue_import',
+)
 const walkthroughData = computed(() => walkthroughDataFor(props.results))
 const walkthroughResumeIndex = ref<number | undefined>(undefined)
 const walkthroughAvailable = computed(() => (
-  studentsInScope.value.some(isCompleteStudent)
+  !isImportSession.value && studentsInScope.value.some(isCompleteStudent)
 ))
 const previousScopeStudents = computed(() => {
   if (!previousResults.value) return null
@@ -946,7 +979,10 @@ onMounted(() => {
     <section class="overview__section overview__todo-section" aria-label="待办">
       <div class="overview__todo">
         <div class="overview__todo-item">
-          <template v-if="reviewPending > 0">
+          <span v-if="isImportSession" class="overview__todo-text">
+            成绩来自智学网导入（教师最终分）
+          </span>
+          <template v-else-if="reviewPending > 0">
             <span class="overview__todo-text">
               复核 · {{ reviewPending }} 题待处理<template v-if="reviewBreakdown">（{{ reviewBreakdown }}）</template>
             </span>
@@ -1403,7 +1439,10 @@ onMounted(() => {
             :data-question-id="row.questionId"
             @click="openQuestion(row.questionId)"
           >
-            <span class="overview__qid">{{ row.questionId }}</span>
+            <span class="overview__qid">
+              {{ row.questionId }}
+              <i v-if="row.combinedGroup" class="overview__combined" title="这几题合起来给一个总分">合并</i>
+            </span>
             <span class="overview__stem" :title="row.stemTitle ?? undefined">
               <Skeleton
                 v-if="analysisState === 'loading'"

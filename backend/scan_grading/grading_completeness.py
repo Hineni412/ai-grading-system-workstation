@@ -84,7 +84,87 @@ def details_require_review(details: list[Any], raw_json: dict) -> bool:
     return False
 
 
-def audit_grading_details(rubric: dict, details: list[Any]) -> dict:
+def combined_scoring_groups(rubric: Any) -> list[dict[str, Any]]:
+    """Normalize the rubric-level 合并给分组 metadata; absent → []."""
+    if not isinstance(rubric, Mapping):
+        return []
+    raw = rubric.get("combined_scoring_groups")
+    if not isinstance(raw, list):
+        return []
+    groups: list[dict[str, Any]] = []
+    for entry in raw:
+        if not isinstance(entry, Mapping):
+            continue
+        group_id = str(entry.get("group_id") or "").strip()
+        members = [
+            str(member or "").strip()
+            for member in (entry.get("question_ids") or [])
+            if str(member or "").strip()
+        ]
+        if not group_id or not members:
+            continue
+        groups.append({
+            "group_id": group_id,
+            "label": str(entry.get("label") or group_id).strip() or group_id,
+            "question_ids": members,
+            "max_score": _combined_number(entry.get("max_score")),
+        })
+    return groups
+
+
+def combined_group_members(rubric: Any) -> dict[str, dict[str, Any]]:
+    """member question_id -> its combined scoring group."""
+    return {
+        member: group
+        for group in combined_scoring_groups(rubric)
+        for member in group["question_ids"]
+    }
+
+
+def raw_combined_scores(raw_json: Any) -> dict[str, dict[str, Any]]:
+    """Parse ``raw_json["combined_scores"]`` written by the score import."""
+    parsed = safe_json_loads(raw_json)
+    if not isinstance(parsed, dict):
+        return {}
+    raw = parsed.get("combined_scores")
+    if not isinstance(raw, dict):
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for group_id, entry in raw.items():
+        if not isinstance(entry, Mapping):
+            continue
+        result[str(group_id)] = {
+            "score": _combined_number(entry.get("score")),
+            "max_score": _combined_number(entry.get("max_score")),
+            "question_ids": [
+                str(question_id or "").strip()
+                for question_id in (entry.get("question_ids") or [])
+                if str(question_id or "").strip()
+            ],
+        }
+    return result
+
+
+def combined_scores_total(raw_json: Any) -> float:
+    return sum(
+        entry["score"] for entry in raw_combined_scores(raw_json).values()
+    )
+
+
+def _combined_number(value: Any) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return number if math.isfinite(number) else 0.0
+
+
+def audit_grading_details(
+    rubric: dict,
+    details: list[Any],
+    *,
+    combined_scores: Mapping | None = None,
+) -> dict:
     normalized_rubric = canonicalize_question_document(rubric)
     catalog = QuestionIdCatalog.from_document(normalized_rubric)
     expected = _expected_questions(normalized_rubric)
@@ -92,6 +172,18 @@ def audit_grading_details(rubric: dict, details: list[Any]) -> dict:
         item.question_id: item
         for item in expected
     }
+    # 合并给分只记组总分，组内成员不写明细行，也不算缺失。
+    combined_covered: set[str] = set()
+    if isinstance(combined_scores, Mapping):
+        for entry in combined_scores.values():
+            if not isinstance(entry, Mapping):
+                continue
+            for raw_member in entry.get("question_ids") or []:
+                member = str(raw_member or "").strip()
+                if member:
+                    combined_covered.add(
+                        catalog.resolve_detail(member) or member
+                    )
     seen_counts: dict[str, int] = {}
     duplicate_question_ids: list[str] = []
     duplicate_seen: set[str] = set()
@@ -131,6 +223,7 @@ def audit_grading_details(rubric: dict, details: list[Any]) -> dict:
         item.question_id
         for item in expected
         if seen_counts.get(item.question_id, 0) == 0
+        and item.question_id not in combined_covered
     ]
 
     invalid = bool(duplicate_question_ids or unexpected_question_ids or score_out_of_range)
@@ -204,7 +297,15 @@ def resolve_grading_completeness(
 
     if isinstance(rubric, dict):
         normalized = _normalized_completeness_dict(
-            audit_grading_details(rubric, details or [])
+            audit_grading_details(
+                rubric,
+                details or [],
+                combined_scores=(
+                    parsed.get("combined_scores")
+                    if isinstance(parsed, dict)
+                    else None
+                ),
+            )
         )
         if normalized is not None:
             return normalized

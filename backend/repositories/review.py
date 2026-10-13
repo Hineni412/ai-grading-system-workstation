@@ -9,6 +9,7 @@ from typing import Any
 
 from backend.repositories.base import RepositorySession, RepositorySessionProvider
 from backend.repositories.results import safe_json_loads
+from backend.scan_grading.grading_completeness import combined_scores_total
 from backend.question_id_contract import question_id_coordinates
 
 
@@ -112,6 +113,8 @@ def _finite_number(value: Any, field_name: str) -> float:
 
 def _normalize_teacher_score_confirmation(
     raw: dict[str, Any],
+    *,
+    allow_fractional_scores: bool = False,
 ) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("Teacher score confirmation must be an object.")
@@ -121,9 +124,11 @@ def _normalize_teacher_score_confirmation(
         raise ValueError("max_score must be greater than zero.")
     if score_awarded < 0 or score_awarded > max_score:
         raise ValueError("score_awarded must be between zero and max_score.")
-    if not score_awarded.is_integer():
-        raise ValueError("score_awarded must be an integer score.")
-    score_awarded = float(int(score_awarded))
+    # 智学网导入可能带半分；扫描批改的教师确认仍只接受整数分。
+    if not allow_fractional_scores:
+        if not score_awarded.is_integer():
+            raise ValueError("score_awarded must be an integer score.")
+        score_awarded = float(int(score_awarded))
     deduction_reason = raw.get("deduction_reason")
     if deduction_reason is not None:
         deduction_reason = str(deduction_reason).strip() or None
@@ -369,6 +374,7 @@ class ReviewRepository:
         confirmations: list[dict[str, Any]],
         *,
         sync_existing_details: bool = True,
+        allow_fractional_scores: bool = False,
     ) -> dict[str, Any]:
         """Insert new confirmations or CAS-update existing teacher score locks.
 
@@ -396,7 +402,10 @@ class ReviewRepository:
         normalized: list[dict[str, Any]] = []
         seen_keys: set[tuple[int, str]] = set()
         for raw in confirmations:
-            item = _normalize_teacher_score_confirmation(raw)
+            item = _normalize_teacher_score_confirmation(
+                raw,
+                allow_fractional_scores=allow_fractional_scores,
+            )
             key = (item["student_id"], item["question_id"])
             if key in seen_keys:
                 raise ValueError(
@@ -874,6 +883,13 @@ class ReviewRepository:
                 """,
                 (result_id,),
             ).fetchone()["total"]
+            raw_row = self.session.connection.execute(
+                "SELECT raw_json FROM session_results WHERE id = ?",
+                (result_id,),
+            ).fetchone()
+            total = float(total) + combined_scores_total(
+                raw_row["raw_json"] if raw_row else None
+            )
             cursor = self.session.connection.execute(
                 """
                 UPDATE session_results
@@ -989,14 +1005,20 @@ class ReviewRepository:
         )
 
     def recalculate_result_score(self, result_id: int) -> None:
-        total = self.session.connection.execute(
+        row = self.session.connection.execute(
             """
-            SELECT COALESCE(SUM(score_awarded), 0) AS score
-            FROM session_details
-            WHERE result_id = ?
+            SELECT raw_json,
+                (SELECT COALESCE(SUM(score_awarded), 0)
+                 FROM session_details WHERE result_id = session_results.id)
+                AS score
+            FROM session_results
+            WHERE id = ?
             """,
             (result_id,),
-        ).fetchone()["score"]
+        ).fetchone()
+        if row is None:
+            return
+        total = float(row["score"]) + combined_scores_total(row["raw_json"])
         self.session.connection.execute(
             """
             UPDATE session_results

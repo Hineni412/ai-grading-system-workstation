@@ -25,6 +25,7 @@
 | `backend/repositories/db_manager.py` | 考试阅卷数据库生命周期与仓储装配 |
 | `backend/question_id_contract.py` | 考试、题库与训练共用的题号标识与校验规则 |
 | `backend/files/session_originals.py` | 原卷空间统计、文件清理及回执；复用考试生命周期锁和已有评分、复核状态，不修改分数归属 |
+| `backend/score_import/` | 智学网成绩导入：`context.py` 考试方式与受控路径，`parsing.py` 成绩表解析，`planning.py` 题目对应、学生匹配与校验，`writer.py` 确认写入；接口在 `backend/api/routers/score_import.py` |
 
 核心业务包括考试配置、学生、扫描、阅卷、复核、结果、题库、组卷、知识图谱与训练。
 
@@ -41,9 +42,13 @@
 | `user_data/databases/grading_system.db` | 考试、学生、阅卷、结果及共同任务元数据 |
 | `user_data/databases/question_bank.db` | 题目、标签、知识关系、组卷与训练 |
 | `user_data/exams/session_N/originals_receipt.json` | 原卷完整、扫描文件已释放、清理中或已清除状态及已释放空间；无回执表示完整 |
+| `user_data/templates/session_N/import_context.json` | 成绩导入考试标识与考试日期；文件缺失即扫描批改考试，不迁移旧数据 |
+| `user_data/exams/session_N/score_import/` | 成绩导入的上传文件（按内容哈希去重的 `uploads/`）与 `receipt.json` 导入回执 |
 | `user_data/cache/annotated_pages/session_N/` | 旧版本复核时生成的批注页残留；系统不再生成，由设置页“数据与空间”清理 |
 
 SQLite 当前结构由 `backend/current_schema/` 定义，包含当前 DDL、稳定初始记录及迁移身份。空库在事务内直接建立当前结构，核对实际签名后登记成功；完整当前库只核对当前定义、实际结构和迁移记录，不读取历史 SQL。旧库升级仍严格使用 `migrations/` 的历史清单。程序更新复用现有 `backend.ops` 的预演、备份、日志和待执行操作，不另建迁移协调路径，具体入口见打包与更新文档。API 文件引用通过模块受控根目录解析，数据库保存业务标识或相对引用。
+
+合并给分沿用现有字段不加表：评分依据顶层保存 `combined_scoring_groups`（组标识、标签、成员题号和组满分）；中间分学生的组总分保存在 `session_results.raw_json["combined_scores"]` 并计入 `student_score`，满分与零分学生只写成员明细。成绩导入的答卷是空图片路径的占位记录，扫描批次上下文冻结为空清单；导入确认通过编辑器保存路径改评分结构，再在一次数据库事务内写答卷、成绩、分锁、缺考与考试状态，之后写回执。
 
 训练推荐正文由题库内 `personalized_recommendation_revisions` 按草稿编号与修订号唯一保存，采用未压缩 JSON，已保存正文不可更新。草稿主记录引用当前修订，事件引用对应结果修订并保存操作差异；读取当前草稿与重复操作回执均连接这张表。三张表同属 `training_ops` 数据版本域，迁移保持冻结训练实例和批次的原草稿关联。
 

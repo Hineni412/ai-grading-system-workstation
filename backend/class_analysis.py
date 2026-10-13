@@ -577,10 +577,11 @@ def apply_cause_results(
     page: dict[str, Any] | None, data: Any, all_inputs: list[dict[str, Any]],
     state: Any, *, session_id: int | None = None,
     question_bank_path: Path | None = None,
+    option_only: bool = False,
 ) -> dict[str, Any]:
     """按保存结果和学生归属投影到当前班级，更新提醒不阻止展示和统计。"""
     from backend.error_causes import CAUSE_CATEGORIES
-    from backend.error_patterns import session_bank_context
+    from backend.error_patterns import CHOICE_TYPES, session_bank_context
     from backend.session_analysis import parent_question_id
 
     stored = ((state or {}).get("cause_analysis") or {}).get("questions") or {}
@@ -589,6 +590,18 @@ def apply_cause_results(
         bank_context = session_bank_context(question_bank_path, int(session_id))
         bank_map = {parent: int(ctx["bank_id"]) for parent, ctx in bank_context.items()}
     sources = {source["question_id"]: source for source in all_inputs}
+    if option_only:
+        # 成绩导入考试只整理有题库链接的选择题；其余题目不计入待整理。
+        option_qtypes = {
+            str(info.question_id): str(info.question_type or "")
+            for info in getattr(data, "questions", [])
+        }
+        sources = {
+            question_id: source
+            for question_id, source in sources.items()
+            if option_qtypes.get(question_id) in CHOICE_TYPES
+            and parent_question_id(question_id) in bank_map
+        }
     counts = {"current": 0, "stale": 0, "missing": 0, "failed": 0}
     times, origins = [], set()
     question_pages = {item["question_id"]: item for item in (page or {}).get("questions", [])}
@@ -755,6 +768,7 @@ def plan_cause_question(
     confirmed_by_bank: dict[int, list[dict[str, Any]]],
     question_bank_path: Path | None, retry_failed: bool,
     regenerate_existing: bool = False,
+    option_only: bool = False,
 ) -> dict[str, Any]:
     """整理路径决策，任务执行与报告 preflight 共用同一口径。
 
@@ -764,6 +778,7 @@ def plan_cause_question(
     - "fill_v3" / "v3"：走 v3 整题整理（fill_v3 成功后回写答案库）。
     - "skip"：选项诊断此前失败且输入未变、本次不重试。
     needs_call：本次是否会产生一次模型调用。
+    option_only=True（成绩导入考试）：只保留选择题选项路径，其余跳过。
     """
     from backend.error_patterns import (
         CHOICE_TYPES,
@@ -781,6 +796,8 @@ def plan_cause_question(
             source, bank_question_row(question_bank_path, int(ctx["bank_id"])),
         )
         if len(letters) < 2 or not correct:
+            if option_only:
+                return {"path": "skip", "needs_call": False}
             return {"path": "v3", "needs_call": True}
         source_input = {"question_text": text, "canonical_answer": correct}
         option = {"text": text, "letters": letters, "correct": correct,
@@ -820,6 +837,9 @@ def plan_cause_question(
             return {"path": "option", "needs_call": False, "option": option}
         option["base_patterns"] = available
         return {"path": "option", "needs_call": True, "option": option}
+    if option_only:
+        # 成绩导入考试：填空/解答题不走整题整理路径，只保留选择题选项映射。
+        return {"path": "skip", "needs_call": False}
     if qtype in FILL_TYPES:
         library = _fill_answer_library(
             store=store, session_id=session_id, parent=parent,
@@ -991,6 +1011,10 @@ def run_cause_analysis(
     if (state := store.load(session_id)) and state.get("read_error"):
         raise ValueError(state["read_error"])
     option_scope = True
+    # 成绩导入考试只整理选择题选项，填空/解答题不发模型。
+    from backend.score_import.context import is_import_session_data_root
+
+    option_only = is_import_session_data_root(data_root, session_id)
     question_bank_path = question_bank_db_path(Path(db.db_path))
     bank_context = session_bank_context(question_bank_path, session_id)
     confirmed_by_bank = bank_confirmed_triggers(
@@ -1045,6 +1069,7 @@ def run_cause_analysis(
                 ctx=ctx, confirmed_by_bank=confirmed_by_bank,
                 question_bank_path=question_bank_path, retry_failed=retry_failed,
                 regenerate_existing=regenerate_existing,
+                option_only=option_only,
             )
             if plan["path"] == "skip":
                 continue

@@ -22,7 +22,10 @@ import { invalidateClassAnalysis } from '../components/results-center/class-anal
 import { scoreStatusLabel } from '../components/results-center/student-paper'
 import {
   classRanksOf,
+  combinedGroupMembers,
+  combinedMemberMap,
   formatScore,
+  groupScoreOf,
 } from '../components/results-center/results-overview'
 import AppButton from '../components/design-system/AppButton.vue'
 import FeedbackBanner from '../components/design-system/FeedbackBanner.vue'
@@ -147,6 +150,14 @@ const studentItemIndex = computed(() => new Map(
   ]),
 ))
 
+// 合并给分：组条目与成员题在单生记录里互斥（中间分只有组条目，
+// 满分/零分学生只有成员明细），据此配对成员题，用于列头与空格的展示。
+const combinedGroups = computed(() => combinedGroupMembers(
+  results.value?.questions ?? [],
+  results.value?.students ?? [],
+))
+const combinedMemberOf = computed(() => combinedMemberMap(combinedGroups.value))
+
 const studentsInClass = computed(() => (results.value?.students ?? []).filter(
   (student) => selectedClass.value === null || (student.class_name ?? '') === selectedClass.value,
 ))
@@ -204,11 +215,32 @@ const matrixStudents = computed(() => [...visibleStudents.value].sort(
 ))
 
 const matrixQuestions = computed(() => (results.value?.questions ?? []).map((question) => {
+  const members = combinedGroups.value.get(question.question_id)
+  if (members !== undefined) {
+    const entries = visibleStudents.value
+      .map((student) => groupScoreOf(student, question.question_id, members))
+      .filter((entry) => entry !== null)
+    return {
+      ...question,
+      combined_group: true,
+      combined_member: false,
+      average_score: entries.length
+        ? entries.reduce((total, entry) => total + entry.score, 0) / entries.length
+        : null,
+    }
+  }
   const scores = visibleStudents.value
     .map((student) => itemFor(student, question.question_id))
     .filter((item) => item !== null && item.score_awarded !== null && !['ungraded', 'failed'].includes(item.score_status))
     .map((item) => item!.score_awarded!)
-  return { ...question, average_score: scores.length ? scores.reduce((total, score) => total + score, 0) / scores.length : null }
+  return {
+    ...question,
+    combined_member: combinedMemberOf.value.has(question.question_id),
+    // 成员题得分只来自满分/零分学生，成员均分会高估，不展示。
+    average_score: combinedMemberOf.value.has(question.question_id)
+      ? null
+      : scores.length ? scores.reduce((total, score) => total + score, 0) / scores.length : null,
+  }
 }))
 
 const jobStore = useJobStore()
@@ -226,10 +258,14 @@ function reportLabel(student: ResultsCenterStudent) {
   return `查看${student.student_name}的个人报告（${state ? personalReportStatusText(state) : '状态读取中'}）`
 }
 const reportsNeedGeneration = computed(() => studentsInClass.value.filter(s => !reportState(s)?.read_error && ['missing', 'stale'].includes(reportState(s)?.status ?? '')).length)
+const isImportSession = computed(
+  () => sessionStore.currentSession?.kind === 'zhixue_import',
+)
+
 async function refreshPersonalStates() {
   personalController?.abort()
   const sid = sessionStore.selectedSessionId
-  if (sid === null) { personalStates.value = []; return }
+  if (sid === null || isImportSession.value) { personalStates.value = []; return }
   const next = new AbortController()
   personalController = next
   personalStateError.value = ''
@@ -780,6 +816,7 @@ function closeStudentDrawer(restoreFocus = true): void {
           v-if="sessionStore.selectedSessionId !== null"
           :session-id="sessionStore.selectedSessionId"
           :active-job="pipelineJob"
+          :import-session="isImportSession"
         />
         <PopoverRoot v-model:open="exportOpen">
           <PopoverTrigger as-child>
@@ -816,6 +853,7 @@ function closeStudentDrawer(restoreFocus = true): void {
       :session-id="sessionStore.selectedSessionId"
       :focus-question="analysisFocusQuestion"
       :initial-class="analysisInitialClass"
+      :import-session="isImportSession"
     />
 
     <template v-else>
@@ -1001,13 +1039,17 @@ function closeStudentDrawer(restoreFocus = true): void {
                     <button
                       type="button"
                       class="results-matrix__sort"
+                      :title="question.combined_group ? '这几题合起来给一个总分' : question.combined_member ? '本题并入合并给分组' : undefined"
                       @click="setMatrixSort('question', question.question_id)"
                     >
                       <strong>{{ question.question_id }}</strong>
                       <i aria-hidden="true">{{ matrixSortArrow('question', question.question_id) }}</i>
                     </button>
-                    <span>
-                      均分 {{ formatScore(question.average_score) }}
+                    <span v-if="question.combined_member" class="results-matrix__combined-note">
+                      并入合并给分
+                    </span>
+                    <span v-else>
+                      {{ question.combined_group ? '合并给分 · ' : '' }}均分 {{ formatScore(question.average_score) }}
                       / {{ formatScore(question.max_score) }}
                     </span>
                   </th>
@@ -1020,7 +1062,9 @@ function closeStudentDrawer(restoreFocus = true): void {
                       <span class="results-matrix__name"><strong>{{ student.student_name }}</strong><em v-if="studentRankText(student)" class="results-matrix__rank" :title="studentRankTitle(student) ?? undefined">{{ studentRankText(student) }}</em></span>
                       <span>{{ student.student_code || '无学号' }}<template v-if="student.class_name"> · {{ student.class_name }}</template></span>
                     </button>
-                    <button v-if="reportState(student) && reportState(student)?.status !== 'unavailable'"
+                    <span v-if="isImportSession" class="personal-report-unavailable"
+                      title="导入的考试不生成个人报告">导入无报告</span>
+                    <button v-else-if="reportState(student) && reportState(student)?.status !== 'unavailable'"
                       type="button" :class="['personal-report-status', `personal-report-status--${reportState(student)?.status}`]"
                       :aria-label="reportLabel(student)" :title="reportLabel(student)" @click="openPersonalReport(student)">
                       {{ reportState(student)?.status === 'current' || reportState(student)?.status === 'old_prompt' ? '✓' : reportState(student)?.status === 'stale' ? '↻' : '○' }}
@@ -1053,6 +1097,12 @@ function closeStudentDrawer(restoreFocus = true): void {
                       <strong>{{ formatScore(itemFor(student, question.question_id)!.score_awarded) }}</strong>
                       <span>{{ shortScoreStatusLabel(itemFor(student, question.question_id)!.score_status) }}</span>
                     </button>
+                    <span
+                      v-else-if="question.combined_member
+                        && itemFor(student, combinedMemberOf.get(question.question_id) ?? '')"
+                      class="results-matrix__missing"
+                      title="该生的这几题按合并给分计入"
+                    >—<small>并入组</small></span>
                     <span v-else class="results-matrix__missing">—<small>无记录</small></span>
                   </td>
                 </tr>
@@ -1121,6 +1171,7 @@ function closeStudentDrawer(restoreFocus = true): void {
   <PersonalReportReader v-if="readerStudentId !== null && sessionStore.selectedSessionId !== null"
     :students="readerStudents" :student-id="readerStudentId" :session-id="sessionStore.selectedSessionId"
     :report-session-id="readerReportSessionId" :volume-id="sessionStore.currentSession?.curriculum_volume_id"
+    :import-session="isImportSession"
     :initially-data-only="readerDataOnly" @close="closePersonalReport" @review="reviewFromPersonalReport" @refreshed="refreshPersonalStates" />
 </template>
 

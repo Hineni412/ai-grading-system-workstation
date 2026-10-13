@@ -7,11 +7,14 @@ import { computed, ref, watch } from 'vue'
 import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
 import { SessionDraftOutcomeUnknownError, useSessionStore } from '../../stores/session'
 import { ApiError } from '../../api/errors'
+import type { SessionKind } from '../../api/sessions'
 
 const sessionStore = useSessionStore()
 const curriculumScope = useCurriculumScopeStore()
 const name = ref('')
 const curriculumVolumeId = ref<string | null>(null)
+const kind = defineModel<SessionKind>('kind', { default: 'scan' })
+const examDate = ref('')
 const busy = ref(false)
 const message = ref('')
 const volumeManuallyChanged = ref(false)
@@ -23,6 +26,7 @@ watch(
     name.value = value?.name ?? ''
     curriculumVolumeId.value = value?.curriculum_volume_id
       ?? curriculumScope.selectedVolumeId
+    if (value) kind.value = 'scan'
   },
   { immediate: true },
 )
@@ -57,12 +61,11 @@ async function createDraft(): Promise<void> {
   busy.value = true
   message.value = ''
   try {
-    await sessionStore.createDraft(
-      name.value,
-      undefined,
-      undefined,
-      curriculumVolumeId.value,
-    )
+    await sessionStore.createDraft(name.value, {
+      curriculumVolumeId: curriculumVolumeId.value,
+      kind: kind.value,
+      examDate: kind.value === 'zhixue_import' ? examDate.value : null,
+    })
     message.value = '考试草稿已创建。'
   } catch (error) {
     message.value = error instanceof SessionDraftOutcomeUnknownError
@@ -124,10 +127,34 @@ async function renameDraft(): Promise<void> {
           {{ volume.label }}
         </option>
       </select>
+      <template v-if="!sessionStore.currentSession">
+        <label class="sr-only" for="session-draft-kind">考试方式</label>
+        <select class="app-input"
+          id="session-draft-kind"
+          v-model="kind"
+          :disabled="busy"
+        >
+          <option value="scan">扫描批改（周测等）</option>
+          <option value="zhixue_import">智学网成绩导入</option>
+        </select>
+        <p v-if="kind === 'zhixue_import'" class="session-draft-panel__hint">
+          导入智学网导出的成绩表（月考、期中、期末等已批改完的考试），不需要扫描答卷。
+        </p>
+        <template v-if="kind === 'zhixue_import'">
+          <label class="sr-only" for="session-draft-exam-date">考试日期</label>
+          <input class="app-input"
+            id="session-draft-exam-date"
+            v-model="examDate"
+            type="date"
+            required
+            :disabled="busy"
+          >
+        </template>
+      </template>
       <AppButton variant="primary"
         v-if="isDirty"
         type="submit"
-        :disabled="busy || !name.trim()"
+        :disabled="busy || !name.trim() || (kind === 'zhixue_import' && !examDate)"
       >
         {{ sessionStore.currentSession ? '保存' : '创建草稿' }}
       </AppButton>

@@ -139,6 +139,25 @@ class SessionRepository:
             raise
         return int(cursor.lastrowid)
 
+    def set_grading_session_created_at(
+        self,
+        session_id: int,
+        created_at: str,
+    ) -> None:
+        clean = str(created_at or "").strip()
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?)?", clean):
+            raise ValueError("created_at must be a date or datetime string")
+        cursor = self.session.connection.execute(
+            """
+            UPDATE grading_sessions
+            SET created_at = ?
+            WHERE id = ? AND is_deleted = 0
+            """,
+            (clean, int(session_id)),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError(f"grading session not found: {session_id}")
+
     def rename_grading_session(self, session_id: int, new_name: str) -> None:
         self._update_session_name(session_id, new_name)
 
@@ -463,6 +482,13 @@ class SessionRepositoryGateway:
                     source_paper_sha256=source_paper_sha256,
                     curriculum_volume_id=curriculum_volume_id,
                 )
+
+    def set_grading_session_created_at(
+        self,
+        session_id: int,
+        created_at: str,
+    ) -> None:
+        self._write("set_grading_session_created_at", session_id, created_at)
 
     def rename_grading_session(self, session_id: int, new_name: str) -> None:
         self._write("rename_grading_session", session_id, new_name)

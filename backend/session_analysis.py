@@ -28,7 +28,11 @@ from backend.repositories.access import (
     GradingRepositoryAccess,
     as_grading_repositories,
 )
-from backend.scan_grading.grading_completeness import resolve_grading_completeness
+from backend.scan_grading.grading_completeness import (
+    combined_scoring_groups,
+    raw_combined_scores,
+    resolve_grading_completeness,
+)
 from path_manager import resolve_stored_file_path
 from backend.question_id_contract import (
     QuestionIdContractError,
@@ -192,6 +196,7 @@ class SessionAnalysisData:
     rubric: dict[str, Any] = field(default_factory=dict)
     question_assessments: dict[str, dict[str, Any]] = field(default_factory=dict)
     knowledge_structure: dict[str, Any] = field(default_factory=dict)
+    session_kind: str = "scan"
 
 
 def assemble_session_analysis(
@@ -254,6 +259,7 @@ def assemble_session_analysis(
     students: list[StudentReportData] = []
     skipped: list[dict[str, Any]] = []
     covered_identities: set[tuple[str, str]] = set()
+    combined_by_student: dict[int, dict[str, dict[str, Any]]] = {}
     for result in snapshot.results:
         identity = (
             str(result.get("student_code") or ""),
@@ -311,6 +317,11 @@ def assemble_session_analysis(
                 raw_payload = json.loads(raw_payload)
             except json.JSONDecodeError:
                 raw_payload = {}
+        result_combined = raw_combined_scores(raw_payload)
+        if result_combined:
+            combined_by_student[int(result.get("student_id") or 0)] = (
+                result_combined
+            )
         students.append(
             StudentReportData(
                 result_id=result_id,
@@ -411,6 +422,14 @@ def assemble_session_analysis(
                 canonical_answer=answer_map.get(qid) or "",
             )
         )
+    groups = combined_scoring_groups(rubric)
+    if groups:
+        questions = _apply_combined_groups(
+            questions,
+            students,
+            groups,
+            combined_by_student,
+        )
     info_by_qid = {info.question_id: info for info in questions}
     for student in students:
         for record in student.records:
@@ -445,6 +464,13 @@ def assemble_session_analysis(
         str(session_row.get("session_name") or "").strip() or f"考试批改_{session_id}"
     )
     present = present_count if snapshot.attendance else len(students)
+    from backend.score_import.context import is_import_session_data_root
+
+    session_kind = (
+        "zhixue_import"
+        if is_import_session_data_root(resolved_data_root, int(session_id))
+        else "scan"
+    )
     return SessionAnalysisData(
         session_id=int(session_id),
         session_name=session_name,
@@ -462,6 +488,7 @@ def assemble_session_analysis(
         question_assessments=snapshot.question_assessments,
         attendance_by_class=attendance_by_class,
         rubric=rubric,
+        session_kind=session_kind,
     )
 
 
@@ -891,6 +918,119 @@ def _validated_teacher_steps(
     if sum(float(record["score_awarded"]) for record in normalized) != score:
         return None
     return normalized
+
+
+def _apply_combined_groups(
+    questions: list[QuestionInfo],
+    students: list[StudentReportData],
+    groups: list[dict[str, Any]],
+    combined_by_student: dict[int, dict[str, dict[str, Any]]],
+) -> list[QuestionInfo]:
+    """把合并给分组的成员题目折叠成一个组条目。
+
+    组内成员的满分、失分名单与得分率全部按组口径计算：满分/零分/可推算
+    学生的组得分取成员明细之和，中间分学生取导入的组总分；成员题目不
+    再展示单独的得分率（只用极端学生会高估得分率）。
+    """
+    member_group = {
+        member: group
+        for group in groups
+        for member in group["question_ids"]
+    }
+    emitted: set[str] = set()
+    collapsed_questions: list[QuestionInfo] = []
+    for info in questions:
+        group = member_group.get(info.question_id)
+        if group is None:
+            collapsed_questions.append(info)
+            continue
+        if group["group_id"] in emitted:
+            continue
+        emitted.add(group["group_id"])
+        collapsed_questions.append(
+            QuestionInfo(
+                question_id=group["label"],
+                question_type="combined",
+                max_score=float(group["max_score"]),
+                stem_summary=f"合并给分（{group['label']}）",
+                canonical_answer="",
+            )
+        )
+    order_index = {
+        info.question_id: index
+        for index, info in enumerate(collapsed_questions)
+    }
+    for student in students:
+        combined = combined_by_student.get(int(student.student_id)) or {}
+        group_records: dict[str, dict[str, Any]] = {}
+        kept: list[StudentQuestionRecord] = []
+        for record in student.records:
+            group = member_group.get(record.question_id)
+            if group is None:
+                kept.append(record)
+                continue
+            acc = group_records.setdefault(
+                group["group_id"],
+                {
+                    "score": 0.0,
+                    "confirmed": True,
+                    "reasons": set(),
+                    "categories": set(),
+                    "summaries": set(),
+                },
+            )
+            acc["score"] += float(record.score)
+            acc["confirmed"] = acc["confirmed"] and record.teacher_confirmed
+            for source, key in (
+                (record.deduction_reason, "reasons"),
+                (record.error_category, "categories"),
+                (record.error_summary, "summaries"),
+            ):
+                if source:
+                    acc[key].add(str(source))
+        for group in groups:
+            group_id = group["group_id"]
+            acc = group_records.get(group_id)
+            entry = combined.get(group_id)
+            if acc is None and entry is None:
+                continue
+            max_score = float(group["max_score"])
+            score = (
+                float(entry["score"])
+                if entry is not None
+                else float(acc["score"])
+            )
+            score = min(score, max_score) if max_score > 0 else score
+            kept.append(
+                StudentQuestionRecord(
+                    question_id=group["label"],
+                    score=score,
+                    max_score=max_score,
+                    deduction_reason=(
+                        "合并给分"
+                        if entry is not None
+                        else "；".join(sorted(acc["reasons"]))
+                    ),
+                    error_category=(
+                        "合并给分"
+                        if entry is not None
+                        else "；".join(sorted(acc["categories"]))
+                    ),
+                    error_summary=(
+                        "合并给分"
+                        if entry is not None
+                        else "；".join(sorted(acc["summaries"]))
+                    ),
+                    teacher_confirmed=bool(acc and acc["confirmed"]),
+                )
+            )
+        kept.sort(
+            key=lambda record: order_index.get(
+                record.question_id, len(order_index)
+            )
+        )
+        student.records = kept
+    return collapsed_questions
 
 
 def _merge_student_records(
