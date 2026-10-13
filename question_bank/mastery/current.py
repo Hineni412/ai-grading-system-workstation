@@ -18,6 +18,19 @@ from question_bank.mastery.model import (
 
 _CHINA_TIMEZONE = timezone(timedelta(hours=8))
 CURRENT_MASTERY_PARAMETERS = MasteryParameters()
+TREND_LAST_ERROR = "最近一次出错"
+TREND_JUST_RIGHT = "最近做对了"
+TREND_STREAK_TEMPLATE = "最近 {streak} 次全对 ↑"
+_STREAK_PREFIX, _, _STREAK_SUFFIX = TREND_STREAK_TEMPLATE.partition("{streak}")
+
+
+def recent_trend_improved(trend: str | None) -> bool:
+    if not trend:
+        return False
+    if trend == TREND_JUST_RIGHT:
+        return True
+    return (trend.startswith(_STREAK_PREFIX) and trend.endswith(_STREAK_SUFFIX)
+            and trend[len(_STREAK_PREFIX):-len(_STREAK_SUFFIX)].isdigit())
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,11 +209,10 @@ class CurrentMasteryCalculator:
                     activities[o["activity"]].append(o["y"] == 1)
                 perfect = [all(v) for v in activities.values()]
                 if perfect and not perfect[-1] and any(perfect[:-1]):
-                    trend = "最近一次出错"
+                    trend = TREND_LAST_ERROR
                 elif perfect and perfect[-1] and not all(perfect):
                     streak = next((i for i, v in enumerate(reversed(perfect)) if not v), len(perfect))
-                    if streak >= 2:
-                        trend = f"最近 {streak} 次全对 ↑"
+                    trend = TREND_STREAK_TEMPLATE.format(streak=streak) if streak >= 2 else TREND_JUST_RIGHT
                 exam_activities = {(o["activity"], o.get("qkey", o["item"])) for o in records if o["source"] == "exam"}
                 training_activities = {(o["activity"], o["item"][:2]) for o in records if o["source"] == "training"}
             else:
@@ -488,4 +500,5 @@ __all__ = [
     "CurrentMastery",
     "CurrentMasteryCalculator",
     "aggregate_current_mastery",
+    "recent_trend_improved",
 ]

@@ -196,6 +196,33 @@ class OpsOperationJournal:
                 raise OpsJournalInvalid("apply state is invalid")
             return payload
 
+    def prune_finished_staging(self, *, keep_operation_id: str) -> None:
+        """Remove staging dirs of finished operations except the kept one.
+
+        Operation records stay; failed operations keep their staging for
+        manual recovery.
+        """
+        with self._lock:
+            if not self.operations_root.exists():
+                return
+            for operation_root in self.operations_root.iterdir():
+                if (
+                    operation_root.name == keep_operation_id
+                    or not operation_root.is_dir()
+                ):
+                    continue
+                try:
+                    record = self._load_record(operation_root.name)
+                except OpsJournalError:
+                    continue
+                if record.status not in {"applied", "rolled_back", "cancelled"}:
+                    continue
+                staging = self._controlled_staging(record.manifest)
+                if staging.is_symlink() or staging.is_junction():
+                    continue
+                if staging.is_dir():
+                    shutil.rmtree(staging, ignore_errors=True)
+
     def mark_applied(self, operation_id: str) -> None:
         self._mark_terminal(operation_id, "applied", "applied")
 

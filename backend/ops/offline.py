@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import shutil
@@ -24,8 +25,17 @@ from .database_validation import (
     validate_live_databases,
     validate_staged_databases,
 )
-from .jobs import create_safety_backup, run_ops_migration_prepare_job
-from .journal import OpsJournalInvalid, OpsOperationJournal, OpsOperationManifest
+from .jobs import (
+    create_safety_backup,
+    prune_automatic_backups,
+    run_ops_migration_prepare_job,
+)
+from .journal import (
+    OpsJournalError,
+    OpsJournalInvalid,
+    OpsOperationJournal,
+    OpsOperationManifest,
+)
 from .lock import OpsLockBusy, OpsOperationLock
 from .plan_store import OpsPlanStore
 from .write_service import OpsWriteService, _file_sha256
@@ -172,6 +182,9 @@ def _apply_pending_locked(*, paths: Any, journal: OpsOperationJournal) -> int:
         journal.mark_rolled_back(operation_id, result_code="apply_failed_rolled_back")
         return 0
     journal.mark_applied(operation_id)
+    with contextlib.suppress(OSError, OpsJournalError):
+        prune_automatic_backups(paths)
+        journal.prune_finished_staging(keep_operation_id=operation_id)
     return 0
 
 

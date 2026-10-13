@@ -247,37 +247,80 @@ def clear_session_originals(db: Any, data_root: Path, session_id: int, *, clear_
         return {**result, "originals_state": "cleared", "kept_unrendered": 0}
 
 
+def _overview_entries(resolved_root: str, *, on_unreadable: Callable[[], None]) -> Iterator[tuple[tuple[str, ...], int]]:
+    """Walk resolved_root on plain string paths; skip links and reparse points.
+
+    Same acceptance rules as ``_file_entries`` but without resolving each
+    directory, which is what storage_overview needs. Destructive paths keep
+    using ``_file_entries``.
+    """
+    stack: list[tuple[str, tuple[str, ...]]] = [(resolved_root, ())]
+    while stack:
+        directory, parts = stack.pop()
+        try:
+            with os.scandir(directory) as listing:
+                entries = list(listing)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            on_unreadable()
+            continue
+        for entry in entries:
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                on_unreadable()
+                continue
+            attributes = getattr(info, "st_file_attributes", 0)
+            if entry.is_symlink() or attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                continue
+            child_parts = (*parts, entry.name)
+            if stat.S_ISDIR(info.st_mode):
+                stack.append((entry.path, child_parts))
+            elif stat.S_ISREG(info.st_mode):
+                yield child_parts, info.st_size
+
+
 def storage_overview(data_root: Path) -> dict[str, Any]:
-    categories = [("originals", "学生原卷"), ("annotations", "批注图"), ("question_bank", "题库资料"),
-                  ("reports", "报告与导出"), ("backups", "备份"), ("databases", "数据库"), ("other", "其他")]
+    categories = [("originals", "学生原卷"), ("question_bank", "题库资料"),
+                  ("reports", "报告与导出"), ("cache", "缓存（会自动重建）"), ("backups", "备份"),
+                  ("update_copies", "更新前副本"), ("databases", "数据库"), ("other", "其他")]
     totals = dict.fromkeys((key for key, _ in categories), 0)
     legacy_bytes = legacy_files = 0
     unreadable = 0
     def count_unreadable():
         nonlocal unreadable
         unreadable += 1
-    for path, info, parts in _file_entries(data_root, Path(data_root).resolve(), on_unreadable=count_unreadable):
-        head = parts[0]
-        if head == "exams" or (head == "templates" and path.name == "template_source_full_class.pdf"):
-            key = "originals"
-        elif head == "annotated" or parts[:2] == ("cache", "annotated_pages"):
-            key = "annotations"
-        elif head in {"reports", "outputs"}:
-            key = "reports"
-        elif head in {"backups", "archives"}:
-            key = "backups"
-        else:
-            key = head if head in {"question_bank", "databases"} else "other"
-        size = info.st_size
-        totals[key] += size
-        if (
-            (head == "annotated" and len(parts) == 3 and parts[1].startswith("session_")
-             and path.name.endswith("_annotated.jpg"))
-            or (parts[:2] == ("cache", "annotated_pages") and len(parts) == 4
-                and parts[2].startswith("session_") and path.suffix.lower() == ".jpg")
-        ):
-            legacy_bytes += size
-            legacy_files += 1
+    root = Path(data_root)
+    if not root.is_symlink() and not root.is_junction():
+        for parts, size in _overview_entries(str(root.resolve()), on_unreadable=count_unreadable):
+            name = parts[-1]
+            suffix = os.path.splitext(name)[1].lower()
+            head = parts[0]
+            if head == "exams" or (head == "templates" and name == "template_source_full_class.pdf"):
+                key = "originals"
+            elif head == "cache" or head == "temp" or parts[:2] == ("reports", ".training_diagnosis"):
+                key = "cache"
+            elif head in {"reports", "outputs"}:
+                key = "reports"
+            elif head in {"backups", "archives"}:
+                key = "backups"
+            elif (parts[:2] == ("runtime_state", "ops") and len(parts) >= 5
+                    and parts[2] == "operations" and parts[4] == "staging"):
+                key = "update_copies"
+            else:
+                key = head if head in {"question_bank", "databases"} else "other"
+            totals[key] += size
+            if (
+                (head == "annotated" and len(parts) == 3 and parts[1].startswith("session_")
+                 and name.endswith("_annotated.jpg"))
+                or (parts[:2] == ("cache", "annotated_pages") and len(parts) == 4
+                    and parts[2].startswith("session_") and suffix == ".jpg")
+            ):
+                legacy_bytes += size
+                legacy_files += 1
     return {"total_bytes": sum(totals.values()), "unreadable_count": unreadable, "categories": [{"key": k, "label": label, "bytes": totals[k]} for k, label in categories],
             "legacy_annotations": {"bytes": legacy_bytes, "files": legacy_files}}
 

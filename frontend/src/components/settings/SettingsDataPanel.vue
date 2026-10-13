@@ -5,7 +5,7 @@ import FeedbackBanner from '../design-system/FeedbackBanner.vue'
 import AppButton from '../design-system/AppButton.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 import StatusBadge from '../design-system/StatusBadge.vue'
-import { opsApi, storageApi, type StorageOverview, type StorageSession, type SessionOriginals, type OriginalsState } from '../../api/ops'
+import { opsApi, storageApi, type StorageOverview, type StorageSession, type SessionOriginals, type OriginalsState, type OpsBackupItem } from '../../api/ops'
 import { ApiError } from '../../api/errors'
 import { TERMINAL_JOB_STATUSES } from '../../api/jobs'
 import { useOpsStore } from '../../stores/ops'
@@ -20,7 +20,8 @@ const error = ref('')
 const notice = ref('')
 const selected = ref<number[]>([])
 const selectedBackup = ref('')
-const dialog = ref<'release' | 'clear' | 'legacy' | 'restore' | 'restore-pick' | null>(null)
+const backupToDelete = ref<OpsBackupItem | null>(null)
+const dialog = ref<'release' | 'clear' | 'legacy' | 'restore' | 'restore-pick' | 'backup-delete' | null>(null)
 const targets = ref<Array<{ row: StorageSession; snapshot: SessionOriginals }>>([])
 const phrase = ref('')
 const busy = ref(false)
@@ -28,9 +29,31 @@ const dialogError = ref('')
 const progress = ref('')
 const controller = new AbortController()
 let finalizedJobVersion = ''
-const colors = ['var(--settings-space-originals)', 'var(--settings-space-annotations)', 'var(--settings-space-bank)', 'var(--settings-space-reports)', 'var(--settings-space-backups)', 'var(--settings-space-databases)', 'var(--color-border-strong)']
+const categoryColors: Record<string, string> = {
+  originals: 'var(--settings-space-originals)',
+  question_bank: 'var(--settings-space-bank)',
+  reports: 'var(--settings-space-reports)',
+  cache: 'var(--settings-space-cache)',
+  backups: 'var(--settings-space-backups)',
+  update_copies: 'var(--settings-space-update-copies)',
+  databases: 'var(--settings-space-databases)',
+  other: 'var(--color-border-strong)',
+}
+const categoryDescriptions: Record<string, string> = {
+  originals: '学生答卷的扫描文件和拆好的页面图',
+  question_bank: '题库原卷、题目图片、个性化训练卷和导入用文件',
+  reports: '导出的报告、成绩表和批改中间结果',
+  cache: '为加快打开速度保存的计算结果，删掉会自动重新生成',
+  backups: '手动或自动做的备份，可用来恢复',
+  update_copies: '更新或恢复时留的数据库副本，成功后只保留最近一次',
+  databases: '分数、学生、题目、标签和训练记录等表格数据；原卷图片和报告文件不在这里，单独存放',
+  other: '样卷模板、配置和运行状态等其余文件',
+}
+function categoryColor(key: string): string {
+  return categoryColors[key] ?? 'var(--color-border-strong)'
+}
 const stateLabels: Record<OriginalsState, string> = { complete: '完整', scans_released: '已释放扫描文件', cleared: '已清除', clearing: '清理未完成' }
-const reasons: Record<string, string> = { before_exam: '考试前', before_update: '更新前', before_import: '导入前', before_restore: '恢复前', manual: '手动备份', after_exam: '考试后', unknown: '未记录' }
+const reasons: Record<string, string> = { before_exam: '考试前', before_update: '更新前', before_apply: '应用前', before_import: '导入前', before_restore: '恢复前', manual: '手动备份', after_exam: '考试后', unknown: '未记录' }
 const zipBackups = computed(() => ops.backups.filter(item => item.kind === 'zip'))
 const latest = computed(() => zipBackups.value[0])
 const clearableBytes = computed(() => (storage.value?.sessions ?? []).filter(row => row.can_clear).reduce((sum, row) => sum + row.clear_bytes, 0))
@@ -46,7 +69,7 @@ const outcome = computed(() => {
 })
 const dialogTitle = computed(() => {
   const name = targets.value.length === 1 ? `「${targets.value[0]!.row.name}」` : `所选 ${targets.value.length} 场考试`
-  return dialog.value === 'release' ? `释放${name}的扫描文件？` : dialog.value === 'clear' ? `清除${name}的学生原卷` : dialog.value === 'legacy' ? '清理旧批注图？' : '从备份恢复'
+  return dialog.value === 'release' ? `释放${name}的扫描文件？` : dialog.value === 'clear' ? `清除${name}的学生原卷` : dialog.value === 'legacy' ? '清理旧批注图？' : dialog.value === 'backup-delete' ? '删除这份备份？' : '从备份恢复'
 })
 const freedEstimate = computed(() => targets.value.reduce((sum, t) => sum + (dialog.value === 'release' ? t.snapshot.release_bytes : t.snapshot.clear_bytes), 0))
 const canSubmitDialog = computed(() => !busy.value && !ops.submitting && !dialogError.value
@@ -72,11 +95,25 @@ function closeDialog(value = false) {
     if (ops.preflight?.operation === 'restore') ops.resetFlow()
   }
 }
+function cancelDialog() {
+  if (dialog.value === 'backup-delete') {
+    dialog.value = 'restore-pick'; dialogError.value = ''
+    return
+  }
+  closeDialog()
+}
 async function beginCleanup(mode: 'release' | 'clear', rows: StorageSession[]) {
   if (busy.value || rows.length === 0) return
   busy.value = true; dialogError.value = ''; error.value = ''; phrase.value = ''; targets.value = []
   try {
-    for (const row of rows) targets.value.push({ row, snapshot: await storageApi.getOriginals(row.session_id) })
+    const fetched: Array<{ row: StorageSession; snapshot: SessionOriginals }> = []
+    for (const row of rows) fetched.push({ row, snapshot: await storageApi.getOriginals(row.session_id) })
+    const blocked = fetched.filter(t => !(mode === 'release' ? t.snapshot.can_release_scans : t.snapshot.can_clear))
+    if (blocked.length) {
+      error.value = blocked.map(t => `${t.row.name}：${t.snapshot.blocked_reason || '当前不能执行这项清理。'}`).join('；')
+      return
+    }
+    targets.value = fetched
     dialog.value = mode
   } catch (reason) { error.value = message(reason) }
   finally { busy.value = false }
@@ -113,6 +150,29 @@ function backToRestorePick() {
   ops.resetFlow()
   dialog.value = 'restore-pick'
 }
+function backupReasonText(reason: string): string {
+  return (reasons[reason] ?? '未记录').replace(/备份$/, '')
+}
+function beginDeleteBackup(item: OpsBackupItem) {
+  backupToDelete.value = item
+  dialogError.value = ''
+  dialog.value = 'backup-delete'
+}
+async function confirmDeleteBackup() {
+  const item = backupToDelete.value
+  if (!item || busy.value || ops.submitting) return
+  busy.value = true; dialogError.value = ''
+  try {
+    const result = await opsApi.deleteBackup(item.filename)
+    if (selectedBackup.value === item.filename) selectedBackup.value = ''
+    backupToDelete.value = null
+    notice.value = `已删除备份，腾出 ${formatBytes(result.freed_bytes)}。`
+    await ops.refreshBackups(opsApi)
+    await refreshStorage()
+    dialog.value = 'restore-pick'
+  } catch (reason) { dialogError.value = message(reason) }
+  finally { busy.value = false }
+}
 async function beginRestore() {
   if (!selectedBackup.value) return
   phrase.value = ''; dialogError.value = ''
@@ -121,6 +181,10 @@ async function beginRestore() {
 }
 async function submitDialog() {
   if (busy.value || ops.submitting || (dialog.value === 'clear' && phrase.value !== '确认清除') || (dialog.value === 'restore' && phrase.value !== '确认恢复')) return
+  if (dialog.value === 'backup-delete') {
+    await confirmDeleteBackup()
+    return
+  }
   if (dialog.value === 'restore') {
     await ops.submitConfirmed(opsApi)
     closeDialog()
@@ -168,7 +232,7 @@ onBeforeUnmount(() => controller.abort())
 </script>
 
 <template>
-  <section class="settings-data" aria-label="数据与空间">
+  <section class="settings-data" aria-label="数据部分">
     <div v-if="outcome" class="settings-outcome" role="status"><span>{{ outcome }}</span><AppButton v-if="ops.operationState && ['prepared', 'restart_required'].includes(ops.operationState.status)" variant="secondary" :disabled="ops.operationLoading" @click="ops.cancelCurrent(opsApi)">撤销</AppButton></div>
     <FeedbackBanner v-if="error" role="alert" tone="error" :description="error"><AppButton variant="ghost" size="small" :disabled="loading" @click="refreshStorage">刷新</AppButton></FeedbackBanner>
     <FeedbackBanner v-if="notice" role="status" tone="success" :description="notice" />
@@ -181,11 +245,12 @@ onBeforeUnmount(() => controller.abort())
         <template v-else>
           <p class="settings-space-total">业务数据共 {{ formatBytes(storage.total_bytes) }}</p>
           <p class="settings-note settings-space-scope">仅统计业务数据，不含程序和开发临时文件。</p>
-          <div class="settings-space-bar" aria-hidden="true"><i v-for="(category, index) in storage.categories" :key="category.key" :style="{ width: `${storage.total_bytes ? category.bytes / storage.total_bytes * 100 : 0}%`, background: colors[index] }" /></div>
+          <div class="settings-space-bar" aria-hidden="true"><i v-for="category in storage.categories" :key="category.key" :style="{ width: `${storage.total_bytes ? category.bytes / storage.total_bytes * 100 : 0}%`, background: categoryColor(category.key) }" /></div>
           <dl class="settings-space-legend">
-            <div v-for="(category, index) in storage.categories" :key="category.key" class="settings-space-legend__item">
-              <dt><i aria-hidden="true" :style="{ background: colors[index] }" />{{ category.label }}</dt>
+            <div v-for="category in storage.categories" :key="category.key" class="settings-space-legend__item">
+              <dt><i aria-hidden="true" :style="{ background: categoryColor(category.key) }" />{{ category.label }}</dt>
               <dd>{{ formatBytes(category.bytes) }}</dd>
+              <small v-if="categoryDescriptions[category.key]" class="settings-space-legend__desc">{{ categoryDescriptions[category.key] }}</small>
             </div>
           </dl>
           <div v-if="storage.legacy_annotations.bytes" class="settings-inline settings-legacy"><span class="settings-note">旧批注图 {{ formatBytes(storage.legacy_annotations.bytes) }} · 已不再使用，可清理</span><AppButton variant="ghost" :disabled="busy" @click="dialog = 'legacy'">清理</AppButton></div>
@@ -203,14 +268,14 @@ onBeforeUnmount(() => controller.abort())
       <FeedbackBanner v-if="ops.activeJob?.status === 'failed'" role="alert" tone="error" :description="ops.activeJob.job_type.endsWith('_prepare') ? '恢复准备失败，业务数据尚未应用；请刷新备份清单后重新预检。' : '备份失败，没有生成可下载结果，请刷新状态后重试。'" />
       <FeedbackBanner v-if="ops.actionError" role="alert" tone="error">{{ ops.actionError.message }}；{{ ops.actionError.impact }}</FeedbackBanner>
       <FeedbackBanner v-if="ops.resultUnknown" tone="error" description="提交结果未知，请刷新状态，不要重复操作。"><AppButton variant="ghost" size="small" @click="jobs.initialize().then(() => ops.initialize(opsApi))">刷新状态</AppButton></FeedbackBanner>
-      <div class="settings-panel__body"><AppButton variant="ghost" class="settings-danger-ghost" :disabled="ops.hasBlockingOperation || ops.resultUnknown" @click="openRestorePicker">从备份恢复…</AppButton></div>
+      <div class="settings-panel__body"><p class="settings-note">更新、导入、恢复前自动做的备份只保留最近 3 份；手动备份不会自动删除，可在“从备份恢复…”里逐份删除。</p><AppButton variant="ghost" class="settings-danger-ghost" :disabled="ops.hasBlockingOperation || ops.resultUnknown" @click="openRestorePicker">从备份恢复…</AppButton></div>
     </section>
     </div>
     <section class="settings-panel">
       <header class="settings-panel__heading"><h2>考试原卷</h2><span v-if="clearableBytes > 0" class="settings-note">最多可腾出 {{ formatBytes(clearableBytes) }}</span></header>
       <div v-if="selectedRows.length" class="settings-selection-bar"><span>已选 {{ selectedRows.length }} 场 · 可腾出 {{ formatBytes(selectedRows.reduce((sum, row) => sum + row.clear_bytes, 0)) }}</span><div><AppButton variant="secondary" :disabled="!canReleaseBatch || busy" @click="beginCleanup('release', selectedRows)">释放扫描文件</AppButton><AppButton variant="danger" class="settings-danger-outline" :disabled="!canClearBatch || busy" @click="beginCleanup('clear', selectedRows)">清除原卷</AppButton></div></div>
       <div class="settings-table-scroll"><table class="app-table settings-originals-table">
-        <thead><tr><th><input type="checkbox" aria-label="全选可清理的考试" :checked="selectableRows.length > 0 && selected.length === selectableRows.length" :disabled="busy || selectableRows.length === 0" @change="toggleAll"></th><th>考试</th><th>状态</th><th class="is-num">扫描文件</th><th class="is-num">页面与旧批注图</th><th>原卷</th><th>操作</th></tr></thead>
+        <thead><tr><th><input type="checkbox" aria-label="全选可清理的考试" :checked="selectableRows.length > 0 && selected.length === selectableRows.length" :disabled="busy || selectableRows.length === 0" @change="toggleAll"></th><th>考试</th><th>状态</th><th class="is-num">扫描文件</th><th class="is-num">页面图</th><th>原卷</th><th>操作</th></tr></thead>
         <tbody><tr v-for="row in storage?.sessions" :key="row.session_id">
           <td><input v-model="selected" type="checkbox" :value="row.session_id" :aria-label="`选择 ${row.name}`" :disabled="busy || !(row.can_release_scans || row.can_clear)"></td>
           <td><strong>{{ row.name }}</strong><small>{{ time(row.created_at).slice(0, 10) }}</small></td><td><StatusBadge :label="row.status_label" :tone="row.status_label === '已完成' ? 'success' : 'neutral'" /></td>
@@ -233,18 +298,19 @@ onBeforeUnmount(() => controller.abort())
         </template>
         <template v-if="dialog === 'restore-pick'">
           <p>选择一份备份，继续后再次确认。</p>
-          <div class="settings-restore-list"><table class="app-table settings-backups-table"><thead><tr><th></th><th>时间</th><th>原因</th><th class="is-num">大小</th></tr></thead><tbody>
-            <tr v-for="item in zipBackups" :key="item.filename"><td><input v-model="selectedBackup" type="radio" name="restore-backup" :value="item.filename" :aria-label="`选择 ${time(item.created_at)} 的备份`"></td><td>{{ time(item.created_at) }}</td><td>{{ reasons[item.reason] ?? '未记录' }}</td><td class="is-num">{{ formatBytes(item.size_bytes) }}</td></tr>
+          <div class="settings-restore-list"><table class="app-table settings-backups-table"><thead><tr><th></th><th>时间</th><th>原因</th><th class="is-num">大小</th><th></th></tr></thead><tbody>
+            <tr v-for="item in zipBackups" :key="item.filename"><td><input v-model="selectedBackup" type="radio" name="restore-backup" :value="item.filename" :aria-label="`选择 ${time(item.created_at)} 的备份`"></td><td>{{ time(item.created_at) }}</td><td>{{ reasons[item.reason] ?? '未记录' }}</td><td class="is-num">{{ formatBytes(item.size_bytes) }}</td><td><AppButton variant="ghost" size="small" :disabled="busy || ops.hasBlockingOperation" @click="beginDeleteBackup(item)">删除</AppButton></td></tr>
           </tbody></table></div>
           <FeedbackBanner v-if="ops.backupsError" role="alert" tone="error" :description="ops.backupsError.message"><AppButton variant="ghost" size="small" @click="ops.refreshBackups(opsApi)">刷新</AppButton></FeedbackBanner><StatePanel v-else-if="!zipBackups.length" kind="empty" compact title="当前没有可恢复的备份" />
           <FeedbackBanner v-if="ops.actionError" role="alert" tone="error">{{ ops.actionError.message }}；{{ ops.actionError.impact }}</FeedbackBanner>
         </template>
         <template v-if="dialog === 'restore'"><p>用这份备份覆盖当前同名数据。重启应用后才生效，重启前可以撤销。</p><p class="settings-note">{{ ops.preflight?.summary.file_count ?? '—' }} 个文件 · {{ formatBytes(ops.preflight?.summary.total_expanded_bytes ?? ops.preflight?.summary.total_size_bytes ?? 0) }}</p></template>
+        <template v-if="dialog === 'backup-delete' && backupToDelete"><p>删除 {{ time(backupToDelete.created_at) }} 的{{ backupReasonText(backupToDelete.reason) }}备份（{{ formatBytes(backupToDelete.size_bytes) }}）。删除后不能再用它恢复，其他备份和当前数据不受影响。</p></template>
         <label v-if="dialog === 'clear' || dialog === 'restore'" class="settings-confirm-line"><span>输入「{{ dialog === 'clear' ? '确认清除' : '确认恢复' }}」继续</span><input v-model="phrase" class="app-input" data-testid="confirmation-phrase" autocomplete="off" :aria-label="dialog === 'clear' ? '输入确认清除' : '输入确认恢复'" :disabled="busy || ops.submitting" @keydown.enter.prevent="canSubmitDialog && submitDialog()"></label>
         <p v-if="busy" class="settings-inline" role="status"><progress class="settings-progress" />{{ progress || '正在清理…' }}</p>
         <FeedbackBanner v-if="dialogError" role="alert" tone="error" :description="dialogError"><AppButton variant="ghost" size="small" :disabled="busy" @click="refreshCleanup">刷新</AppButton></FeedbackBanner>
         <FeedbackBanner v-if="ops.actionError && dialog === 'clear'" role="alert" tone="error" :description="ops.actionError.message" />
-        <template #footer><AppButton variant="secondary" :disabled="busy || ops.submitting" @click="closeDialog()">取消</AppButton><AppButton v-if="dialog === 'restore'" variant="ghost" :disabled="busy || ops.submitting" @click="backToRestorePick">返回</AppButton><AppButton v-if="dialog === 'restore-pick'" variant="danger" class="settings-danger-outline" data-testid="preflight-restore" :disabled="!selectedBackup || busy || ops.submitting" @click="beginRestore">继续</AppButton><AppButton v-else :variant="dialog === 'clear' || dialog === 'restore' ? 'danger' : 'primary'" data-testid="confirm-operation" :disabled="!canSubmitDialog" @click="submitDialog">{{ dialog === 'release' ? '释放' : dialog === 'clear' ? '清除原卷' : dialog === 'legacy' ? '清理' : '恢复' }}</AppButton></template>
+        <template #footer><AppButton variant="secondary" :disabled="busy || ops.submitting" @click="cancelDialog">取消</AppButton><AppButton v-if="dialog === 'restore'" variant="ghost" :disabled="busy || ops.submitting" @click="backToRestorePick">返回</AppButton><AppButton v-if="dialog === 'restore-pick'" variant="danger" class="settings-danger-outline" data-testid="preflight-restore" :disabled="!selectedBackup || busy || ops.submitting" @click="beginRestore">继续</AppButton><AppButton v-else :variant="dialog === 'clear' || dialog === 'restore' || dialog === 'backup-delete' ? 'danger' : 'primary'" data-testid="confirm-operation" :disabled="!canSubmitDialog" @click="submitDialog">{{ dialog === 'release' ? '释放' : dialog === 'clear' ? '清除原卷' : dialog === 'legacy' ? '清理' : dialog === 'backup-delete' ? '删除' : '恢复' }}</AppButton></template>
     </AppDialog>
   </section>
 </template>

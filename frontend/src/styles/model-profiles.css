@@ -1,5 +1,5 @@
 .model-profiles-view { min-width: 0; container-type: inline-size; }
-.ai-services-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+.ai-services-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 14px; align-items: start; }
 @container (max-width: 1099px) { .ai-services-grid { grid-template-columns: minmax(0, 1fr); } }
 .ai-task { padding: 12px 15px 13px; }
 .ai-task + .ai-task { border-top: 1px solid var(--color-border-subtle); }

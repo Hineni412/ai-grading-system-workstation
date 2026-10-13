@@ -14,7 +14,7 @@ import { formatBytes } from '../../lib/format'
 import '../../styles/model-profiles.css'
 
 const DIAGNOSTIC_PAGE_SIZE = 100
-const JSON_DISPLAY_LIMIT = 80_000
+const PREVIEW_CHAR_LIMIT = 4_000
 
 const kindOptions = [
   { value: '', label: '全部' },
@@ -172,13 +172,13 @@ function diagnosticTextPreview(
   expanded: boolean,
 ): { text: string; truncated: boolean; hiddenChars: number } {
   if (!text) return { text: '暂无内容', truncated: false, hiddenChars: 0 }
-  if (expanded || text.length <= JSON_DISPLAY_LIMIT) {
+  if (expanded || text.length <= PREVIEW_CHAR_LIMIT) {
     return { text, truncated: false, hiddenChars: 0 }
   }
   return {
-    text: text.slice(0, JSON_DISPLAY_LIMIT),
+    text: text.slice(0, PREVIEW_CHAR_LIMIT),
     truncated: true,
-    hiddenChars: text.length - JSON_DISPLAY_LIMIT,
+    hiddenChars: text.length - PREVIEW_CHAR_LIMIT,
   }
 }
 const requestPreview = computed(() => diagnosticTextPreview(requestJson.value, expandRequestJson.value))
@@ -372,7 +372,7 @@ onBeforeUnmount(() => {
           <div v-if="diagnosticTab === 'request'" class="ai-diagnostic__body">
             <p class="ai-diagnostic__note">图片正文已替换为附件编号；其余内容是发送给模型的文本和参数。</p>
             <div class="ai-diagnostic__body-tools"><AppButton variant="ghost" size="small" @click="void copyTab('request')">{{ copiedTab === 'request' ? '已复制' : '复制' }}</AppButton></div>
-            <FeedbackBanner v-if="requestPreview.truncated" tone="info" :description="'内容较长，先显示前面 ' + JSON_DISPLAY_LIMIT + ' 个字符，以免页面卡住。后面还有 ' + requestPreview.hiddenChars + ' 个字符。'" action-label="显示全部" @action="expandRequestJson = true" />
+            <FeedbackBanner v-if="requestPreview.truncated" tone="info" :description="'内容较长，已折叠，只显示前 ' + PREVIEW_CHAR_LIMIT + ' 个字符；后面还有 ' + requestPreview.hiddenChars + ' 个字符。'" action-label="展开全部" @action="expandRequestJson = true" />
             <pre>{{ requestPreview.text }}</pre>
           </div>
           <div v-else-if="diagnosticTab === 'attachments'" class="ai-diagnostic__body">
@@ -388,7 +388,7 @@ onBeforeUnmount(() => {
           <div v-else-if="diagnosticTab === 'response'" class="ai-diagnostic__body">
             <p class="ai-diagnostic__note">{{ selected.response_chars ? `${selected.response_chars} 个字符` : '没有收到可显示的文本返回' }}</p>
             <div class="ai-diagnostic__body-tools"><AppButton variant="ghost" size="small" @click="void copyTab('response')">{{ copiedTab === 'response' ? '已复制' : '复制' }}</AppButton></div>
-            <FeedbackBanner v-if="rawResponsePreview.truncated" tone="info" :description="'返回正文较长，先显示前面 ' + JSON_DISPLAY_LIMIT + ' 个字符。后面还有 ' + rawResponsePreview.hiddenChars + ' 个字符。'" action-label="显示全部" @action="expandRawResponse = true" />
+            <FeedbackBanner v-if="rawResponsePreview.truncated" tone="info" :description="'返回正文较长，已折叠，只显示前 ' + PREVIEW_CHAR_LIMIT + ' 个字符；后面还有 ' + rawResponsePreview.hiddenChars + ' 个字符。'" action-label="展开全部" @action="expandRawResponse = true" />
             <pre>{{ rawResponsePreview.text }}</pre>
           </div>
           <div v-else-if="diagnosticTab === 'parsed'" class="ai-diagnostic__body">
@@ -396,7 +396,7 @@ onBeforeUnmount(() => {
             <p v-if="selected.parse_error" class="ai-diagnostic__error-text">{{ selected.parse_error }}</p>
             <p v-if="selected.validation_issue_codes.length" class="ai-diagnostic__error-text">校验原因码：{{ selected.validation_issue_codes.join('、') }}</p>
             <div class="ai-diagnostic__body-tools"><AppButton variant="ghost" size="small" @click="void copyTab('parsed')">{{ copiedTab === 'parsed' ? '已复制' : '复制' }}</AppButton></div>
-            <FeedbackBanner v-if="parsedPreview.truncated" tone="info" :description="'解析结果较长，先显示前面 ' + JSON_DISPLAY_LIMIT + ' 个字符。后面还有 ' + parsedPreview.hiddenChars + ' 个字符。'" action-label="显示全部" @action="expandParsedJson = true" />
+            <FeedbackBanner v-if="parsedPreview.truncated" tone="info" :description="'解析结果较长，已折叠，只显示前 ' + PREVIEW_CHAR_LIMIT + ' 个字符；后面还有 ' + parsedPreview.hiddenChars + ' 个字符。'" action-label="展开全部" @action="expandParsedJson = true" />
             <pre>{{ parsedPreview.text }}</pre>
           </div>
           <div v-else class="ai-diagnostic__body">

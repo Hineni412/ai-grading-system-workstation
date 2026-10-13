@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import tempfile
 from collections.abc import Iterable
@@ -26,7 +27,11 @@ from .database_validation import (
     validate_archive_databases,
     validate_staged_databases,
 )
-from .journal import OpsOperationJournal, OpsOperationManifest
+from .journal import (
+    OpsOperationBusy,
+    OpsOperationJournal,
+    OpsOperationManifest,
+)
 from .lock import OpsOperationLock
 from .models import OpsOperation
 from .plan_store import OpsPlanStore
@@ -35,6 +40,64 @@ from .write_service import _RESOURCE_BOUND_OPERATIONS, OpsWriteService
 
 class OpsPreBackupFailed(RuntimeError):
     pass
+
+
+AUTOMATIC_BACKUP_KEEP = 3
+_BACKUP_NAME = re.compile(
+    r"backup_(\d{8}_\d{6})_([a-z_]+?)(?:_[0-9a-f]{8})?\.zip"
+)
+_AUTOMATIC_BACKUP_REASONS = frozenset(
+    {
+        "before_update",
+        "before_apply",
+        "before_restore",
+        "before_import",
+        "before_exam",
+        "after_exam",
+    }
+)
+
+
+def prune_automatic_backups(paths: Any) -> int:
+    """Keep the newest AUTOMATIC_BACKUP_KEEP automatic zips; return freed bytes."""
+    journal = OpsOperationJournal(Path(paths.ops_state_dir))
+    if journal.pending_exists():
+        return 0
+    candidates: list[tuple[str, str, Path]] = []
+    for path in Path(paths.backups_dir).glob("backup_*.zip"):
+        match = _BACKUP_NAME.fullmatch(path.name)
+        if match is None or match.group(2) not in _AUTOMATIC_BACKUP_REASONS:
+            continue
+        if path.is_symlink() or not path.is_file():
+            continue
+        candidates.append((match.group(1), path.name, path))
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    freed = 0
+    for _stamp, _name, path in candidates[AUTOMATIC_BACKUP_KEEP:]:
+        try:
+            size = path.stat().st_size
+            path.unlink()
+        except OSError:
+            continue
+        freed += size
+    return freed
+
+
+def delete_backup(paths: Any, filename: str) -> int:
+    """Delete one backup zip by name; returns freed bytes."""
+    name = str(filename)
+    if name != Path(name).name or _BACKUP_NAME.fullmatch(name) is None:
+        raise ValueError("backup filename is invalid")
+    journal = OpsOperationJournal(Path(paths.ops_state_dir))
+    if journal.pending_exists():
+        raise OpsOperationBusy("another ops operation is pending")
+    with OpsOperationLock(Path(paths.ops_state_dir), timeout_seconds=2).acquire():
+        target = Path(paths.backups_dir) / name
+        if target.is_symlink() or not target.is_file():
+            raise FileNotFoundError(name)
+        size = target.stat().st_size
+        target.unlink()
+        return size
 
 
 def register_ops_job_handlers(manager: JobManager, *, paths: Any) -> None:
@@ -91,6 +154,8 @@ def run_ops_backup_job(*, context: JobContext, paths: Any) -> dict[str, object]:
             context.report(0.9, "ops_backup", "ready_to_publish")
             context.raise_if_cancelled()
             os.replace(archive_path, destination)
+        if reason != "manual":
+            prune_automatic_backups(paths)
         context.report(1.0, "ops_backup", "published")
         return {
             "operation_id": str(context.payload["operation_id"]),

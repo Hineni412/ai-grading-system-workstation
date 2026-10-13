@@ -207,6 +207,33 @@ def test_restore_rechecks_source_overlays_files_and_backs_up_latest_state(
     staging.mkdir()
     entries = _backup_entries(paths, staging, scopes=["grading"])
     assert any(entry.arc_name == "config/taxonomy-governance/state.json" for entry in entries)
+    older_id = "22222222-2222-4222-8222-222222222222"
+    older_root = paths.ops_state_dir / "operations" / older_id
+    older_staging = older_root / "staging"
+    (older_staging / "migration-backups" / "question_bank").mkdir(parents=True)
+    (older_staging / "migration-backups" / "question_bank" / "x.db").write_bytes(b"x")
+    older_journal = OpsOperationJournal(paths.ops_state_dir)
+    older_journal.prepare(
+        OpsOperationManifest(
+            operation_id=older_id,
+            operation="migration",
+            parameters={"target": "grading"},
+            resource_fingerprint="0" * 64,
+            staging_root=str(older_staging),
+            preparation_backup=str(
+                paths.backups_dir / "backup_20200101_000000_before_update.zip"
+            ),
+            created_at="2026-01-01T00:00:00+08:00",
+        )
+    )
+    older_journal.mark_applied(older_id)
+    for name in (
+        "backup_20200101_000000_before_update.zip",
+        "backup_20200102_000000_before_apply.zip",
+        "backup_20200103_000000_before_import.zip",
+        "backup_20200101_000000_manual.zip",
+    ):
+        _write_zip(paths.backups_dir / name, {"x.txt": b"x"})
     journal = _prepare_restore(
         paths,
         {
@@ -219,6 +246,24 @@ def test_restore_rechecks_source_overlays_files_and_backs_up_latest_state(
     (paths.config_dir / "unlisted.txt").write_text("preserved", encoding="utf-8")
 
     assert apply_pending_operation(paths=paths) == 0
+
+    backups = paths.backups_dir
+    assert not (backups / "backup_20200101_000000_before_update.zip").exists()
+    assert not (backups / "backup_20200102_000000_before_apply.zip").exists()
+    assert (backups / "backup_20200103_000000_before_import.zip").exists()
+    assert (backups / "backup_20200101_000000_manual.zip").exists()
+    assert (backups / "backup_source_manual.zip").exists()
+    from backend.ops.jobs import _AUTOMATIC_BACKUP_REASONS, _BACKUP_NAME
+    automatic = [
+        path
+        for path in backups.glob("backup_*.zip")
+        if (match := _BACKUP_NAME.fullmatch(path.name))
+        and match.group(2) in _AUTOMATIC_BACKUP_REASONS
+    ]
+    assert len(automatic) == 3
+    assert not older_staging.exists()
+    assert (older_root / "status.json").is_file()
+    assert (paths.ops_state_dir / "operations" / OPERATION_ID / "status.json").is_file()
 
     assert (paths.config_dir / "keep.txt").read_text(encoding="utf-8") == "restored"
     assert (paths.config_dir / "new.txt").read_text(encoding="utf-8") == "new"

@@ -8,19 +8,24 @@ const SettingsStudentsPanel = defineAsyncComponent(() => import('../components/s
 const ModelProfilesView = defineAsyncComponent(() => import('./ModelProfilesView.vue'))
 const AiDiagnosticsPanel = defineAsyncComponent(() => import('../components/settings/AiDiagnosticsPanel.vue'))
 const SettingsDataPanel = defineAsyncComponent(() => import('../components/settings/SettingsDataPanel.vue'))
-type Section = 'log' | 'ai' | 'students' | 'data'
+type Section = 'log' | 'ai' | 'students'
 const sections = [
-  { key: 'log', label: '调用记录' }, { key: 'ai', label: 'AI 服务' },
-  { key: 'students', label: '学生名单' }, { key: 'data', label: '数据与空间' },
+  { key: 'log', label: '调用记录' }, { key: 'ai', label: 'AI 与数据' },
+  { key: 'students', label: '学生名单' },
 ] as const
-const aliases: Record<string, Section> = { 'ai-trace': 'log', backup: 'data', maintenance: 'students', system: 'students', models: 'ai' }
+const aliases: Record<string, Section> = { 'ai-trace': 'log', backup: 'ai', data: 'ai', maintenance: 'students', system: 'students', models: 'ai' }
 const storageKey = 'ai-grading:settings-section:v3'
 const route = useRoute()
 const router = useRouter()
 const modelView = ref<(ComponentPublicInstance & { hasUnsavedChanges: boolean }) | null>(null)
 function valid(value: unknown): value is Section { return sections.some(s => s.key === value) }
 function stored(): Section {
-  try { const value = localStorage.getItem(storageKey); if (valid(value)) return value } catch { /* unavailable */ }
+  try {
+    const value = localStorage.getItem(storageKey)
+    if (valid(value)) return value
+    const alias = typeof value === 'string' ? aliases[value] : undefined
+    if (alias) return alias
+  } catch { /* unavailable */ }
   return 'log'
 }
 const section = computed(() => valid(route.query.section) ? route.query.section : stored())
@@ -59,9 +64,11 @@ watch(() => [route.query.section, route.hash], ([value]) => {
     </PageHeader>
     <div class="settings-content" :class="{ 'settings-content--wide': section === 'log' || section === 'students' }">
       <AiDiagnosticsPanel v-if="section === 'log'" />
-      <ModelProfilesView v-else-if="section === 'ai'" ref="modelView" />
+      <div v-else-if="section === 'ai'" class="settings-ai-data">
+        <ModelProfilesView ref="modelView" />
+        <SettingsDataPanel />
+      </div>
       <SettingsStudentsPanel v-else-if="section === 'students'" />
-      <SettingsDataPanel v-else-if="section === 'data'" />
     </div>
   </section>
 </template>

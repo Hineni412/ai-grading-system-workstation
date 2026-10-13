@@ -29,6 +29,7 @@ from backend.api.schemas.ops import (
 from backend.jobs.manager import JobManager, UnsupportedJobTypeError
 from backend.ops.archive import OpsArchiveInvalid, OpsArchiveTooLarge
 from backend.ops.journal import OpsOperationBusy
+from backend.ops.lock import OpsLockBusy
 from backend.ops.plan_store import (
     OpsConfirmationExpired,
     OpsConfirmationInvalid,
@@ -71,7 +72,7 @@ def get_storage(db=Depends(get_grading_db), data_root: Path=Depends(get_data_roo
         sid = int(session["id"])
         shared = set().union(*(paths for owner, paths in references.items() if owner != sid))
         with session_lifecycle_guard(sid):
-            snapshot = _originals_snapshot(sid, db, data_root, workspace, review_service, shared_refs=shared)
+            snapshot = _originals_snapshot(sid, db, data_root, workspace, review_service, shared_refs=shared, check_review=False)
         rows.append({"session_id": sid, "name": session["session_name"], "created_at": session.get("created_at"),
                      "status_label": {"completed": "已完成", "graded": "已完成", "grading": "批改中", "reviewing": "复核中"}.get(session.get("status"), "未开始"),
                      "originals_state": snapshot["originals_state"], "scan_bytes": snapshot["scan_bytes"],
@@ -126,6 +127,25 @@ def get_backups(
             "ops_backup_list_unavailable",
             "Backup list is temporarily unavailable",
         ) from exc
+
+
+@router.delete("/backups/{filename}")
+def delete_ops_backup(
+    filename: str,
+    service: OpsSelfCheckService = Depends(get_ops_self_check_service),
+) -> dict[str, int]:
+    from backend.ops.jobs import delete_backup
+    try:
+        freed = delete_backup(service.paths, filename)
+    except ValueError as exc:
+        raise ApiError(400, "backup_filename_invalid", "备份文件名无效。") from exc
+    except FileNotFoundError as exc:
+        raise ApiError(404, "backup_not_found", "这份备份已不存在，请刷新列表。") from exc
+    except OpsOperationBusy as exc:
+        raise ApiError(409, "ops_operation_pending", "有待执行的恢复或更新，暂时不能删除备份。") from exc
+    except OpsLockBusy as exc:
+        raise ApiError(409, "ops_busy", "正在备份或恢复，请稍后再删除。") from exc
+    return {"freed_bytes": freed, "deleted_files": 1}
 
 
 @router.post(

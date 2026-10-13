@@ -196,7 +196,7 @@ export function taskTarget(job: JobResponse, paperId?: number): TaskTarget | nul
     return { route: { path: '/results', query: { tab: 'exports' } }, source: 'results', sessionId: null }
   }
   if (job.job_type.startsWith('ops_')) {
-    return { route: { path: '/settings', query: { section: 'data' } }, source: 'settings', sessionId: null }
+    return { route: { path: '/settings', query: { section: 'ai' } }, source: 'settings', sessionId: null }
   }
   const target = pageTargets[job.job_type]
   if (!target) return null

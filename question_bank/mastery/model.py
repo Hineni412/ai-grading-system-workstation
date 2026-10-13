@@ -30,12 +30,15 @@ class MasteryParameters:
     stable_threshold: float = 0.75
     weak_threshold: float = 0.60
     confidence: float = 0.80
+    conflict_discount: float = 0.4
 
     def __post_init__(self):
         if any(v <= 0 for v in (self.sigma_theta, self.sigma_kc, self.sigma_section, self.sigma_chapter, self.sigma_item)):
             raise ValueError("mastery prior deviations must be positive")
         if self.tau_theta < 0 or self.tau_kc < 0 or not 0 <= self.slip < 1 - self.stable_threshold:
             raise ValueError("invalid mastery time/slip parameters")
+        if not 0 < self.conflict_discount <= 1:
+            raise ValueError("conflict_discount must be in (0, 1]")
 
     @cached_property
     def version(self):
@@ -52,6 +55,29 @@ def lineage(node, parent):
     while parent.get(result[-1]) and parent[result[-1]] not in result:
         result.append(parent[result[-1]])
     return result
+
+
+def _conflict_weights(observations, discount):
+    if all(isinstance(o.get("occurred_at"), datetime) for o in observations):
+        def order_key(o):
+            return (o["occurred_at"], str(o["activity"]))
+    else:
+        def order_key(o):
+            return (o["week"], str(o["activity"]))
+    activities = defaultdict(lambda: defaultdict(list))
+    for o in observations:
+        for key in o["links"]:
+            activities[o["student"], key][order_key(o)].append(o["y"] == 1)
+    status = {key: {a: all(v) for a, v in by_activity.items()}
+              for key, by_activity in activities.items()}
+    weights = []
+    for o in observations:
+        current, own = order_key(o), o["y"] == 1
+        weights.append(sum(
+            share * discount ** sum(1 for later, s in status[o["student"], key].items()
+                                    if later > current and s != own)
+            for key, share in o["links"].items()))
+    return weights
 
 
 def build_exam_observations(rows, resolver, session_times):
@@ -229,6 +255,7 @@ class MasteryModel:
 
     def fit(self, observations, *, iterations=600, laplace=True):
         self.observations = sorted(observations, key=lambda o: (o["week"], str(o["activity"]), o["student"], str(o["item"])))
+        self.weights = np.asarray(_conflict_weights(self.observations, self.parameters.conflict_discount))
         self.state_weeks = defaultdict(set)
         for o in self.observations:
             self.state_weeks[("theta", o["student"])].add(o["week"])
@@ -251,14 +278,14 @@ class MasteryModel:
             eta = np.bincount(self.obs_index, self.coef * x[self.par_index], minlength=count)
             q = sigmoid(eta) if gradient or slip else None
             if slip == 0:
-                loss = np.sum(np.logaddexp(0, eta) - self.y * eta)
+                loss = np.sum(self.weights * (np.logaddexp(0, eta) - self.y * eta))
             else:
                 p = (1 - slip) * q
-                loss = -np.sum(self.y * (math.log1p(-slip) - np.logaddexp(0, -eta)) + (1 - self.y) * np.log1p(-p))
+                loss = -np.sum(self.weights * (self.y * (math.log1p(-slip) - np.logaddexp(0, -eta)) + (1 - self.y) * np.log1p(-p)))
             if not gradient:
                 return loss + 0.5 * np.sum(self.prec * x*x)
             residual = q - self.y if slip == 0 else (p - self.y) * (1 - q) / (1 - p)
-            grad = np.bincount(self.par_index, self.coef * residual[self.obs_index], minlength=len(x))
+            grad = np.bincount(self.par_index, self.coef * (self.weights * residual)[self.obs_index], minlength=len(x))
             return loss + 0.5 * np.sum(self.prec * x*x), grad + self.prec*x
 
         self.x = lbfgs(lambda x: objective(x, 0), np.zeros(len(self.prec)), iterations,
@@ -278,12 +305,12 @@ class MasteryModel:
         for key, i in self.index.items():
             if key[0] in ("theta", "a"):
                 local_indices[key[1]].append(i)
-        for o, row in zip(self.observations, self.rows):
-            by_student[o["student"]].append((o, row))
+        for o, row, w in zip(self.observations, self.rows, self.weights):
+            by_student[o["student"]].append((o, row, w))
         for student, local in local_indices.items():
             position = {i: j for j, i in enumerate(local)}
             hessian = np.diag(self.prec[local])
-            for o, row in by_student[student]:
+            for o, row, w in by_student[student]:
                 q = float(sigmoid(sum(c*self.x[i] for i, c in row)))
                 s = self.parameters.slip
                 p = (1-s)*q
@@ -292,7 +319,7 @@ class MasteryModel:
                 for i, c in row:
                     if i in position:
                         vector[position[i]] += c
-                hessian += curvature * np.outer(vector, vector)
+                hessian += w * curvature * np.outer(vector, vector)
             self.cov[student] = position, np.linalg.inv(hessian)
 
     def mastery(self, student, node, week):

@@ -12,7 +12,6 @@ import hashlib
 import json
 import re
 import threading
-from collections import deque
 from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
@@ -94,7 +93,7 @@ def diagnostic_log_path() -> Path:
     return get_path_manager().logs_dir / "llm_diagnostics.jsonl"
 
 
-def _reverse_lines(path: Path) -> Iterator[str]:
+def _reverse_raw_lines(path: Path) -> Iterator[bytes]:
     """Yield complete lines newest-first, reading backwards in blocks."""
     with path.open("rb") as handle:
         handle.seek(0, 2)
@@ -108,11 +107,16 @@ def _reverse_lines(path: Path) -> Iterator[str]:
             lines = block.split(b"\n")
             remainder = lines[0]
             for chunk in reversed(lines[1:]):
-                text = chunk.decode("utf-8", errors="replace").rstrip("\r")
-                if text.strip():
-                    yield text
+                line = chunk.rstrip(b"\r")
+                if line.strip():
+                    yield line
         if remainder.strip():
-            yield remainder.decode("utf-8", errors="replace").rstrip("\r")
+            yield remainder.rstrip(b"\r")
+
+
+def _reverse_lines(path: Path) -> Iterator[str]:
+    for line in _reverse_raw_lines(path):
+        yield line.decode("utf-8", errors="replace")
 
 
 def _path_lock(path: Path) -> threading.RLock:
@@ -617,13 +621,6 @@ class _WorkspaceDiagnosticSink:
         )
 
 
-def _line_mentions_call_id(line: str, call_id: str) -> bool:
-    return (
-        f'"call_id":"{call_id}"' in line
-        or f'"call_id": "{call_id}"' in line
-    )
-
-
 class JsonlDiagnosticJournal:
     def __init__(self, path: str | Path | None = None) -> None:
         self.path = (
@@ -944,7 +941,44 @@ class JsonlDiagnosticJournal:
         safe_call_id = str(call_id or "").strip()
         if not re.fullmatch(r"[0-9a-f]{24}", safe_call_id):
             return None
-        calls, _, _ = self._merged_calls(
+        needles = (
+            f'"call_id":"{safe_call_id}"'.encode(),
+            f'"call_id": "{safe_call_id}"'.encode(),
+        )
+        records: list[dict[str, Any]] = []
+        # Newest file first, newest line first; the request event is the
+        # oldest event of a call, so it ends the scan.
+        with _path_lock(self.path):
+            try:
+                for path in reversed(self._read_paths()):
+                    if not path.exists():
+                        continue
+                    done = False
+                    for line in _reverse_raw_lines(path):
+                        if not any(needle in line for needle in needles):
+                            continue
+                        try:
+                            record = json.loads(
+                                line.decode("utf-8", errors="replace")
+                            )
+                        except json.JSONDecodeError:
+                            continue
+                        if (
+                            not isinstance(record, dict)
+                            or record.get("call_id") != safe_call_id
+                        ):
+                            continue
+                        records.append(record)
+                        if record.get("event") == "request":
+                            done = True
+                            break
+                    if done:
+                        break
+            except OSError:
+                return None
+        records.reverse()
+        calls = _merge_events(
+            records,
             include_bodies=True,
             only_call_id=safe_call_id,
         )
@@ -1002,53 +1036,6 @@ class JsonlDiagnosticJournal:
             "retained_event_count": retained,
             "unclassified_event_count": unclassified,
         }
-
-    def _merged_calls(
-        self,
-        *,
-        include_bodies: bool = True,
-        only_call_id: str | None = None,
-    ) -> tuple[dict[str, dict[str, Any]], int, bool]:
-        recent: deque[dict[str, Any]] = deque(maxlen=_MAX_READ_EVENTS)
-        scanned = 0
-        target_call_id = str(only_call_id or "").strip()
-        with _path_lock(self.path):
-            try:
-                for path in self._read_paths():
-                    if not path.exists():
-                        continue
-                    with path.open("r", encoding="utf-8") as handle:
-                        for line in handle:
-                            scanned += 1
-                            if (
-                                target_call_id
-                                and not _line_mentions_call_id(
-                                    line,
-                                    target_call_id,
-                                )
-                            ):
-                                continue
-                            try:
-                                record = json.loads(line)
-                            except (
-                                json.JSONDecodeError,
-                                UnicodeDecodeError,
-                            ):
-                                continue
-                            if not isinstance(record, dict):
-                                continue
-                            if not include_bodies:
-                                for key in _HEAVY_EVENT_KEYS:
-                                    record.pop(key, None)
-                            recent.append(record)
-            except OSError:
-                return {}, 0, False
-        calls = _merge_events(
-            recent,
-            include_bodies=include_bodies,
-            only_call_id=target_call_id,
-        )
-        return calls, scanned, scanned > len(recent)
 
     def _recent_events(
         self,

@@ -95,7 +95,7 @@ class OriginalsActionRequest(BaseModel):
     confirmation_phrase: str = ""
 
 
-def _originals_snapshot(session_id, db, data_root, workspace, review_service, backup_service=None, *, shared_refs=None):
+def _originals_snapshot(session_id, db, data_root, workspace, review_service, backup_service=None, *, shared_refs=None, check_review=True):
     from backend.files.session_originals import measure_session_originals, originals_state, _receipt
     from backend.review.manual_context import current_manual_context
     try:
@@ -120,7 +120,7 @@ def _originals_snapshot(session_id, db, data_root, workspace, review_service, ba
         reason = "还没有批改结果"
     elif unmatched:
         reason = "还有答卷没有对应到学生"
-    else:
+    elif check_review:
         questions = review_service.list_questions(session_id, session, scope=None, manual_context=current_manual_context(session_id, workspace, read_only=True) if workspace._manifest_path(session_id).exists() else None)
         if any(q.needs_review_count + q.ungraded_count + q.failed_count for q in questions):
             reason = "复核完成后可清理"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -52,64 +53,66 @@ class OriginalPaperExporter:
         session_name = session.get("session_name") if session else f"考试批改_{session_id}"
         work_dir = self.output_dir / f"{safe_filename_fragment(session_name, '考试批改')}_批注原卷页面_{ts}"
         work_dir.mkdir(parents=True, exist_ok=True)
-        pdf_path = self.output_dir / session_export_path_name(session_name, "批注原卷", "pdf", ts)
+        try:
+            pdf_path = self.output_dir / session_export_path_name(session_name, "批注原卷", "pdf", ts)
 
-        regions = answer_regions_with_template_source_sizes(
-            self.db,
-            session_id,
-            data_root=self._data_root(),
-        )
-        rubric = self._load_rubric(session_id)
-        enhanced_path_map = self._load_enhanced_path_map(session_id)
-
-        sorted_results = sorted(
-            results,
-            key=lambda item: (
-                str(item.get("student_code") or ""),
-                str(item.get("student_name") or ""),
-                int(item.get("result_id") or 0),
-            ),
-        )
-        prepared_results: list[tuple[dict[str, Any], dict[str, dict[str, float]]]] = []
-        expected_parent_ids: list[str] = []
-        for result in sorted_results:
-            result_id = int(result["result_id"])
-            details = self.db.results.get_result_details(result_id)
-            question_scores = aggregate_parent_question_scores(details, rubric)
-            prepared_results.append((result, question_scores))
-            for question_id in question_scores:
-                if question_id not in expected_parent_ids:
-                    expected_parent_ids.append(question_id)
-
-        question_anchors = detect_printed_question_anchors(
-            self._anchor_page_paths(session_id, sorted_results),
-            expected_parent_ids,
-        )
-
-        page_images: list[Path] = []
-        for index, (result, question_scores) in enumerate(prepared_results, start=1):
-            student_code = _safe_name(str(result.get("student_code") or f"S{index:03d}"))
-            student_name = _safe_name(str(result.get("student_name") or "unknown"))
-            prefix = f"{index:03d}_{student_code}_{student_name}"
-
-            front_out = work_dir / f"{prefix}_01_front.jpg"
-            back_out = work_dir / f"{prefix}_02_back.jpg"
-            front_image = self._preferred_annotation_image(Path(str(result["front_image"])), enhanced_path_map)
-            back_image = self._preferred_annotation_image(Path(str(result["back_image"])), enhanced_path_map)
-            render_annotated_paper(
-                front_image=front_image,
-                back_image=back_image,
-                regions=regions,
-                question_scores=question_scores,
-                question_anchors=question_anchors,
-                output_front=front_out,
-                output_back=back_out,
+            regions = answer_regions_with_template_source_sizes(
+                self.db,
+                session_id,
+                data_root=self._data_root(),
             )
-            page_images.extend([front_out, back_out])
+            rubric = self._load_rubric(session_id)
+            enhanced_path_map = self._load_enhanced_path_map(session_id)
 
-        _save_images_as_pdf(page_images, pdf_path)
+            sorted_results = sorted(
+                results,
+                key=lambda item: (
+                    str(item.get("student_code") or ""),
+                    str(item.get("student_name") or ""),
+                    int(item.get("result_id") or 0),
+                ),
+            )
+            prepared_results: list[tuple[dict[str, Any], dict[str, dict[str, float]]]] = []
+            expected_parent_ids: list[str] = []
+            for result in sorted_results:
+                result_id = int(result["result_id"])
+                details = self.db.results.get_result_details(result_id)
+                question_scores = aggregate_parent_question_scores(details, rubric)
+                prepared_results.append((result, question_scores))
+                for question_id in question_scores:
+                    if question_id not in expected_parent_ids:
+                        expected_parent_ids.append(question_id)
 
-        return pdf_path
+            question_anchors = detect_printed_question_anchors(
+                self._anchor_page_paths(session_id, sorted_results),
+                expected_parent_ids,
+            )
+
+            page_images: list[Path] = []
+            for index, (result, question_scores) in enumerate(prepared_results, start=1):
+                student_code = _safe_name(str(result.get("student_code") or f"S{index:03d}"))
+                student_name = _safe_name(str(result.get("student_name") or "unknown"))
+                prefix = f"{index:03d}_{student_code}_{student_name}"
+
+                front_out = work_dir / f"{prefix}_01_front.jpg"
+                back_out = work_dir / f"{prefix}_02_back.jpg"
+                front_image = self._preferred_annotation_image(Path(str(result["front_image"])), enhanced_path_map)
+                back_image = self._preferred_annotation_image(Path(str(result["back_image"])), enhanced_path_map)
+                render_annotated_paper(
+                    front_image=front_image,
+                    back_image=back_image,
+                    regions=regions,
+                    question_scores=question_scores,
+                    question_anchors=question_anchors,
+                    output_front=front_out,
+                    output_back=back_out,
+                )
+                page_images.extend([front_out, back_out])
+
+            _save_images_as_pdf(page_images, pdf_path)
+            return pdf_path
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
 
     def _load_rubric(self, session_id: int) -> dict[str, Any]:
         session = self.db.sessions.get_grading_session(session_id)

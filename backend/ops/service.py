@@ -16,6 +16,7 @@ from update_tools.backup_core import list_backups as _list_zip_backups
 _TOOL_KEYS = ("wps", "microsoft_word", "libreoffice", "tectonic")
 _SAFE_BACKUP_REASONS = {
     "after_exam",
+    "before_apply",
     "before_exam",
     "before_import",
     "before_restore",

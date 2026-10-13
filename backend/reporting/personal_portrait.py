@@ -8,6 +8,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from question_bank.mastery.current import recent_trend_improved
+
 STATE_LABEL = {"stable": "较稳定", "allright": "都做对了", "weak": "明显薄弱",
                "unsteady": "还不稳", "watch": "待观察"}
 STATE_CLASS = {"stable": "t-stable", "allright": "t-allright", "weak": "t-weak",
@@ -38,7 +40,7 @@ details.portrait[open]>summary{padding-bottom:10px;border-bottom:1px dashed var(
 .prow .sname{flex:0 0 100%;font-size:12px;color:var(--muted)}
 .chip{display:inline-block;border-radius:8px;padding:4px 9px;font-size:12.5px;line-height:1.55;max-width:100%}
 .chip .csub{display:block;font-size:11px;opacity:.82}
-.chip .trend{display:inline-block;font-size:10.5px;border-radius:999px;padding:0 6px;
+.chip .trend,.pitem .trend{display:inline-block;font-size:10.5px;border-radius:999px;padding:0 6px;
 margin-left:5px;border:1px solid currentColor;vertical-align:1px}
 .t-weak{background:var(--bad-soft);color:var(--bad);border:1px solid #eec6c0}
 .t-unsteady{background:var(--warn-soft);color:var(--warn);border:1px solid #f0d9ab}
@@ -279,8 +281,9 @@ def _b_item(t: dict, order_idx: dict, esc, fmt_num, qlabel, qcoords) -> str:
                         f'{fmt_num(l["score"])}/{fmt_num(l["full"])}' for l in losses)
         groups.append(f'<span class="bexam" title="{esc(losses[0]["session"])}">'
                       f'<b>{esc(_week_name(losses[0]["session"]))}</b> {esc(qs)}</span>')
+    trend = (f'<span class="trend">{esc(t["trend"])}</span>' if t.get("trend") else "")
     return (f'<div class="pitem brow"><div class="bleft"><b>{esc(t["label"])}</b>'
-            f'{_badge(t["state"])}<div class="pchapname">{esc(t["chapter"])}</div></div>'
+            f'{_badge(t["state"])}{trend}<div class="pchapname">{esc(t["chapter"])}</div></div>'
             f'<div class="bright">{"".join(groups)}</div></div>')
 
 
@@ -345,7 +348,8 @@ def portrait_card_html(view: dict | None) -> str:
                 if t["state"] in B_STATES and t["losses"]]
 
     def _rank(t):
-        return (0 if t["state"] == "weak" else 1,
+        return (1 if recent_trend_improved(t.get("trend")) else 0,
+                0 if t["state"] == "weak" else 1,
                 -len({l["sid"] for l in t["losses"]}),
                 -sum(l["full"] - l["score"] for l in t["losses"]), t["label"])
 
@@ -369,7 +373,7 @@ def portrait_card_html(view: dict | None) -> str:
 <h3>最需要先补的{tl}</h3>
 {''.join(b_rows)}
 {b_extra}
-<div class="note" style="margin-top:8px">只列明显薄弱或还不稳、且在两场及以上考试失分的{tl}；整题失分不表示这个{tl}单独造成全部失分。</div>
+<div class="note" style="margin-top:8px">只列明显薄弱或还不稳、且在两场及以上考试失分的{tl}；整题失分不表示这个{tl}单独造成全部失分。最近一次已做对的排在后面。</div>
 </div>"""
 
     rows = []

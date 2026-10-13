@@ -208,6 +208,7 @@ export interface OpsOperationState {
 export interface OpsApi {
   getSelfCheck(signal?: AbortSignal): Promise<OpsSelfCheck>
   getBackups(limit?: number, signal?: AbortSignal): Promise<OpsBackupList>
+  deleteBackup(filename: string, signal?: AbortSignal): Promise<{ freed_bytes: number; deleted_files: number }>
   stageImport(file: File, signal?: AbortSignal): Promise<OpsImportUpload>
   preflight(request: OpsPreflightRequest, signal?: AbortSignal): Promise<OpsPreflight>
   submit(confirmationToken: string, signal?: AbortSignal): Promise<JobResponse>
@@ -511,6 +512,14 @@ export const opsApi: OpsApi = {
     const bounded = requireBackupLimit(limit)
     return apiClient.request(`/api/ops/backups?limit=${bounded}`, {
       decode: decodeOpsBackups,
+      signal,
+    })
+  },
+  async deleteBackup(filename, signal) {
+    if (!safeFilename(filename)) throw new Error('Invalid Ops backup filename')
+    return apiClient.request(`/api/ops/backups/${encodeURIComponent(filename)}`, {
+      method: 'DELETE',
+      decode: decodeFreed,
       signal,
     })
   },
