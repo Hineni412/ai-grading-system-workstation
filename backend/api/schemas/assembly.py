@@ -147,6 +147,26 @@ class AssemblyQuickDraftRequest(AssemblyAssistantRequest):
     sort: Literal["loss", "exam", "chapter"] = "loss"
 
 
+class AssemblyAddabilityRequest(_AssemblyModel):
+    order_ids: list[int] = Field(default_factory=list, max_length=500)
+    candidate_ids: list[int] = Field(default_factory=list, max_length=200)
+    rules: RecommendationRulesRequest
+    class_ids: list[str] = Field(default_factory=list, max_length=100)
+    session_ids: list[int] = Field(default_factory=list, max_length=100)
+    curriculum_volume_id: str = Field(default="", max_length=100)
+
+
+class AssemblyAddabilityItem(_AssemblyModel):
+    question_id: int
+    code: str | None = None
+    message: str | None = None
+    replace_question_id: int | None = None
+
+
+class AssemblyAddabilityResponse(_AssemblyModel):
+    items: list[AssemblyAddabilityItem]
+
+
 class AssemblyWeakness(_AssemblyModel):
     target_kind: Literal["skill", "type", "knowledge", "mixed"] = "skill"
     knowledge_key: str

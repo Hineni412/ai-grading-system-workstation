@@ -13,7 +13,6 @@
 .ca-columns>*{min-width:0}
 .ca-columns--basket{grid-template-columns:minmax(240px,.85fr) minmax(0,1.3fr) minmax(320px,.95fr)}
 .ca-columns>.assembly-basket{width:100%;min-width:0;top:8px;max-height:calc(100dvh - 190px)}
-.ca-basket-toggle{margin-left:auto}
 .ca-head{display:flex;align-items:center;gap:8px;padding:12px 14px 10px;border-bottom:1px solid var(--color-border-subtle)}.ca-head h2{font-size:var(--font-size-dense);font-weight:var(--font-weight-semibold);margin:0;flex:1}
 .ca-body{padding:12px 14px}
 .ca-muted,.class-assembly small{font-size:var(--font-size-caption);color:var(--color-text-muted)}
@@ -44,7 +43,13 @@
 .ca-need.is-selected{border-left-color:var(--color-accent);background:var(--color-accent-subtle)}
 .ca-need:focus-visible{outline:2px solid var(--color-accent);outline-offset:2px}
 .ca-need-top{display:flex;gap:6px;align-items:baseline}
-.ca-need-top strong{font-size:var(--font-size-caption);font-weight:var(--font-weight-semibold);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ca-need-top strong{font-size:var(--font-size-caption);font-weight:var(--font-weight-semibold);flex:0 1 auto;max-width:60%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ca-need-top .ca-pill{margin-left:auto}
+.ca-ratio{flex:1;min-width:32px;height:6px;border-radius:3px;background:var(--color-border-subtle);display:flex;overflow:hidden;align-self:center}
+.ca-ratio--empty{background:transparent}
+.ca-ratio i{display:block;height:100%}
+.ca-ratio i.is-red{background:var(--color-danger)}
+.ca-ratio i.is-amber{background:var(--color-warning)}
 .ca-pill{flex:none;padding:0 6px;border-radius:5px;font-size:var(--font-size-caption);font-weight:var(--font-weight-semibold)}
 .ca-pill.is-red{color:var(--color-danger);background:var(--color-danger-subtle)}
 .ca-pill.is-amber{color:var(--color-warning);background:var(--color-warning-subtle)}
@@ -87,6 +92,8 @@
 .ca-cand-head strong{font-size:var(--font-size-caption);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ca-cand-head .ca-badge{flex:none;margin-top:0}
 .ca-cand-head button{min-height:var(--control-height-small);padding:3px 10px;font-size:var(--font-size-caption)}
+.ca-block-note{flex:none;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--font-size-caption);color:var(--color-text-muted)}
+.ca-cand-full{margin:0 0 9px}
 .ca-clamp-3{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}
 .ca-candidate-foot{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:var(--font-size-caption);color:var(--color-text-secondary);margin:8px 0}
 .ca-candidate-foot .ca-sim{margin-left:auto}

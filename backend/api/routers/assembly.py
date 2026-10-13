@@ -21,6 +21,8 @@ from backend.api.dependencies import (
 )
 from backend.api.routers.jobs import _job_response
 from backend.api.schemas.assembly import (
+    AssemblyAddabilityRequest,
+    AssemblyAddabilityResponse,
     AssemblyAssistantRequest,
     AssemblyExamQuestionsRequest,
     AssemblyQuickDraftRequest,
@@ -537,6 +539,74 @@ def quick_draft(
     if source_generation != commit_generation(recommendations.db_path):
         raise ApiError(409, 'assembly_source_changed', '题库在起草期间已更新，请重新起草；已有试卷篮保持不变。')
     return {'question_ids': [a['question_id'] for a in additions], 'additions': additions, 'skipped': skipped}
+
+
+@router.post("/assistant/addability", response_model=AssemblyAddabilityResponse)
+def assistant_addability(
+    body: AssemblyAddabilityRequest,
+    diagnosis_service: DiagnosisProfileService = Depends(get_request_diagnosis_profile_service),
+    recommendations: PersonalizedRecommendationModule = Depends(get_personalized_recommendation_module),
+) -> AssemblyAddabilityResponse:
+    """Per-candidate add verdicts under the same paper rules PUT /draft enforces."""
+    rules = body.rules.model_dump()
+    context = {
+        'class_ids': body.class_ids,
+        'session_ids': body.session_ids,
+        'curriculum_volume_id': body.curriculum_volume_id,
+    }
+    try:
+        recent = (diagnosis_service.assembly_recent_question_ids(recommendations, context, rules)
+                  if context.get('class_ids') else set())
+        base = list(dict.fromkeys(body.order_ids))
+        check_ids = [qid for qid in dict.fromkeys(body.candidate_ids) if qid not in base]
+        # One snapshot for the whole paper plus every candidate: per-request lazy
+        # fetches inside paper_rule_violations would cost one round-trip each.
+        cache = {qid: None for qid in [*base, *check_ids]}
+        if cache:
+            descriptors, _, _ = recommendations._source_snapshot(question_ids=list(cache))
+            cache.update((item['question_id'], item) for item in descriptors)
+        items = []
+        for qid in check_ids:
+            violations = recommendations.paper_rule_violations(
+                [*base, qid], rules, recent_question_ids=recent, _candidate_cache=cache)
+            replace_id = None
+            other = next((v for v in violations if v['question_id'] != qid), None)
+            if other is not None:
+                pos = base.index(other['question_id']) + 1 if other['question_id'] in base else 0
+                code = 'paper'
+                message = f"试卷第 {pos} 题不符合当前出卷规则（{other['message']}），请先在试卷篮处理再加题。"
+            elif violations:
+                code = violations[0]['code']
+                message = violations[0]['message']
+                if {v['code'] for v in violations} & {'skill', 'count'}:
+                    replace_id = _addability_replacement(recommendations, cache, base, qid, rules, recent)
+            else:
+                code, message = None, None
+            items.append({'question_id': qid, 'code': code, 'message': message,
+                          'replace_question_id': replace_id})
+        return AssemblyAddabilityResponse(items=items)
+    except ValueError as exc:
+        raise ApiError(422, "assembly_practice_rule", str(exc)) from exc
+
+
+def _addability_replacement(module: PersonalizedRecommendationModule, cache: dict, base: list[int],
+                            qid: int, rules: dict, recent) -> int | None:
+    """First same-target paper question whose in-place swap keeps every rule."""
+    descriptor = cache.get(qid)
+    if not descriptor:
+        return None
+    candidate_keys = _candidate_training_keys(descriptor)
+    if not candidate_keys:
+        return None
+    for existing in base:
+        other = cache.get(existing)
+        if not other or not candidate_keys & _candidate_training_keys(other):
+            continue
+        trial = [qid if item == existing else item for item in base]
+        if not module.paper_rule_violations(trial, rules, recent_question_ids=recent,
+                                            _candidate_cache=cache):
+            return existing
+    return None
 
 
 @router.get("/draft", response_model=AssemblyDraftResponse)

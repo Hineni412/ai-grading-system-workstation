@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 
 import { useAssemblyStore } from '../../stores/assembly'
@@ -54,6 +54,23 @@ watch(() => props.open, (open) => {
   if (open && assembly.loadState === 'idle') void assembly.load()
 })
 
+const handleCount = computed(() => (
+  rules.value
+    ? `${assembly.selectedQuestionCount}/${rules.value.question_count}`
+    : `${assembly.selectedQuestionCount} 题`
+))
+const handlePulse = ref(false)
+let pulseTimer: ReturnType<typeof setTimeout> | undefined
+watch(() => assembly.selectedQuestionCount, (count, previous) => {
+  if (previous === undefined || count <= previous) return
+  handlePulse.value = false
+  requestAnimationFrame(() => {
+    handlePulse.value = true
+    clearTimeout(pulseTimer)
+    pulseTimer = setTimeout(() => { handlePulse.value = false }, 650)
+  })
+})
+
 function openRules(): void {
   void router.push({ path: '/question-assembly', query: { mode: 'edit', rules: '1' } })
 }
@@ -76,7 +93,16 @@ async function clear(): Promise<void> {
 </script>
 
 <template>
-  <aside v-if="open" class="assembly-basket" aria-label="试卷篮">
+  <button
+    v-if="!open"
+    type="button"
+    class="basket-handle"
+    :class="{ 'is-pulse': handlePulse }"
+    :aria-label="`展开试卷篮（${handleCount}）`"
+    title="展开试卷篮（B 键）"
+    @click="emit('update:open', true)"
+  ><span class="basket-handle__label">试卷篮</span><span class="basket-handle__count">{{ handleCount }}</span></button>
+  <aside v-else class="assembly-basket" aria-label="试卷篮">
     <header class="assembly-basket__head">
       <h2>试卷篮</h2>
       <span class="assembly-basket__title" :title="assembly.draft.title">{{ assembly.draft.title || '未命名试卷' }}</span>

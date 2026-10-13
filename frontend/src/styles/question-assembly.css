@@ -361,6 +361,14 @@
 .assembly-basket__rules.is-warning { background: var(--color-warning-subtle); color: var(--color-warning); }
 .assembly-basket__note { font-size: var(--font-size-caption); color: var(--color-text-muted); }
 
+/* 收起时右缘把手：竖排「试卷篮」+ 数量 */
+.basket-handle { position: fixed; right: 0; top: 50%; transform: translateY(-50%); z-index: 40; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px 7px; border: 1px solid var(--color-border-default); border-right: 0; border-radius: 10px 0 0 10px; background: var(--card); box-shadow: var(--shadow-raised); cursor: pointer; color: var(--color-text-secondary); }
+.basket-handle:hover { background: var(--color-bg-subtle); color: var(--color-text-primary); }
+.basket-handle .basket-handle__label { writing-mode: vertical-rl; font-size: var(--font-size-caption); font-weight: var(--font-weight-semibold); letter-spacing: 2px; }
+.basket-handle .basket-handle__count { font-size: var(--font-size-caption); color: var(--color-accent); font-weight: var(--font-weight-semibold); white-space: nowrap; }
+.basket-handle.is-pulse { animation: basket-handle-pulse 600ms ease; }
+@keyframes basket-handle-pulse { 0% { transform: translateY(-50%) scale(1); } 40% { transform: translateY(-50%) scale(1.12); } 100% { transform: translateY(-50%) scale(1); } }
+
 /* 卷面组件：题号轨道 + 试卷纸 */
 .aps-modes { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 10px; }
 .aps-meta-toggle { display: flex; align-items: center; gap: 5px; font-size: var(--font-size-caption); color: var(--color-text-secondary); cursor: pointer; }

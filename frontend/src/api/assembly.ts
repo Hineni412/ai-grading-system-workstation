@@ -443,6 +443,54 @@ export function decodeAssemblyRecordDelete(value: unknown): AssemblyRecordDelete
   return value as unknown as AssemblyRecordDelete
 }
 
+export interface AssemblyAddabilityVerdict {
+  question_id: number
+  code: string | null
+  message: string | null
+  replace_question_id: number | null
+}
+
+export interface AssemblyAddabilityRequest {
+  order_ids: number[]
+  candidate_ids: number[]
+  rules: PaperRules
+  class_ids: string[]
+  session_ids: number[]
+  curriculum_volume_id: string
+}
+
+export function decodeAssemblyAddability(value: unknown): { items: AssemblyAddabilityVerdict[] } {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['items']) ||
+    !Array.isArray(value.items) ||
+    !value.items.every(item =>
+      isRecord(item) &&
+      hasExactKeys(item, ['question_id', 'code', 'message', 'replace_question_id']) &&
+      isPositiveInteger(item.question_id) &&
+      (item.code === null || typeof item.code === 'string') &&
+      (item.message === null || typeof item.message === 'string') &&
+      (item.replace_question_id === null || isPositiveInteger(item.replace_question_id))
+    )
+  ) {
+    throw new Error('Invalid assembly addability')
+  }
+  return value as unknown as { items: AssemblyAddabilityVerdict[] }
+}
+
+export function fetchAssemblyAddability(
+  body: AssemblyAddabilityRequest,
+  signal?: AbortSignal,
+): Promise<{ items: AssemblyAddabilityVerdict[] }> {
+  return apiClient.request('/api/question-assembly/assistant/addability', {
+    method: 'POST',
+    body,
+    signal,
+    timeoutMs: 30_000,
+    decode: decodeAssemblyAddability,
+  })
+}
+
 function publicDraftPayload(draft: AssemblyDraft) {
   const payload = { ...draft }
   delete (payload as Partial<AssemblyDraft>).revision
