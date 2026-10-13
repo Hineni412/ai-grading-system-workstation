@@ -64,18 +64,28 @@ def _conflict_weights(observations, discount):
     else:
         def order_key(o):
             return (o["week"], str(o["activity"]))
-    activities = defaultdict(lambda: defaultdict(list))
+    activities = defaultdict(dict)
     for o in observations:
+        current = order_key(o)
         for key in o["links"]:
-            activities[o["student"], key][order_key(o)].append(o["y"] == 1)
-    status = {key: {a: all(v) for a, v in by_activity.items()}
-              for key, by_activity in activities.items()}
+            by_activity = activities[o["student"], key]
+            by_activity[current] = by_activity.get(current, True) and o["y"] == 1
+    later_counts = {}
+    for key, by_activity in activities.items():
+        successful = failed = 0
+        counts = {}
+        for activity in sorted(by_activity, reverse=True):
+            counts[activity] = (successful, failed)
+            if by_activity[activity]:
+                successful += 1
+            else:
+                failed += 1
+        later_counts[key] = counts
     weights = []
     for o in observations:
         current, own = order_key(o), o["y"] == 1
         weights.append(sum(
-            share * discount ** sum(1 for later, s in status[o["student"], key].items()
-                                    if later > current and s != own)
+            share * discount ** later_counts[o["student"], key][current][1 if own else 0]
             for key, share in o["links"].items()))
     return weights
 
