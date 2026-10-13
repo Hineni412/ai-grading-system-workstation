@@ -128,6 +128,7 @@ export interface QuestionBankListItem {
   labels?: { primary_type: { key: string; label: string } | null; secondary_types: { key: string; label: string }[]; knowledge_points: { key: string; label: string }[]; knowledge_coverage?: boolean }
   skills?: { stable_key: string; display_name: string }[]
   skill_hits?: { point_id: string; point_label: string }[]
+  exam_frequency?: { midterm: number | null; final: number | null } | null
 }
 
 export interface QuestionBankListResponse {
@@ -675,7 +676,7 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
 
 function hasExactQuestionKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const base = Object.fromEntries(Object.entries(value).filter(([key]) =>
-    !['duplicate_of_question_id', 'duplicate_labels_reused', 'labels', 'skills', 'skill_hits', 'evidence_point_count', 'duplicate_members'].includes(key)))
+    !['duplicate_of_question_id', 'duplicate_labels_reused', 'labels', 'skills', 'skill_hits', 'evidence_point_count', 'duplicate_members', 'exam_frequency'].includes(key)))
   return hasExactKeys(base, keys)
 }
 
@@ -759,6 +760,10 @@ function hasQuestionBankListFields(value: Record<string, unknown>): boolean {
     (value.skill_hits === undefined || (Array.isArray(value.skill_hits) && value.skill_hits.every((item) =>
       isRecord(item) && hasExactKeys(item, ['point_id', 'point_label'])
       && typeof item.point_id === 'string' && typeof item.point_label === 'string'))) &&
+    (value.exam_frequency === undefined || value.exam_frequency === null || (isRecord(value.exam_frequency)
+      && hasExactKeys(value.exam_frequency, ['midterm', 'final'])
+      && [value.exam_frequency.midterm, value.exam_frequency.final].every(
+        (rate) => rate === null || (isFiniteNumber(rate) && rate >= 0 && rate <= 1)))) &&
     isPositiveInteger(value.id) &&
     (value.duplicate_of_question_id === undefined || value.duplicate_of_question_id === null || isPositiveInteger(value.duplicate_of_question_id)) &&
     (value.duplicate_labels_reused === undefined || typeof value.duplicate_labels_reused === 'boolean') &&

@@ -9,6 +9,7 @@ import { useQuestionBankStore } from '../../stores/question-bank'
 import AppButton from '../design-system/AppButton.vue'
 import QuestionContentRenderer from './QuestionContentRenderer.vue'
 import QuestionAnnotationPanel from './QuestionAnnotationPanel.vue'
+import QuestionInsights from './QuestionInsights.vue'
 
 const props = defineProps<{ question: QuestionBankListItem; paperMode?: boolean; badgeLabel?: string }>()
 const emit = defineEmits<{ similar: [question: QuestionBankListItem] }>()
@@ -78,16 +79,17 @@ watch(expanded, async (value, wasExpanded) => {
     <div v-if="!expanded" class="qb-inline-card__collapsed">
       <div class="qb-inline-card__stem"><QuestionContentRenderer :blocks="question.rich_content?.question_blocks" :fallback="question.question_text" image-alt="题目配图" media-mode="list" compact /></div>
       <div class="qb-inline-card__tags">
-        <span>{{ questionTypeWithSubtype(question.question_type, question.tags) }}</span>
-        <span>难度 {{ question.difficulty || '待定' }}</span>
-        <span v-if="question.labels?.primary_type" class="qb-type-capsule" :title="`主题型：${question.labels.primary_type.label}`">{{ typeLabel(question.labels.primary_type.label) }}</span>
-        <span v-for="type in question.labels?.secondary_types ?? []" :key="type.key" class="qb-type-capsule is-secondary" :title="`次题型：${type.label}`">{{ typeLabel(type.label) }}</span>
-        <span v-for="point in knowledgePoints.slice(0, 2)" :key="point.key" class="qb-topic-capsule" :title="point.label">{{ knowledgeLeafLabel(point.label) }}</span>
-        <span v-if="knowledgePoints.length > 2" :title="`另有 ${knowledgePoints.length - 2} 个知识点`">+{{ knowledgePoints.length - 2 }}</span>
+        <span class="qb-dim-tag is-form">{{ questionTypeWithSubtype(question.question_type, question.tags) }}</span>
+        <span class="qb-dim-tag is-diff">难度 {{ question.difficulty || '待定' }}</span>
+        <span v-if="question.labels?.primary_type" class="qb-dim-tag is-main" :title="`主题型：${question.labels.primary_type.label}`">{{ typeLabel(question.labels.primary_type.label) }}</span>
+        <span v-for="type in question.labels?.secondary_types ?? []" :key="type.key" class="qb-dim-tag is-sub" :title="`次题型：${type.label}`">{{ typeLabel(type.label) }}</span>
+        <span v-for="point in knowledgePoints.slice(0, 2)" :key="point.key" class="qb-dim-tag is-kp" :title="point.label">{{ knowledgeLeafLabel(point.label) }}</span>
+        <span v-if="knowledgePoints.length > 2" class="qb-dim-tag is-kp" :title="`另有 ${knowledgePoints.length - 2} 个知识点`">+{{ knowledgePoints.length - 2 }}</span>
       </div>
+      <QuestionInsights :question="question" />
       <details v-if="question.duplicate_members?.length" class="qb-duplicate-members"><summary>另有 {{ question.duplicate_members.length }} 道相同题 ▸</summary><p v-for="member in question.duplicate_members" :key="member.id"><AppButton :to="{ path: '/question-bank', query: { tab: 'paper', paper: member.paper_id, question: member.id } }" variant="ghost" size="small" :as="RouterLink">第 {{ member.question_number }} 题 · {{ member.paper_title }}</AppButton></p></details>
       <footer><small>判定点 {{ question.evidence_point_count ?? '待核对' }}<template v-if="question.criteria_needs_review"> · 判定点待审核</template></small><div class="qb-inline-card__footer-actions"><AppButton type="button" variant="ghost" size="small" @click="toggle">展开标注</AppButton><AppButton type="button" variant="ghost" size="small" @click="emit('similar', question)">相似题</AppButton><AppButton variant="secondary" @click="basket">{{ inBasket ? '已在试卷篮' : '加入试卷篮' }}</AppButton></div></footer>
     </div>
-    <QuestionAnnotationPanel v-else :id="`qb-annotation-${question.id}`"><template #similar><AppButton type="button" variant="ghost" size="small" @click="emit('similar', question)">相似题</AppButton></template></QuestionAnnotationPanel>
+    <QuestionAnnotationPanel v-else :id="`qb-annotation-${question.id}`" :question="question"><template #similar><AppButton type="button" variant="ghost" size="small" @click="emit('similar', question)">相似题</AppButton></template></QuestionAnnotationPanel>
   </article>
 </template>

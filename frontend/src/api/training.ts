@@ -643,6 +643,7 @@ export interface TrainingOverviewExamQuestion {
   session_name: string
   question_label: string
   class_rate: number | null
+  bank_question_id?: number
 }
 
 export interface TrainingOverviewTypicalQuestion extends TrainingOverviewExamQuestion {
@@ -1099,6 +1100,8 @@ function isOverviewExamQuestion(value: unknown): value is TrainingOverviewExamQu
     && typeof value.session_name === 'string'
     && typeof value.question_label === 'string'
     && (value.class_rate === null || isFiniteNumber(value.class_rate))
+    && (value.bank_question_id === undefined
+      || (isInteger(value.bank_question_id) && value.bank_question_id >= 0))
   )
 }
 

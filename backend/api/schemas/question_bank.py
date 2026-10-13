@@ -321,6 +321,11 @@ class QuestionLabelSummary(_QuestionBankModel):
     knowledge_coverage: bool
 
 
+class QuestionExamFrequency(_QuestionBankModel):
+    midterm: float | None = Field(default=None, ge=0, le=1)
+    final: float | None = Field(default=None, ge=0, le=1)
+
+
 class QuestionListItem(_QuestionBankModel):
     id: int
     duplicate_of_question_id: int | None = None
@@ -357,11 +362,12 @@ class QuestionListItem(_QuestionBankModel):
     labels: QuestionLabelSummary | None = None
     skills: list[QuestionDirectSkill] | None = None
     skill_hits: list[QuestionSkillHit] | None = None
+    exam_frequency: QuestionExamFrequency | None = None
 
     @model_serializer(mode="wrap")
     def serialize_optional_skills(self, handler):
         result = handler(self)
-        for key in ("labels", "skills", "skill_hits", "evidence_point_count", "duplicate_members"):
+        for key in ("labels", "skills", "skill_hits", "evidence_point_count", "duplicate_members", "exam_frequency"):
             if result.get(key) is None:
                 result.pop(key, None)
         return result

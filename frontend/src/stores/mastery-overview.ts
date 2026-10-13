@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
-import { ref, shallowRef } from 'vue'
+import { computed, ref, shallowRef } from 'vue'
 import { fetchStudents, type StudentSummary } from '../api/students'
-import { trainingApi, type TrainingOverview } from '../api/training'
+import { trainingApi, type TrainingKeyStepTypeStatsResponse, type TrainingOverview, type TrainingOverviewNode } from '../api/training'
 import { requestWithRefresh } from '../api/display-refresh'
 import { loadEvidenceScope, saveEvidenceScope, semesterEvidenceQuery } from '../features/evidence-scope/session'
 
@@ -100,6 +100,74 @@ export const useMasteryOverviewStore = defineStore('mastery-overview', () => {
     scopeSelection.value = selection
     void load(volumeId)
   }
+
+  // ---- 题卡考情（只读派生数据） ----
+
+  const typeNodeByKey = computed(() => {
+    const map = new Map<string, TrainingOverviewNode>()
+    for (const node of overview.value?.nodes ?? []) {
+      if (node.kind === 'type') map.set(node.knowledge_key, node)
+    }
+    return map
+  })
+
+  const examUsesByQuestion = computed(() => {
+    const map = new Map<number, { session: string; label: string; rate: number | null }[]>()
+    const seen = new Map<number, Set<string>>()
+    const add = (item: { session_name: string; question_label: string; class_rate: number | null; bank_question_id?: number } | null | undefined) => {
+      if (!item) return
+      const id = item.bank_question_id ?? 0
+      if (id <= 0) return
+      const session = item.session_name.replace(/学情反馈$/, '') || item.session_name
+      const key = `${session}|${item.question_label}`
+      let keys = seen.get(id)
+      if (!keys) { keys = new Set(); seen.set(id, keys) }
+      if (keys.has(key)) return
+      keys.add(key)
+      const rows = map.get(id) ?? []
+      rows.push({ session, label: item.question_label, rate: item.class_rate })
+      map.set(id, rows)
+    }
+    for (const node of overview.value?.nodes ?? []) {
+      if (node.kind !== 'type') continue
+      add(node.typical_question)
+      for (const item of node.other_questions ?? []) add(item)
+    }
+    return map
+  })
+
+  const keyStepStats = shallowRef<TrainingKeyStepTypeStatsResponse | null>(null)
+  const keyStepState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  let keyStepController: AbortController | null = null
+  let keyStepKey = ''
+
+  function ensureKeySteps(volumeId: string | null) {
+    if (!volumeId) return
+    const key = JSON.stringify([volumeId, scopeSelection.value])
+    if (key === keyStepKey && (keyStepState.value === 'loading' || keyStepState.value === 'ready')) return
+    keyStepController?.abort()
+    const current = new AbortController()
+    keyStepController = current
+    keyStepKey = key
+    const scope = scopeSelection.value === 'all' ? { mode: 'all' as const }
+      : { mode: 'class' as const, class_id: scopeSelection.value, class_ids: [scopeSelection.value] }
+    const query = semesterEvidenceQuery(scope, volumeId)
+    keyStepState.value = 'loading'
+    trainingApi.keyStepTypeStats(
+      { scope: { student_ids: [], ...query.scope },
+        exam_scope: { session_ids: [], ...query.exam_scope } },
+      current.signal,
+    ).then(value => {
+      if (current.signal.aborted) return
+      keyStepStats.value = value
+      keyStepState.value = 'ready'
+    }).catch(() => {
+      if (current.signal.aborted) return
+      keyStepState.value = 'error'
+    })
+  }
+
   return { overview, loadState, errorMessage, refreshing, refreshMessage, scopeSelection, students, studentsError,
-    load, loadStudents, peek, activate, selectScope }
+    typeNodeByKey, examUsesByQuestion, keyStepStats, keyStepState,
+    load, loadStudents, peek, activate, selectScope, ensureKeySteps }
 })

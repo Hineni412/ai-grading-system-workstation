@@ -692,6 +692,7 @@ class TrainingOverviewExamQuestion(_TrainingModel):
     session_name: str = ""
     question_label: str = ""
     class_rate: float | None = None
+    bank_question_id: int = Field(default=0, ge=0)
 
 
 class TrainingOverviewTypicalQuestion(TrainingOverviewExamQuestion):

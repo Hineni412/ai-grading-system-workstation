@@ -10,7 +10,10 @@ URLs, and tables become real HTML tables — all in original document order.
 
 Only a whitelisted tag set is ever emitted (``sup/sub/u/br/img/table/tr/td/
 span``) and every text payload is escaped, so the output is safe to render
-with ``v-html`` in the trusted local single-user context.
+with ``v-html`` in the trusted local single-user context.  ``img`` tags keep
+the Word layout intent: ``qimg``/``qimg--float-right``/``qimg--float-left``/
+``qimg--block`` classes plus ``width``/``height`` when the markup records a
+size, and always ``alt``/``loading="lazy"``.
 """
 
 from __future__ import annotations
@@ -164,10 +167,79 @@ def _run_html(
     return parts
 
 
+def _emu_to_px(value: str | None) -> int | None:
+    try:
+        emu = int(str(value or "").strip())
+    except (TypeError, ValueError):
+        return None
+    return max(round(emu / 9525), 1)
+
+
+def _frame_size(frame: ElementTree.Element) -> tuple[int | None, int | None]:
+    """wp:extent EMU 尺寸换算为像素。"""
+    extent = _child(frame, "extent")
+    if extent is None:
+        return None, None
+    return (
+        _emu_to_px(_attribute_value(extent, "cx")),
+        _emu_to_px(_attribute_value(extent, "cy")),
+    )
+
+
+def _vml_size(style: str) -> tuple[int | None, int | None]:
+    """v:shape style 中的 pt 宽高换算为像素（1pt = 4/3px）。"""
+    width = height = None
+    match = re.search(r"width\s*:\s*([\d.]+)\s*pt", style)
+    if match:
+        width = max(round(float(match.group(1)) * 4 / 3), 1)
+    match = re.search(r"height\s*:\s*([\d.]+)\s*pt", style)
+    if match:
+        height = max(round(float(match.group(1)) * 4 / 3), 1)
+    return width, height
+
+
 def _drawing_html(
     drawing: ElementTree.Element,
     rel_urls: Mapping[str, str],
 ) -> list[str]:
+    kind = _local_name(drawing.tag)
+    css_class = "qimg"
+    width = height = None
+    if kind == "drawing":
+        frame = _child(drawing, "inline")
+        if frame is None:
+            frame = _child(drawing, "anchor")
+        if frame is not None:
+            width, height = _frame_size(frame)
+            if _local_name(frame.tag) == "anchor":
+                wrap = next(
+                    (c for c in frame if _local_name(c.tag).startswith("wrap")),
+                    None,
+                )
+                if wrap is not None and _local_name(wrap.tag) == "wrapTopAndBottom":
+                    css_class = "qimg qimg--block"
+                else:
+                    css_class = "qimg qimg--float-right"
+                    pos_h = _child(frame, "positionH")
+                    if pos_h is not None:
+                        align = _child(pos_h, "align")
+                        if align is not None and (align.text or "").strip() == "left":
+                            css_class = "qimg qimg--float-left"
+    else:
+        # VML pict/object：尺寸与绝对定位写在 v:shape 的 style 里
+        for node in drawing.iter():
+            if _local_name(node.tag) != "shape":
+                continue
+            style = str(node.attrib.get("style") or "")
+            width, height = _vml_size(style)
+            if "position:absolute" in style.replace(" ", ""):
+                css_class = "qimg qimg--float-right"
+            break
+    attrs = f' class="{css_class}"'
+    if width:
+        attrs += f' width="{width}"'
+    if height:
+        attrs += f' height="{height}"'
     images: list[str] = []
     for node in drawing.iter():
         if _local_name(node.tag) != "blip":
@@ -178,7 +250,8 @@ def _drawing_html(
         url = rel_urls.get(rel_id)
         if url:
             images.append(
-                f'<img src="{_html.escape(url, quote=True)}" alt="题目图片" loading="lazy">'
+                f'<img src="{_html.escape(url, quote=True)}" alt="题目图片"'
+                f' loading="lazy"{attrs}>'
             )
     return images
 

@@ -110,9 +110,10 @@ def _type_exam_questions(
             "session_name": item["session_name"],
             "question_label": item["question_label"],
             "class_rate": round(item["score"] / item["full"], 4),
+            "bank_question_id": item["bank_question_id"],
         }
         if index == 0:
-            typical = {**entry, "bank_question_id": item["bank_question_id"]}
+            typical = entry
         else:
             others.append(entry)
     return typical, others
@@ -418,11 +419,11 @@ def overview_payload(
 
     profile_key = service.tag_profile_cache_key(scope=scope, exam_scope=exam_scope)
     key = (
-        "mastery-overview-v2",
+        "mastery-overview-v3",
         profile_key,
         str(volume_id),
     )
-    local_key = (*profile_key, 'overview-payload-v2', str(volume_id))
+    local_key = (*profile_key, 'overview-payload-v3', str(volume_id))
     def compute():
         reader = getattr(service, '_read_local_profile', None)
         entry = reader(local_key) if callable(reader) else None

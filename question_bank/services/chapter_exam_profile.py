@@ -863,12 +863,13 @@ def build_exam_frequency(
     conn: sqlite3.Connection,
     snapshot: dict[str, Any],
     volume: dict[str, Any],
-) -> dict[int, tuple[float, float]]:
+) -> dict[int, tuple[float | None, float | None]]:
     """每题考频：(期中同源卷组覆盖率, 期末同源卷组覆盖率)，与章节考情同一口径。
 
     某阶段覆盖率＝含有同主要技能同难度档计入题的该阶段卷组数 ÷ 该阶段卷组数；
     题自身所属卷组在分子分母中同时剔除，不在正式卷中的题（如阶段练习）
-    没有可剔除的自有卷组；无主要技能或无难度档的题不出现。"""
+    没有可剔除的自有卷组；无主要技能或无难度档的题不出现。
+    某阶段剔除自有卷组后没有卷组时该阶段为 None，表示没有分母而不是 0%。"""
     prep = _prepare(conn, snapshot, volume)
     stage_groups = {
         stage: set(prep["stage_groups"][stage]) for stage, _label in STAGES
@@ -889,17 +890,18 @@ def build_exam_frequency(
                 rec["group"]
             )
 
-    def shares(skill_key: str, tier: str,
-               own_group: int | None) -> tuple[float, float]:
+    def shares(
+        skill_key: str, tier: str, own_group: int | None
+    ) -> tuple[float | None, float | None]:
         own = {own_group} if own_group is not None else set()
         out = []
         for stage, _label in STAGES:
             pool = stage_groups[stage] - own
             covered = cell_groups[stage].get((skill_key, tier), set()) - own
-            out.append(len(covered) / len(pool) if pool else 0.0)
+            out.append(len(covered) / len(pool) if pool else None)
         return (out[0], out[1])
 
-    results: dict[int, tuple[float, float]] = {}
+    results: dict[int, tuple[float | None, float | None]] = {}
     for rec in recs.values():
         if rec["skill_key"] == UNLINKED or rec["tier"] is None:
             continue

@@ -236,7 +236,9 @@ def load_chapter(db_path: Path, chapter_id: str) -> list[Section]:
         school, year_pair = _parse_school_year(str(row["title"]))
         text = str(row["question_text"] or "")
         score_match = _SCORE_PREFIX.search(text.split("\n")[0])
-        midterm_freq, final_freq = frequency.get(qid, (0.0, 0.0))
+        mid, fin = frequency.get(qid, (None, None))
+        midterm_freq = mid if mid is not None else 0.0
+        final_freq = fin if fin is not None else 0.0
         question = Question(
             id=qid,
             paper_id=int(row["paper_id"]),

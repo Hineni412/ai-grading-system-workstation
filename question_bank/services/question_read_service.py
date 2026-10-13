@@ -1654,8 +1654,11 @@ class QuestionBankReadService:
                 except OSError:
                     pass
 
-    def exam_frequency(self) -> dict[int, tuple[float, float]]:
-        """每题考频：(期中同源卷组覆盖率, 期末同源卷组覆盖率)，章节考情口径。"""
+    def exam_frequency(self) -> dict[int, tuple[float | None, float | None]]:
+        """每题考频：(期中同源卷组覆盖率, 期末同源卷组覆盖率)，章节考情口径。
+
+        某阶段剔除自有卷组后没有卷组时该阶段为 None，表示没有分母而不是 0%。"""
+
         from question_bank.services.chapter_exam_profile import (
             build_exam_frequency,
         )
@@ -1674,7 +1677,7 @@ class QuestionBankReadService:
         cached = _read_result_cache_get(key) if generation is not None and asset_generation is not None else _CACHE_MISS
         if cached is not _CACHE_MISS:
             return cached  # type: ignore[return-value]
-        result: dict[int, tuple[float, float]] = {}
+        result: dict[int, tuple[float | None, float | None]] = {}
         with _read_connection(self.db_path) as conn:
             for volume in load_curriculum_catalog()["volumes"]:
                 snapshot = self._skill_snapshot(volume_id=str(volume["id"]))
@@ -2181,7 +2184,10 @@ class QuestionBankReadService:
             list_params.insert(
                 join_markers,
                 json.dumps(
-                    [[qid, mid, final] for qid, (mid, final) in sorted(frequency.items())]
+                    [
+                        [qid, mid if mid is not None else 0.0, final if final is not None else 0.0]
+                        for qid, (mid, final) in sorted(frequency.items())
+                    ]
                 ),
             )
         # A reused question displays the importing paper's own number.
@@ -2280,10 +2286,15 @@ class QuestionBankReadService:
         if filters.include_skills:
             from question_bank.services.question_skill_index import short_node_name
             snapshot = self._skill_snapshot(question_ids=tuple(int(item["id"]) for item in items))
+            frequency = self.exam_frequency()
             for item in items:
                 skills = snapshot["by_question"].get(int(item["id"]), {})
                 item["labels"] = _question_labels(snapshot, int(item["id"]), self.current_knowledge)
                 item["evidence_point_count"] = snapshot["point_counts"].get(int(item["id"]), 0)
+                freq = frequency.get(int(item["id"]))
+                item["exam_frequency"] = (
+                    {"midterm": freq[0], "final": freq[1]} if freq is not None else None
+                )
                 item["duplicate_members"] = [members[qid] for qid in groups.get(int(item["id"]), []) if qid in members]
                 item["skills"] = [{"stable_key": key, "display_name": short_node_name(
                     snapshot["nodes"].get(key, {}).get("display_name", key))} for key in skills]

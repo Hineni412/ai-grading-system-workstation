@@ -488,6 +488,8 @@ function fallbackHtml(block?: QuestionBankRichBlock): string {
 <style scoped>
 .question-content {
   color: var(--color-text-primary);
+  container-type: inline-size;
+  display: flow-root;
   font-family: var(--font-family-document);
   font-size: var(--font-size-h3);
   line-height: 1.86;
@@ -772,15 +774,15 @@ function fallbackHtml(block?: QuestionBankRichBlock): string {
 }
 
 .question-content__media img {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  background: none;
+  border: 0;
+  border-radius: 0;
   display: block;
   height: auto;
   max-height: min(220px, 34vh);
   max-width: min(100%, 360px);
   object-fit: contain;
-  padding: 6px;
+  padding: 0;
   width: auto;
 }
 
@@ -798,10 +800,8 @@ function fallbackHtml(block?: QuestionBankRichBlock): string {
 }
 
 .question-content.is-dense .question-content__media img {
-  border-radius: 6px;
   max-height: min(220px, 34vh);
   max-width: min(100%, 360px);
-  padding: 4px;
 }
 
 .question-content.is-media-review .question-content__media img {
@@ -859,6 +859,31 @@ function fallbackHtml(block?: QuestionBankRichBlock): string {
 .question-content.is-paper-media-flow .question-content__option-grid .question-content__media img {
   max-height: 120px;
   max-width: 100%;
+}
+
+.question-content.is-compact :deep(.question-html img.qimg--float-right),
+.question-content.is-compact :deep(.question-html img.qimg--float-left),
+.question-content.is-media-list :deep(.question-html img.qimg--float-right),
+.question-content.is-media-list :deep(.question-html img.qimg--float-left) {
+  max-height: 180px;
+  max-width: min(38%, 240px);
+}
+
+.question-content.is-media-detail :deep(.question-html img.qimg--float-right),
+.question-content.is-media-detail :deep(.question-html img.qimg--float-left) {
+  max-height: 280px;
+  max-width: min(45%, 320px);
+}
+
+@container (max-width: 480px) {
+  .question-content :deep(.question-html img.qimg--float-right),
+  .question-content :deep(.question-html img.qimg--float-left) {
+    clear: both;
+    display: block;
+    float: none;
+    margin: 8px auto;
+    max-width: 100%;
+  }
 }
 
 @media (max-width: 520px) {

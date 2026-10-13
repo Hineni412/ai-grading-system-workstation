@@ -244,18 +244,43 @@ watch([renderedHtml, () => props.typesetText, () => props.inline], hydrateFormul
 }
 
 .question-html :deep(img) {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  background: none;
+  border: 0;
+  border-radius: 0;
   cursor: zoom-in;
   display: inline-block;
   height: auto;
   margin: 4px 6px 4px 0;
-  max-height: min(220px, 34vh);
-  max-width: min(100%, 360px);
+  max-width: 100%;
   object-fit: contain;
-  padding: 6px;
+  padding: 0;
   vertical-align: middle;
+}
+
+.question-html :deep(img:not([width])) {
+  max-height: min(220px, 34vh);
+}
+
+.question-html :deep(img.qimg--float-right) {
+  clear: right;
+  float: right;
+  margin: 4px 0 8px 18px;
+  max-height: 240px;
+  max-width: min(45%, 300px);
+}
+
+.question-html :deep(img.qimg--float-left) {
+  clear: left;
+  float: left;
+  margin: 4px 18px 8px 0;
+  max-height: 240px;
+  max-width: min(45%, 300px);
+}
+
+.question-html :deep(img.qimg--block) {
+  display: block;
+  margin: 8px auto;
+  max-height: 260px;
 }
 
 .question-html :deep(table) {
