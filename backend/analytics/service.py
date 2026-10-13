@@ -45,6 +45,47 @@ class StudentAnalysisRow:
     needs_review: bool
 
 
+@dataclass(slots=True)
+class _QuestionTotals:
+    class_name: str
+    question_id: str
+    score_sum: float = 0.0
+    full_sum: float = 0.0
+    attempt_count: int = 0
+    deduction_count: int = 0
+
+    @property
+    def score_rate(self) -> float:
+        return round(self.score_sum / self.full_sum * 100, 2) if self.full_sum > 0 else 0.0
+
+    def public_row(self, rubric_max_score: float | None) -> QuestionAnalysisRow:
+        metric_status: Literal["ready", "missing_max_score", "no_attempts"]
+        if self.attempt_count <= 0:
+            metric_status = "no_attempts"
+        elif rubric_max_score is None or rubric_max_score <= 0 or self.full_sum <= 0:
+            metric_status = "missing_max_score"
+        else:
+            metric_status = "ready"
+        return QuestionAnalysisRow(
+            class_name=self.class_name,
+            question_id=self.question_id,
+            max_score=(
+                float(rubric_max_score)
+                if rubric_max_score is not None and rubric_max_score > 0
+                else None
+            ),
+            score_rate=self.score_rate if metric_status == "ready" else None,
+            average_score=(
+                round(self.score_sum / self.attempt_count, 2)
+                if self.attempt_count > 0
+                else None
+            ),
+            deduction_count=self.deduction_count,
+            attempt_count=self.attempt_count,
+            metric_status=metric_status,
+        )
+
+
 class SessionAnalysisService:
     def __init__(
         self,
@@ -59,29 +100,56 @@ class SessionAnalysisService:
         session_id: int,
         class_name: str | None = None,
     ) -> list[QuestionAnalysisRow]:
-        """Return legacy-equivalent class rows or merged all-class rows."""
+        """Return per-question totals for one class or all classes."""
         session = self.db.sessions.get_grading_session(int(session_id))
         score_map, _type_map = load_session_score_type_maps(
             session,
             data_root=_data_root(self.db),
         )
-        analysis = self._build_legacy_question_analysis(
-            session_id,
-            score_map=score_map,
+        results, details_by_result = self.db.results.get_session_analysis_source(
+            int(session_id), class_name
+        )
+        buckets: dict[tuple[str, str], _QuestionTotals] = {}
+        for result in results:
+            result_class_name = str(result.get("class_name") or "未分班")
+            details = details_by_result.get(int(result["result_id"]), [])
+            for detail in normalize_question_analysis_details(details, score_map):
+                question_id = str(detail.get("question_id") or "").strip()
+                if not question_id:
+                    continue
+                max_score = float(score_map.get(question_id) or 0)
+                score_awarded = float(detail.get("score_awarded") or 0)
+                if max_score <= 0:
+                    max_score = max(score_awarded, 0.0)
+                elif score_awarded > max_score:
+                    score_awarded = max_score
+                key = (result_class_name, question_id)
+                if key not in buckets:
+                    buckets[key] = _QuestionTotals(result_class_name, question_id)
+                bucket = buckets[key]
+                bucket.score_sum += score_awarded
+                bucket.full_sum += max_score
+                bucket.attempt_count += 1
+                bucket.deduction_count += int(max_score - score_awarded > 0.01)
+        totals = sorted(
+            buckets.values(),
+            key=lambda item: (item.class_name, question_sort_key(item.question_id)),
         )
         if class_name is None:
-            source_rows = merge_question_analysis_rows(analysis["rows"])
-        else:
-            source_rows = [
-                row for row in analysis["rows"] if str(row.get("班级") or "") == class_name
-            ]
-        return [
-            _public_question_row(
-                row,
-                rubric_max_score=score_map.get(str(row.get("题号") or "")),
+            merged: dict[str, _QuestionTotals] = {}
+            for total in totals:
+                if total.question_id not in merged:
+                    merged[total.question_id] = _QuestionTotals("全部班级", total.question_id)
+                bucket = merged[total.question_id]
+                bucket.score_sum += total.score_sum
+                bucket.full_sum += total.full_sum
+                bucket.attempt_count += total.attempt_count
+                bucket.deduction_count += total.deduction_count
+            totals = sorted(
+                merged.values(),
+                key=lambda item: (item.score_rate, question_sort_key(item.question_id)),
             )
-            for row in source_rows
-        ]
+        return [total.public_row(score_map.get(total.question_id)) for total in totals]
 
     def list_students(
         self,
@@ -114,12 +182,13 @@ class SessionAnalysisService:
         selected_parent_id = question_parent_id(requested_question_id)
         rows: list[StudentAnalysisRow] = []
 
-        for result in self.db.results.get_session_results(int(session_id)):
+        results, details_by_result = self.db.results.get_session_analysis_source(
+            int(session_id), class_name
+        )
+        for result in results:
             result_class_name = str(result.get("class_name") or "未分班")
-            if class_name is not None and result_class_name != class_name:
-                continue
             result_id = int(result.get("result_id") or 0)
-            details = self.db.results.get_result_details(result_id)
+            details = details_by_result.get(result_id, [])
             normalized_details = normalize_question_analysis_details(
                 details,
                 score_map,
@@ -192,120 +261,6 @@ class SessionAnalysisService:
             ),
         )
 
-    def _build_legacy_question_analysis(
-        self,
-        session_id: int,
-        *,
-        score_map: dict[str, float] | None = None,
-    ) -> dict[str, Any]:
-        if score_map is None:
-            session = self.db.sessions.get_grading_session(int(session_id))
-            score_map, _type_map = load_session_score_type_maps(
-                session,
-                data_root=_data_root(self.db),
-            )
-        buckets: dict[tuple[str, str], dict[str, Any]] = {}
-
-        for result in self.db.results.get_session_results(int(session_id)):
-            class_name = str(result.get("class_name") or "未分班")
-            result_id = int(result.get("result_id") or 0)
-            details = self.db.results.get_result_details(result_id)
-            for detail in normalize_question_analysis_details(details, score_map):
-                question_id = str(detail.get("question_id") or "").strip()
-                if not question_id:
-                    continue
-                max_score = float(score_map.get(question_id) or 0)
-                score_awarded = float(detail.get("score_awarded") or 0)
-                if max_score <= 0:
-                    max_score = max(score_awarded, 0.0)
-                elif score_awarded > max_score:
-                    score_awarded = max_score
-                key = (class_name, question_id)
-                bucket = buckets.setdefault(
-                    key,
-                    {
-                        "班级": class_name,
-                        "题号": question_id,
-                        "满分": max_score,
-                        "score_sum": 0.0,
-                        "full_sum": 0.0,
-                        "attempt_count": 0,
-                        "wrong_items": [],
-                        "correct_items": [],
-                    },
-                )
-                bucket["score_sum"] += score_awarded
-                bucket["full_sum"] += max_score
-                bucket["attempt_count"] += 1
-                bucket["满分"] = max(bucket["满分"], max_score)
-                deduction = max_score - score_awarded
-                reason = str(detail.get("deduction_reason") or "").strip()
-                item = {
-                    **result,
-                    **detail,
-                    "session_id": int(session_id),
-                    "max_score": max_score,
-                }
-                if deduction > 0.01:
-                    item["deduction_amount"] = round(deduction, 2)
-                    item["deduction_reason"] = reason
-                    bucket["wrong_items"].append(item)
-                else:
-                    bucket["correct_items"].append(item)
-
-        rows: list[dict[str, Any]] = []
-        for bucket in buckets.values():
-            full_sum = float(bucket.get("full_sum") or 0)
-            score_sum = float(bucket.get("score_sum") or 0)
-            wrong_items = sorted(
-                bucket["wrong_items"],
-                key=lambda item: (
-                    -float(item.get("deduction_amount") or 0),
-                    str(item.get("student_name") or ""),
-                ),
-            )
-            wrong_text = "；".join(
-                f"{item.get('student_name')}(-{float(item.get('deduction_amount') or 0):g})"
-                for item in wrong_items
-            )
-            correct_items = sorted(
-                bucket.get("correct_items", []),
-                key=lambda item: str(item.get("student_name") or ""),
-            )
-            attempt_count = int(bucket.get("attempt_count") or 0)
-            rows.append(
-                {
-                    "班级": bucket["班级"],
-                    "题号": bucket["题号"],
-                    "满分": float(bucket["满分"]),
-                    "班级得分率": round(score_sum / full_sum * 100, 2) if full_sum > 0 else 0.0,
-                    "平均得分": round(score_sum / max(1, attempt_count), 2),
-                    "失分人数": len(wrong_items),
-                    "失分学生与扣分": wrong_text or "无",
-                    "_wrong_items": wrong_items,
-                    "_correct_items": correct_items,
-                    "_score_sum": score_sum,
-                    "_full_sum": full_sum,
-                    "_attempt_count": attempt_count,
-                }
-            )
-        rows.sort(
-            key=lambda item: (
-                str(item["班级"]),
-                question_sort_key(str(item["题号"])),
-            )
-        )
-        classes = sorted({str(row["班级"]) for row in rows})
-        return {"rows": rows, "classes": classes}
-
-
-def build_legacy_question_analysis(
-    db: GradingRepositoryAccess,
-    session_id: int,
-) -> dict[str, Any]:
-    """Compatibility adapter for the Streamlit analysis view."""
-    return SessionAnalysisService(db)._build_legacy_question_analysis(session_id)
-
 
 def load_session_score_type_maps(
     session: dict[str, Any] | None,
@@ -352,84 +307,6 @@ def load_session_score_type_maps(
                     score_map[part_id] = _to_float(part.get("part_score"), 0.0)
                     type_map[part_id] = question_type
     return score_map, type_map
-
-
-def merge_question_analysis_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    merged: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        question_id = str(row.get("题号") or "").strip()
-        if not question_id:
-            continue
-        bucket = merged.setdefault(
-            question_id,
-            {
-                "班级": "全部班级",
-                "题号": question_id,
-                "满分": float(row.get("满分") or 0),
-                "_score_sum": 0.0,
-                "_full_sum": 0.0,
-                "_attempt_count": 0,
-                "_wrong_items": [],
-                "_correct_items": [],
-            },
-        )
-        bucket["满分"] = max(
-            float(bucket.get("满分") or 0),
-            float(row.get("满分") or 0),
-        )
-        bucket["_score_sum"] += float(row.get("_score_sum") or 0)
-        bucket["_full_sum"] += float(row.get("_full_sum") or 0)
-        bucket["_attempt_count"] += int(row.get("_attempt_count") or 0)
-        bucket["_wrong_items"].extend(row.get("_wrong_items") or [])
-        bucket["_correct_items"].extend(row.get("_correct_items") or [])
-
-    merged_rows: list[dict[str, Any]] = []
-    for bucket in merged.values():
-        wrong_items = sorted(
-            bucket["_wrong_items"],
-            key=lambda item: (
-                str(item.get("class_name") or ""),
-                -float(item.get("deduction_amount") or 0),
-                str(item.get("student_name") or ""),
-            ),
-        )
-        wrong_text = "、".join(
-            f"{item.get('student_name')}(-{float(item.get('deduction_amount') or 0):g})"
-            for item in wrong_items
-        )
-        full_sum = float(bucket.get("_full_sum") or 0)
-        score_sum = float(bucket.get("_score_sum") or 0)
-        attempt_count = max(1, int(bucket.get("_attempt_count") or 0))
-        correct_items = sorted(
-            bucket.get("_correct_items", []),
-            key=lambda item: (
-                str(item.get("class_name") or ""),
-                str(item.get("student_name") or ""),
-            ),
-        )
-        merged_rows.append(
-            {
-                "班级": "全部班级",
-                "题号": bucket["题号"],
-                "满分": float(bucket["满分"]),
-                "班级得分率": round(score_sum / full_sum * 100, 2) if full_sum > 0 else 0.0,
-                "平均得分": round(score_sum / attempt_count, 2),
-                "失分人数": len(wrong_items),
-                "失分学生与扣分": wrong_text or "无",
-                "_wrong_items": wrong_items,
-                "_correct_items": correct_items,
-                "_score_sum": score_sum,
-                "_full_sum": full_sum,
-                "_attempt_count": attempt_count,
-            }
-        )
-    return sorted(
-        merged_rows,
-        key=lambda item: (
-            float(item.get("班级得分率") or 0),
-            question_sort_key(str(item.get("题号") or "")),
-        ),
-    )
 
 
 def normalize_question_analysis_details(
@@ -538,35 +415,6 @@ def _student_row(
         deduction_amount=deduction,
         deduction_reason=reason,
         needs_review=bool(needs_review),
-    )
-
-
-def _public_question_row(
-    row: dict[str, Any],
-    *,
-    rubric_max_score: float | None,
-) -> QuestionAnalysisRow:
-    attempt_count = int(row.get("_attempt_count") or 0)
-    full_sum = float(row.get("_full_sum") or 0)
-    if attempt_count <= 0:
-        metric_status: Literal["ready", "missing_max_score", "no_attempts"] = "no_attempts"
-    elif rubric_max_score is None or rubric_max_score <= 0 or full_sum <= 0:
-        metric_status = "missing_max_score"
-    else:
-        metric_status = "ready"
-    return QuestionAnalysisRow(
-        class_name=str(row.get("班级") or ""),
-        question_id=str(row.get("题号") or ""),
-        max_score=(
-            float(rubric_max_score)
-            if rubric_max_score is not None and rubric_max_score > 0
-            else None
-        ),
-        score_rate=float(row.get("班级得分率")) if metric_status == "ready" else None,
-        average_score=float(row.get("平均得分")) if attempt_count > 0 else None,
-        deduction_count=int(row.get("失分人数") or 0),
-        attempt_count=attempt_count,
-        metric_status=metric_status,
     )
 
 

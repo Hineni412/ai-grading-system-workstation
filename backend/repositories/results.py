@@ -314,6 +314,68 @@ class ResultRepository:
         ).fetchall()
         return [_detail_row_with_secondary_errors(dict(row)) for row in rows]
 
+    def get_session_analysis_source(
+        self,
+        session_id: int,
+        class_name: str | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]]]:
+        class_filter = ""
+        params: list[Any] = [int(session_id)]
+        if class_name is not None:
+            class_filter = " AND COALESCE(NULLIF(s.class_name, ''), '未分班') = ?"
+            params.append(class_name)
+        result_rows = self.session.connection.execute(
+            f"""
+            SELECT
+                sr.id AS result_id,
+                sr.student_id,
+                s.student_code,
+                s.name AS student_name,
+                s.class_name,
+                ep.ocr_name
+            FROM session_results sr
+            JOIN students s ON s.id = sr.student_id
+            JOIN exam_papers ep ON ep.id = sr.paper_id
+            WHERE sr.session_id = ?{class_filter}
+            ORDER BY sr.id ASC
+            """,
+            params,
+        ).fetchall()
+        results = [dict(row) for row in result_rows]
+        if not results:
+            return [], {}
+        detail_rows = self.session.connection.execute(
+            f"""
+            SELECT
+                sd.result_id,
+                sd.id AS detail_id,
+                sd.question_id,
+                sd.score_awarded,
+                sd.deduction_reason,
+                sd.knowledge_ids,
+                sd.error_category,
+                sd.error_summary,
+                sd.confidence_score,
+                sd.secondary_errors_json,
+                sd.ai_score_awarded
+            FROM session_details sd
+            JOIN session_results sr ON sr.id = sd.result_id
+            JOIN students s ON s.id = sr.student_id
+            JOIN exam_papers ep ON ep.id = sr.paper_id
+            WHERE sr.session_id = ?{class_filter}
+            ORDER BY sd.id ASC
+            """,
+            params,
+        ).fetchall()
+        details_by_result: dict[int, list[dict[str, Any]]] = {}
+        for row in detail_rows:
+            detail = dict(row)
+            result_id = int(detail.pop("result_id"))
+            details_by_result.setdefault(result_id, []).append(
+                _detail_row_with_secondary_errors(detail)
+            )
+        return results, details_by_result
+
     def get_result_context(
         self,
         result_id: int,
@@ -1039,6 +1101,18 @@ class ResultRepositoryGateway:
     def get_result_details(self, result_id: int) -> list[dict[str, Any]]:
         with self._sessions.session(read_only=True) as session:
             return ResultRepository(session).get_result_details(result_id)
+
+    def get_session_analysis_source(
+        self,
+        session_id: int,
+        class_name: str | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]]]:
+        with self._sessions.session(read_only=True) as session:
+            with session.transaction():
+                return ResultRepository(session).get_session_analysis_source(
+                    session_id,
+                    class_name,
+                )
 
     def get_result_context(
         self,
