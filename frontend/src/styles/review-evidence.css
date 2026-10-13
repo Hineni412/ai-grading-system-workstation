@@ -28,12 +28,12 @@
 }
 
 .review-deep-workspace__header {
-  display: grid;
+  display: flex;
   min-width: 0;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: var(--space-5);
-  padding: var(--space-4);
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  padding: var(--space-3) var(--space-4);
   border-block-end: var(--border-width) solid var(--color-border-default);
 }
 
@@ -86,9 +86,11 @@
   width: 100%;
 }
 
-.review-deep-workspace__student-search .student-match-select__input {
+/* 四重类选择器压过 base.css 的 .app-input.app-input.app-input（0,3,0）内边距 */
+.review-deep-workspace .review-deep-workspace__student-search .student-match-select__input.app-input {
   min-height: var(--control-height-small);
   padding-inline-start: 26px;
+  padding-inline-end: 30px;
   border: var(--border-width) solid var(--color-border-strong);
   border-radius: var(--radius-control);
   background: var(--color-bg-surface);
@@ -100,6 +102,28 @@
   outline: var(--border-width) solid var(--color-accent);
   outline-offset: var(--focus-offset);
   box-shadow: var(--focus-ring);
+}
+
+/* StudentMatchSelect 的清除按钮未带自身定位类，在深查头部按图标按钮叠进输入框右端 */
+.review-deep-workspace .review-deep-workspace__student-search .app-icon-button.app-icon-button {
+  position: absolute;
+  inset-block-start: 50%;
+  inset-inline-end: 4px;
+  width: 22px;
+  height: 22px;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-circle);
+  background: transparent;
+  color: var(--color-text-muted);
+  transform: translateY(-50%);
+}
+
+.review-deep-workspace .review-deep-workspace__student-search .app-icon-button.app-icon-button:hover {
+  background: var(--color-bg-subtle);
+  color: var(--color-text-primary);
 }
 
 .review-deep-workspace__search-icon {
@@ -124,11 +148,11 @@
 .review-deep-workspace__tools {
   display: flex;
   min-width: 0;
-  max-width: min(54vw, 760px);
   align-items: center;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: var(--space-2);
+  margin-inline-start: auto;
 }
 
 .review-deep-workspace__panel-toggle {
@@ -260,17 +284,8 @@
     grid-template-rows: auto auto auto;
   }
 
-  .review-deep-workspace__header {
-    grid-template-columns: auto minmax(0, 1fr);
-  }
-
-  .review-deep-workspace__student-nav {
-    grid-column: 1 / -1;
-  }
-
   .review-deep-workspace__tools {
-    max-width: none;
-    grid-column: 1 / -1;
+    flex: 1 0 100%;
     justify-content: flex-start;
   }
 
@@ -345,15 +360,69 @@
   display: flex;
   min-width: 0;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-4);
-  overflow-x: auto;
   border-block-end: var(--border-width) solid var(--color-border-default);
   background: var(--color-bg-surface);
 }
 
-.review-evidence-toolbar button {
+.review-evidence-toolbar__spacer {
+  flex: 1 1 auto;
+}
+
+/* 分段控件：一个共享边框、内部细分隔 */
+.review-evidence-toolbar__group {
+  display: flex;
   flex: none;
+  align-items: stretch;
+  overflow: hidden;
+  border: var(--border-width) solid var(--color-border-default);
+  border-radius: var(--radius-control);
+  background: var(--color-bg-surface);
+}
+
+.review-evidence-toolbar__group button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: calc(var(--control-height-small) - var(--border-width) * 2);
+  padding-inline: var(--space-2);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-text-primary);
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.review-evidence-toolbar__group button:hover {
+  background: var(--color-bg-subtle);
+}
+
+.review-evidence-toolbar__group button + button,
+.review-evidence-toolbar__group button + output,
+.review-evidence-toolbar__group output + button {
+  border-inline-start: var(--border-width) solid var(--color-border-default);
+}
+
+.review-evidence-toolbar__group output {
+  display: inline-flex;
+  min-width: 44px;
+  align-items: center;
+  justify-content: center;
+  padding-inline: var(--space-1);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-caption);
+  font-variant-numeric: tabular-nums;
+}
+
+.review-evidence-toolbar > button {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   min-height: var(--control-height-small);
   padding-inline: var(--space-3);
   border: var(--border-width) solid var(--color-border-default);
@@ -367,33 +436,23 @@
     background-color var(--duration-fast);
 }
 
-.review-evidence-toolbar button:hover {
+.review-evidence-toolbar > button:hover {
   border-color: var(--color-border-strong);
   background: var(--color-bg-subtle);
 }
 
-.review-evidence-toolbar button:focus-visible {
+.review-evidence-toolbar > button:focus-visible {
   border-color: var(--color-accent);
 }
 
-.review-evidence-toolbar button[aria-pressed='true'] {
+.review-evidence-toolbar > button[aria-pressed='true'] {
   border-color: var(--color-accent);
-  background: var(--color-bg-accent);
+  background: var(--color-accent-subtle);
+  color: var(--color-accent);
 }
 
-.review-evidence-toolbar output {
-  min-width: calc(var(--control-height-default) + var(--space-2));
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-caption);
-  font-variant-numeric: tabular-nums;
-  text-align: center;
-}
-
-.review-evidence-current {
+.review-evidence-toolbar .review-deep-workspace__sources {
   flex: none;
-  color: var(--color-text-primary);
-  font-size: var(--font-size-caption);
-  white-space: nowrap;
 }
 
 .review-evidence-canvas {
@@ -487,12 +546,7 @@
     padding-inline: var(--space-2);
   }
 
-  .review-evidence-toolbar {
-    flex-wrap: wrap;
-    overflow-x: hidden;
-  }
-
-  .review-evidence-toolbar button {
+  .review-evidence-toolbar > button {
     padding-inline: var(--space-2);
   }
 }

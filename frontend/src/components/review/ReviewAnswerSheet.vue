@@ -36,6 +36,10 @@ const riskReason = computed(() => {
   const item = reviewItem.value
   if (item.score_status === 'ungraded') return '等待教师评分'
   if (item.score_status === 'failed') return '自动处理失败，请教师直接评分'
+  if (item.score_status === 'teacher_final') {
+    const reason = item.deduction_reason?.trim()
+    return reason ? translateGradingReason(reason) : '教师已确认'
+  }
   const reason = item.error_summary?.trim()
     || displayErrorCategory(item.error_category)
     || item.deduction_reason?.trim()
@@ -139,6 +143,7 @@ watch(
         <p>{{ reviewItem.student_code || '学号未提供' }} · {{ reviewItem.class_name || '班级未提供' }}</p>
       </div>
       <StatusBadge
+        v-if="reviewItem.score_status !== 'ai_ready'"
         class="review-answer-sheet__status"
         :tone="statusTone"
         :label="statusLabel"

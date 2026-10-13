@@ -29,6 +29,7 @@ import QuestionHtmlBlock from '../question-bank/QuestionHtmlBlock.vue'
 import StatePanel from '../design-system/StatePanel.vue'
 import StatusBadge from '../design-system/StatusBadge.vue'
 import ReviewFeedbackToast from './ReviewFeedbackToast.vue'
+import ReviewShortcutGuide from './ReviewShortcutGuide.vue'
 import ReviewStepRecord from './ReviewStepRecord.vue'
 import { reviewStatus } from './review-status'
 
@@ -197,14 +198,21 @@ const riskText = computed(() => {
   const current = item.value
   if (!current) return ''
   const parts: string[] = []
-  if (current.score_status === 'ungraded') parts.push('当前记录尚未评分')
-  else if (current.score_status === 'ai_review') parts.push('当前 AI 结果需要教师复核')
-  else if (current.score_status === 'failed') parts.push('自动处理失败，请教师直接评分')
-  for (const value of [current.deduction_reason, displayErrorCategory(current.error_category), current.error_summary]) {
-    const text = typeof value === 'string' ? translateGradingReason(value).trim() : ''
-    if (text) parts.push(text)
+  // 教师已确认的条目只展示扣分原因；error_summary 里的流程性说明（如
+  // teacher_score_locked）与最终分锁互相矛盾，不再并列显示。
+  if (current.score_status === 'teacher_final') {
+    const reason = current.deduction_reason?.trim()
+    if (reason) parts.push(translateGradingReason(reason).trim())
+  } else {
+    if (current.score_status === 'ungraded') parts.push('当前记录尚未评分')
+    else if (current.score_status === 'ai_review') parts.push('当前 AI 结果需要教师复核')
+    else if (current.score_status === 'failed') parts.push('自动处理失败，请教师直接评分')
+    for (const value of [current.deduction_reason, displayErrorCategory(current.error_category), current.error_summary]) {
+      const text = typeof value === 'string' ? translateGradingReason(value).trim() : ''
+      if (text) parts.push(text)
+    }
   }
-  return parts.join('；')
+  return [...new Set(parts)].join('；')
 })
 
 // 快捷给分条：逐步骤数字输入，与草稿为同一来源；聚焦时高亮并滚到对应步骤卡。
@@ -656,7 +664,7 @@ onBeforeUnmount(() => {
             </span>
           </div>
           <div class="review-quick-score__meta">
-            <span class="review-quick-score__hint">数字给分 · <kbd>Tab</kbd> 下一步 · <kbd>Enter</kbd> 确认 · <kbd>←</kbd> / <kbd>→</kbd> 换题 · <kbd>↑</kbd> / <kbd>↓</kbd> 换人</span>
+            <ReviewShortcutGuide mode="deep" />
             <span v-if="quickNotice" class="review-quick-score__notice" role="status">{{ quickNotice }}</span>
             <span v-if="draftStore.dirtyCount > 0" class="review-quick-score__drafts">
               {{ draftStore.dirtyCount }} 条草稿未确认

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import AppButton from '../design-system/AppButton.vue'
+import { Maximize2, RotateCcw, RotateCw, ZoomIn, ZoomOut } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 
 import { resolveReviewItem, type ReviewItemLike } from '../../api/review'
@@ -276,23 +277,33 @@ onBeforeUnmount(() => {
   <section class="review-evidence-viewer" aria-label="答卷证据查看器">
     <p v-if="reviewItem.media.originals_available === false" class="review-evidence-cleared" role="status">原卷已清理，分数和作答记录仍保留。</p>
     <div v-else class="review-evidence-toolbar" role="toolbar" aria-label="图片查看工具">
-      <strong class="review-evidence-current">当前题 {{ reviewItem.question_id }}</strong>
-      <AppButton type="button" variant="ghost" size="small" @click="viewer.fitWidth">适应宽度</AppButton>
-      <AppButton type="button" variant="ghost" size="small" @click="viewer.setActualSize">原比例</AppButton>
-      <AppButton type="button" variant="ghost" size="small" @click="viewer.zoomBy(-0.25)">缩小</AppButton>
-      <output aria-label="当前缩放比例">{{ scaleLabel }}</output>
-      <AppButton type="button" variant="ghost" size="small" @click="viewer.zoomBy(0.25)">放大</AppButton>
-      <AppButton type="button" variant="ghost" size="small" @click="viewer.rotateBy(-90)">向左旋转</AppButton>
-      <AppButton type="button" variant="ghost" size="small" @click="viewer.rotateBy(90)">向右旋转</AppButton>
-      <AppButton v-if="expandable !== false" type="button" variant="ghost" size="small" @click="emit('expand')">弹窗放大</AppButton>
-      <AppButton
+      <slot name="leading" />
+      <span class="review-evidence-toolbar__spacer" aria-hidden="true"></span>
+      <div class="review-evidence-toolbar__group" role="group" aria-label="缩放方式">
+        <button type="button" @click="viewer.fitWidth">适应宽度</button>
+        <button type="button" @click="viewer.setActualSize">原比例</button>
+      </div>
+      <div class="review-evidence-toolbar__group" role="group" aria-label="缩放比例">
+        <button type="button" aria-label="缩小" title="缩小" @click="viewer.zoomBy(-0.25)"><ZoomOut :size="14" aria-hidden="true" /></button>
+        <output aria-label="当前缩放比例">{{ scaleLabel }}</output>
+        <button type="button" aria-label="放大" title="放大" @click="viewer.zoomBy(0.25)"><ZoomIn :size="14" aria-hidden="true" /></button>
+      </div>
+      <div class="review-evidence-toolbar__group" role="group" aria-label="旋转">
+        <button type="button" aria-label="向左旋转" title="向左旋转" @click="viewer.rotateBy(-90)"><RotateCcw :size="14" aria-hidden="true" /></button>
+        <button type="button" aria-label="向右旋转" title="向右旋转" @click="viewer.rotateBy(90)"><RotateCw :size="14" aria-hidden="true" /></button>
+      </div>
+      <button
+        v-if="expandable !== false"
+        type="button"
+        class="review-evidence-toolbar__expand"
+        @click="emit('expand')"
+      ><Maximize2 :size="14" aria-hidden="true" />弹窗放大</button>
+      <button
         v-if="isOriginalSource"
         type="button"
-        variant="ghost"
-        size="small"
         :aria-pressed="marksVisible"
         @click="marksVisible = !marksVisible"
-      >批改标记</AppButton>
+      >批改标记</button>
     </div>
 
     <div

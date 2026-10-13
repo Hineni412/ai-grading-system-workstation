@@ -36,7 +36,7 @@ function stripChipStyle(item: ResultsCenterItem | null): Record<string, string> 
   const color = reviewStatus[item.score_status].color
   if (!scored) return { '--review-status-color': color }
   const rate = Math.max(0, Math.min(1, item.score_awarded! / item.max_score))
-  return { '--review-status-color': color, backgroundColor: `hsl(${Math.round(7 + rate * 126)} 52% 88%)`, color: '#172333' }
+  return { '--review-status-color': color, backgroundColor: `hsl(${Math.round(7 + rate * 126)} 45% 93%)`, color: '#172333' }
 }
 
 function questionNavEnabled(direction: -1 | 1): boolean {
@@ -87,10 +87,10 @@ function questionNavEnabled(direction: -1 | 1): boolean {
         : `${entry.questionId}，得分 ${stripScoreText(entry.item.score_awarded)} 分`"
       @click="entry.item !== null && emit('open-question', entry.questionId, entry.item.review_item_id)"
     >
+      <i class="review-question-chip__dot" aria-hidden="true"></i>
       <strong>{{ entry.questionId }}</strong>
       <span v-if="entry.item">
-        {{ stripScoreText(entry.item.score_awarded) }} / {{ stripScoreText(entry.item.max_score) }}
-        · {{ stripStatusLabel(entry.item.score_status) }}
+        {{ stripScoreText(entry.item.score_awarded) }}/{{ stripScoreText(entry.item.max_score) }}
       </span>
       <span v-else>无记录</span>
     </button>

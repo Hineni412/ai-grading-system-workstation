@@ -22,6 +22,7 @@ import StatePanel from '../design-system/StatePanel.vue'
 import ReviewAnswerSheet from './ReviewAnswerSheet.vue'
 import ReviewAnswerPanel from './ReviewAnswerPanel.vue'
 import AppIcon from '../shell/AppIcon.vue'
+import ReviewShortcutGuide from './ReviewShortcutGuide.vue'
 import { loadReviewRubric } from './review-rubric-cache'
 import { pendingCount, questionStatus, reviewStatus } from './review-status'
 
@@ -259,7 +260,8 @@ watch([sessionId, () => props.selectedQuestionId], async ([session, question]) =
           :title="questionTitle(question)" :aria-label="questionTitle(question)"
           :aria-current="question.question_id === selectedQuestionId ? 'true' : undefined"
           @click="emit('selectQuestion', question.question_id)">
-          <strong>{{ question.question_id }}</strong><span>{{ pendingCount(question) ? `剩 ${pendingCount(question)}` : '✓' }}</span>
+          <i class="review-question-chip__dot" aria-hidden="true"></i>
+          <strong>{{ question.question_id }}</strong><span v-if="pendingCount(question)">剩 {{ pendingCount(question) }}</span>
           <i class="review-question-chip__progress"><i :style="{ width: `${(question.teacher_confirmed_count ?? 0) / (question.total_count || 1) * 100}%` }" /></i>
         </button>
       </nav>
@@ -268,18 +270,21 @@ watch([sessionId, () => props.selectedQuestionId], async ([session, question]) =
 
     <div class="review-batch-toolbar" aria-label="批量复核筛选">
       <label class="review-batch-toolbar__search" for="review-search">
-        <span>搜索学生</span>
-        <input
-          id="review-search"
-          data-testid="review-search"
-          type="search"
-          :value="search"
-          placeholder="姓名、学号或班级"
-          @input="onSearch"
-        >
+        <span class="sr-only">搜索学生</span>
+        <span class="review-batch-toolbar__search-box">
+          <AppIcon name="search" :size="14" class="review-batch-toolbar__search-icon" />
+          <input
+            id="review-search"
+            data-testid="review-search"
+            type="search"
+            :value="search"
+            placeholder="姓名、学号或班级"
+            @input="onSearch"
+          >
+        </span>
       </label>
       <label for="review-scope">
-        <span>显示范围</span>
+        <span class="sr-only">显示范围</span>
         <select id="review-scope" :value="scope" @change="onScope">
           <option value="all">全部答卷</option>
           <option value="teacher_pending">教师待处理</option>
@@ -289,19 +294,21 @@ watch([sessionId, () => props.selectedQuestionId], async ([session, question]) =
         </select>
       </label>
       <label for="review-sort">
-        <span>排序</span>
+        <span class="sr-only">排序</span>
         <select id="review-sort" :value="sort" @change="onSort">
           <option value="risk">复核风险优先</option>
           <option value="student_code">按学号</option>
           <option value="student_name">按姓名</option>
         </select>
       </label>
-      <div v-if="currentQuestion" class="review-batch-progress">
-        <span>本题已确认 {{ currentQuestion.teacher_confirmed_count ?? 0 }}/{{ currentQuestion.total_count }} · 待处理 {{ pendingCount(currentQuestion) }}</span>
-        <progress :value="currentQuestion.teacher_confirmed_count ?? 0" :max="currentQuestion.total_count || 1" aria-label="本题确认进度" />
+      <div class="review-batch-toolbar__side">
+        <div v-if="currentQuestion" class="review-batch-progress">
+          <span>已确认 {{ currentQuestion.teacher_confirmed_count ?? 0 }}/{{ currentQuestion.total_count }} · 待处理 {{ pendingCount(currentQuestion) }}</span>
+          <progress :value="currentQuestion.teacher_confirmed_count ?? 0" :max="currentQuestion.total_count || 1" aria-label="本题确认进度" />
+        </div>
+        <button type="button" class="review-deep-workspace__panel-toggle" :aria-pressed="answerPanelOpen === true" @click="emit('toggleAnswerPanel')"><AppIcon name="book-open" :size="14" />题目与答案</button>
+        <ReviewShortcutGuide mode="batch" />
       </div>
-      <button type="button" class="review-deep-workspace__panel-toggle" :aria-pressed="answerPanelOpen === true" @click="emit('toggleAnswerPanel')"><AppIcon name="book-open" :size="14" />题目与答案</button>
-      <span class="review-batch-legend">红框：AI 拿不准或需要人工评分，Tab 只在红框间跳</span>
     </div>
 
     <p v-if="rubricState === 'error'" class="review-field-error review-batch-rubric-notice">评分标准暂时无法读取，不影响查看和编辑当前分数。</p>
@@ -367,7 +374,6 @@ watch([sessionId, () => props.selectedQuestionId], async ([session, question]) =
       >
         {{ submitting ? '正在确认本题…' : `确认本题处理结果（${actionableItems.length}）` }}
       </AppButton>
-      <p class="review-batch-shortcuts"><kbd>Tab</kbd> / <kbd>Shift+Tab</kbd> 下一个 / 上一个红框 · <kbd>Enter</kbd> 下一个，最后一个确认本题 · <kbd>J</kbd> / <kbd>K</kbd> 切换选中 · <kbd>/</kbd> 搜索</p>
     </footer>
   </section>
 </template>

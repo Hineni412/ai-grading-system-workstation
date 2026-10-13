@@ -201,6 +201,8 @@ function onConfirmed(payload: { reviewItemId: string }): void {
         >
           下一名 ↓ ›
         </AppButton>
+      </div>
+      <div class="review-deep-workspace__tools">
         <div v-if="studentOptions?.length" class="review-deep-workspace__student-search">
           <AppIcon name="search" :size="14" class="review-deep-workspace__search-icon" />
           <StudentMatchSelect
@@ -214,8 +216,6 @@ function onConfirmed(payload: { reviewItemId: string }): void {
             {{ studentSearchNotice }}
           </span>
         </div>
-      </div>
-      <div class="review-deep-workspace__tools">
         <button
           type="button"
           class="review-deep-workspace__panel-toggle"
@@ -226,22 +226,6 @@ function onConfirmed(payload: { reviewItemId: string }): void {
           <AppIcon name="book-open" :size="14" />
           题目与答案
         </button>
-        <div
-          v-if="resolvedItem.media.originals_available !== false"
-          class="review-deep-workspace__sources"
-          role="group"
-          aria-label="证据来源"
-        >
-          <button
-            v-for="option in availableSources"
-            :key="option.value"
-            type="button"
-            :aria-pressed="selectedSource === option.value"
-            @click="selectSource(option.value)"
-          >
-            {{ option.label }}
-          </button>
-        </div>
       </div>
     </header>
 
@@ -263,7 +247,26 @@ function onConfirmed(payload: { reviewItemId: string }): void {
           :source="selectedSource"
           :marks-version="marksVersion"
           @expand="imageExpanded = true"
-        />
+        >
+          <template #leading>
+            <div
+              v-if="resolvedItem.media.originals_available !== false"
+              class="review-deep-workspace__sources"
+              role="group"
+              aria-label="证据来源"
+            >
+              <button
+                v-for="option in availableSources"
+                :key="option.value"
+                type="button"
+                :aria-pressed="selectedSource === option.value"
+                @click="selectSource(option.value)"
+              >
+                {{ option.label }}
+              </button>
+            </div>
+          </template>
+        </ReviewEvidenceViewer>
       </div>
       <template v-if="answerPanelOpen === true && sessionId !== null && questionId !== null">
         <div
