@@ -22,7 +22,7 @@
     if (w.ocr) {
       banner = '<div class="iw-banner">识别结果待核对：以下片段把握较低 ' +
         w.ocr.uncertain.map(function (u) { return '<span class="unc">' + esc(u) + '</span>'; }).join('、') +
-        '。<br>原型模拟本机识别，正式版先用本机识别，失败时才可选择调用模型并确认费用。</div>' +
+        '。<br>原型模拟本机识别；识别不可用时请手动录入。</div>' +
         '<div class="iw-preview">' + markedStem(w) + '</div>';
     }
     var opts = '';
@@ -130,6 +130,12 @@
     var IW = window.IW, w = IW.state.work;
     var ocr = document.getElementById('iw-ocr');
     if (ocr) ocr.addEventListener('click', function () {
+      if (IW.lib && IW.lib.sw('ocrOff')) {
+        IW.showDlg('<div class="ops"><p>识别不可用，请手动录入。</p>' +
+          '<button class="btn primary" id="iw-ocr-off-ok">知道了</button></div>');
+        document.getElementById('iw-ocr-off-ok').addEventListener('click', IW.hideDlg);
+        return;
+      }
       IW.showDlg('正在本机识别…');
       setTimeout(function () {
         w.stem = window.ITEM_OCR_DEMO.text;

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>题库管理 · 按标签 — 题目卡片改版原型</title>
+<link rel="stylesheet" href="card.css">
+</head>
+<body>
+
+<div class="proto-note">
+<details class="box">
+<summary>说明 · 本原型为静态演示（合成数据），考情条各格数据来源：</summary>
+<ul>
+<li><b>本校作答</b>：本学期考试中该原题的班级得分率（有效最终分合计 ÷ 满分合计）。</li>
+<li><b>本题型学情</b>：与左侧相同范围的主题型群体掌握度与四档人数。</li>
+<li><b>卡点</b>：该主题型下、本题直接关联的关键步骤的独立失分人数与反复卡住人数（反复卡点：同一学生同一关键步骤在至少 2 道不同小问独立失分）。</li>
+<li><b>考频</b>：与章节考情同一口径的期中 / 期末同源卷组覆盖率。</li>
+<li><b>标签配色</b>：按维度区分——主题型 青绿实心、次题型 青绿虚线、章节 琥珀、知识点 绿、能力 蓝、数学思想 靛、解题方法 紫、数学模型 浅紫、特殊考法 玫红、作答形式/难度 灰。</li>
+</ul>
+</details>
+</div>
+
+<div class="proto-toolbar"><span>原型工具条 · 切换卡片状态：</span><span id="tb-btns"></span></div>
+
+<div class="qb-page">
+<aside class="chapter-pane">
+<h3>章节考情<small>全部学生 · 本学期</small></h3>
+<div class="ch-row"><span class="nm">第一章 勾股定理</span><small>掌握度 72%</small></div>
+<div class="ch-meta">需关注 12 人 · 有证据 38 人</div>
+<div class="ch-row is-active"><span class="nm">第二章 实数</span><small>掌握度 68%</small></div>
+<div class="ch-meta">需关注 16 人 · 有证据 41 人</div>
+<div class="ch-row is-sub"><span class="nm">1 平方根</span><small>71%</small></div>
+<div class="ch-row is-sub"><span class="nm">2 立方根</span><small>63%</small></div>
+<div class="ch-row is-sub"><span class="nm">3 实数</span><small>66%</small></div>
+<div class="ch-row"><span class="nm">第三章 一次函数</span><small>掌握度 81%</small></div>
+<div class="ch-meta">需关注 6 人 · 有证据 44 人</div>
+<div class="ch-row"><span class="nm">第四章 平面直角坐标系</span><small>掌握度 63%</small></div>
+<div class="ch-meta">需关注 20 人 · 有证据 39 人</div>
+<p class="ch-foot">共 12 章 · 按本学期考试与已发布训练统计</p>
+</aside>
+
+<main class="results-pane">
+<p class="scope-note">考情数据范围：全部学生 · 本学期 3 场考试 + 已发布训练（与左侧一致）</p>
+<div id="card-list"></div>
+</main>
+</div>
+
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

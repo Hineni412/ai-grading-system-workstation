@@ -6,6 +6,7 @@
 <title>原型 · 教研提升 · 命题训练</title>
 <link rel="stylesheet" href="../paper-review-prototype-20261011/style.css">
 <link rel="stylesheet" href="item-writing.css">
+<link rel="stylesheet" href="library.css">
 </head>
 <body>
 <div class="app">
@@ -48,6 +49,7 @@
     <div class="toolbar">
       <span class="tool-field">材料：<b id="iw-crumb">—</b></span>
       <span class="tool-field">用时：<span id="iw-timer" class="mono">—</span></span>
+      <span class="tool-field"><span id="iw-saved">未保存</span></span>
       <span class="tool-hint">单人命题训练；作品只保存在本浏览器（原型）。</span>
     </div>
 
@@ -63,10 +65,15 @@
 
 <script src="rubric-data.js"></script>
 <script src="sample-data.js"></script>
-<script src="render-materials.js"></script>
+<script src="library-data.js"></script>
+<script src="../../../tmp_item_writing_prototype/data.js" onerror="window.__IW_NO_TRIAL=1"></script>
+<script src="lib-store.js"></script>
+<script src="render-library.js"></script>
+<script src="render-extract.js"></script>
 <script src="render-form.js"></script>
 <script src="render-form2.js"></script>
 <script src="render-eval.js"></script>
+<script src="proto-controls.js"></script>
 <script src="app-core.js"></script>
 </body>
 </html>
