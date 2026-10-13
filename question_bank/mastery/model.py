@@ -226,7 +226,10 @@ class MasteryModel:
             self.prec.append(1 / sigma**2)
         return self.index.get(key)
 
-    def _state(self, key, week, create):
+    def _state(self, key, week, create, cache=None):
+        identity = key, week
+        if cache is not None and identity in cache:
+            return cache[identity]
         sigma = self.parameters.sigma_theta if key[0] == "theta" else self.sigma(key[2])
         indices = [(self._param(key, create, sigma), 1.0)]
         tau = self.parameters.tau_theta if key[0] == "theta" else self.parameters.tau_kc
@@ -237,17 +240,20 @@ class MasteryModel:
                 if current > week:
                     break
                 indices.append((self._param((*key, "delta", current), create, tau * math.sqrt(current - previous)), 1.0))
-        return [(i, c) for i, c in indices if i is not None]
+        result = [(i, c) for i, c in indices if i is not None]
+        if cache is not None:
+            cache[identity] = result
+        return result
 
-    def _entries(self, observation, create):
+    def _entries(self, observation, create, *, lineages=None, states=None):
         entries = defaultdict(float)
         student, week = observation["student"], observation["week"]
-        for i, c in self._state(("theta", student), week, create):
+        for i, c in self._state(("theta", student), week, create, states):
             entries[i] += c
         if not self.ability_only:
             for node, weight in observation["links"].items():
-                for ancestor in lineage(node, self.parent):
-                    for i, c in self._state(("a", student, ancestor), week, create):
+                for ancestor in lineages[node] if lineages is not None else lineage(node, self.parent):
+                    for i, c in self._state(("a", student, ancestor), week, create, states):
                         entries[i] += weight * c
         for key, sigma, coefficient in [
             (("e", observation["item"]), self.parameters.sigma_item, -1),
@@ -266,15 +272,19 @@ class MasteryModel:
     def fit(self, observations, *, iterations=600, laplace=True):
         self.observations = sorted(observations, key=lambda o: (o["week"], str(o["activity"]), o["student"], str(o["item"])))
         self.weights = np.asarray(_conflict_weights(self.observations, self.parameters.conflict_discount))
+        nodes = dict.fromkeys(node for o in self.observations for node in o["links"])
+        lineages = {node: lineage(node, self.parent) for node in nodes}
         self.state_weeks = defaultdict(set)
         for o in self.observations:
             self.state_weeks[("theta", o["student"])].add(o["week"])
             for node in o["links"]:
-                for ancestor in lineage(node, self.parent):
+                for ancestor in lineages[node]:
                     self.state_weeks[("a", o["student"], ancestor)].add(o["week"])
         self.state_weeks = {k: sorted(v) for k, v in self.state_weeks.items()}
         self.index, self.prec = {}, []
-        self.rows = [self._entries(o, True) for o in self.observations]
+        states = {}
+        self.rows = [self._entries(o, True, lineages=lineages, states=states) for o in self.observations]
+        del states, lineages
         self._param(("beta0",), True, 10)
         self._param(("beta1",), True, 10)
         self.prec = np.array(self.prec)
@@ -320,16 +330,19 @@ class MasteryModel:
         for student, local in local_indices.items():
             position = {i: j for j, i in enumerate(local)}
             hessian = np.diag(self.prec[local])
+            patterns = {}
             for o, row, w in by_student[student]:
                 q = float(sigmoid(sum(c*self.x[i] for i, c in row)))
                 s = self.parameters.slip
                 p = (1-s)*q
                 curvature = (1-s)*q*(1-q)**2/(1-p) - (p-o["y"])*s*q*(1-q)/(1-p)**2
-                vector = np.zeros(len(local))
-                for i, c in row:
-                    if i in position:
-                        vector[position[i]] += c
-                hessian += w * curvature * np.outer(vector, vector)
+                pattern = tuple((position[i], c) for i, c in row if i in position)
+                if pattern not in patterns:
+                    indices, coefficients = zip(*pattern)
+                    coefficients = np.asarray(coefficients, dtype=float)
+                    patterns[pattern] = np.ix_(indices, indices), np.outer(coefficients, coefficients)
+                positions, outer = patterns[pattern]
+                hessian[positions] += w * curvature * outer
             self.cov[student] = position, np.linalg.inv(hessian)
 
     def mastery(self, student, node, week):
