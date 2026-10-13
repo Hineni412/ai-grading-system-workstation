@@ -691,6 +691,7 @@ class TrainingOverviewNodeStudent(_TrainingModel):
 
 
 class TrainingOverviewExamQuestion(_TrainingModel):
+    session_id: int = Field(ge=1)
     session_name: str = ""
     question_label: str = ""
     class_rate: float | None = None
