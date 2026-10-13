@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>后端架构与性能改进 · AI 阅卷系统</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>if (window.tailwind) tailwind.config = {corePlugins: {preflight: false}};</script>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({startOnLoad:true,theme:"neutral",securityLevel:"strict"});
+  </script>
+  <style>
+    :root{color-scheme:light;--ink:#183631;--muted:#52645f;--line:#ced8d2;--paper:#f5f4ee;--green:#176b50;--red:#a4392d;--amber:#8a5b0b}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.75 "Microsoft YaHei","PingFang SC",sans-serif}main{max-width:1100px;margin:auto;padding:52px 28px 72px}a{color:var(--green);text-decoration:underline;text-underline-offset:3px}header{border-top:5px solid var(--green);padding:24px 0 30px}h1{font-size:clamp(30px,4vw,46px);line-height:1.25;font-weight:700;margin:12px 0 20px;letter-spacing:-1px}h2{font-size:25px;font-weight:700;line-height:1.45;margin:10px 0 16px}h3{font-size:17px;font-weight:700;margin:0 0 8px}p{margin:10px 0}.eyebrow{font-size:12px;letter-spacing:2px;color:var(--muted)}.lede{max-width:820px;font-size:19px}.muted,small{color:var(--muted)}.nav{display:flex;gap:10px 24px;flex-wrap:wrap;margin-top:24px;font-size:14px}.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:24px 0}.metric{padding:20px;border:1px solid var(--line);background:#fff}.number{font-size:32px;line-height:1.2;display:block;font-weight:700}.metric p{font-size:14px;margin:8px 0 0}.note{border-left:3px solid var(--amber);padding:10px 16px;background:#fff9e9;font-size:14px}.card{background:#fff;border:1px solid var(--line);border-radius:4px;padding:30px;margin:26px 0;scroll-margin-top:20px}.tag{display:inline-block;font-size:12px;border-radius:3px;padding:2px 9px;margin:0 7px 6px 0;background:#edf1ee}.strong{background:#dbeee2;color:#185638}.explore{background:#fff0cd;color:#835506}.confirmed{color:#9b3126;background:#fdebe7}.pair{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:22px 0}.diagram{padding:18px;border:1px solid var(--line);background:#f9faf7;min-height:220px}.diagram .label{font-size:12px;letter-spacing:1px;color:var(--muted);margin-bottom:12px}.box{border:1px solid #8ca69a;padding:10px 14px;text-align:center;background:#fff;margin:6px 0;font-size:14px}.box.deep{background:var(--ink);color:#fff;border:3px solid var(--ink);padding:18px}.box.danger{border-color:#c7867d;background:#fff2ee;color:var(--red)}.arrow{text-align:center;color:#607e70;line-height:1.35;font-size:19px}.seam{border-top:2px dashed #91a799;margin:12px 0}.files{font:12px/1.8 Consolas,monospace;overflow-wrap:anywhere;color:var(--muted)}.facts{display:grid;grid-template-columns:90px 1fr;gap:8px 16px;margin:20px 0}.facts dt{color:var(--muted);font-size:13px}.facts dd{margin:0}.benefits{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:13px}.bar-row{display:grid;grid-template-columns:130px 1fr 65px;align-items:center;gap:12px;font-size:13px;margin:10px 0}.track{background:#edf1ed;height:17px}.fill{background:#387d64;height:100%}.fill.secondary{background:#7a9e8a}.fill.other{background:#bacbc0}table{border-collapse:collapse;width:100%;font-size:14px}th,td{padding:11px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{background:#edf2ec;font-weight:600}.table-wrap{overflow-x:auto}.final{background:var(--ink);color:#fff;padding:30px;margin-top:30px}.final a{color:#c7edc9}ul{padding-left:23px;list-style:disc}li{margin:5px 0}footer{font-size:13px;color:var(--muted);padding-top:30px}code{font:13px Consolas,monospace;overflow-wrap:anywhere}.evidence{font-size:14px;border-top:1px solid var(--line);padding-top:14px;margin-top:18px}
+    .mermaid:not([data-processed]){display:none}.mermaid[data-processed] + .graph-fallback{display:none}.graph-fallback{display:block;width:100%;height:auto;margin:20px 0}
+    @media(max-width:700px){main{padding:28px 16px}.card{padding:20px}.pair,.metrics{grid-template-columns:1fr}.facts{grid-template-columns:1fr;gap:3px}.facts dd{margin-bottom:10px}.bar-row{grid-template-columns:100px 1fr 55px;gap:8px}.diagram{min-height:0}}
+    @media print{body{background:white}.card{break-inside:avoid}.nav{display:none}main{max-width:none;padding:0}.final{background:white;color:var(--ink);border:2px solid var(--ink)}}
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">AI 阅卷系统 · 后端改进与验证 · 2026-10-13</div>
+    <h1>四项后端改进，<br>已按约定顺序完成。</h1>
+    <p class="lede">共享刷新能结束已复现的卡住请求；组卷按需读取难度；考试分析批量读取成绩明细；掌握度复用同轮计算资料。原有模块和数据归属保持不变。</p>
+    <p class="muted">对比基线为 <code>d32a42e9</code>。本页记录已实施改动与合成验证。没有修改教师真实数据，没有调用真实模型，没有产生模型费用。</p>
+    <nav class="nav" aria-label="报告目录"><a href="#refresh">01 共享刷新</a><a href="#difficulty">02 难度读取</a><a href="#analytics">03 考试分析</a><a href="#model">04 掌握度计算</a><a href="#decision">范围与验证</a></nav>
+  </header>
+  <section aria-label="主要结果">
+    <div class="metrics">
+      <div class="metric"><span class="number">已修复</span><p>计算提前完成时的共享刷新自锁。12 个同键并发请求仍只计算 1 次。</p></div>
+      <div class="metric"><span class="number">544 → 1</span><p>500 道关联题合成样本中的题库 SELECT 数量。完整考试依据响应相同。</p></div>
+      <div class="metric"><span class="number">3.20 → 2.72</span><p>16 万条合成观测的区间计算耗时，单位为秒。每侧 5 次交错运行的中位数。</p></div>
+    </div>
+    <p class="note">查询数量与计算耗时是不同指标。本页没有测正式页面或真实数据的响应时间，不把这些结果换算为页面提速比例。</p>
+  </section>
+  <article id="refresh" class="card">
+    <span class="tag strong">已实施</span><span class="tag">原故障已复现并消除</span>
+    <h2>01 · 共享刷新在释放锁后登记完成回调</h2>
+    <p>后台计算提前完成时，登记回调会立即执行该回调。原代码此时仍持有刷新锁，回调又等待同一把锁，请求因此无法继续。修改后，创建者先登记在途任务，退出锁后再登记回调。</p>
+    <div class="files"><a href="../../integration/display_refresh.py">integration/display_refresh.py</a> · serve_with_refresh 与既有 _Flight</div>
+    <div class="pair">
+      <div class="diagram"><div class="label">修改前 · 已复现的执行顺序</div><div class="box">请求持有刷新锁</div><div class="arrow">↓</div><div class="box">后台任务提前完成</div><div class="arrow">↓</div><div class="box danger">登记回调 → 立即执行<br>回调再取同一把锁 → 卡住</div></div>
+      <div class="diagram"><div class="label">修改后 · 同一种执行顺序</div><div class="box">锁内创建并登记共享任务</div><div class="seam"></div><div class="box deep">共享刷新模块<br>退出锁后登记完成回调<br>沿用原完成、失败与清理逻辑</div><div class="arrow">↓</div><div class="box">请求正常返回，在途记录清空</div></div>
+    </div>
+    <dl class="facts">
+      <dt>实际验证</dt><dd>使用真实线程池及合成持久缓存。相同的强制提前完成顺序，基线请求不返回，修改后返回正确字节。12 个相同请求只计算 1 次。同步异常原样传播；超时先返回旧结果；后台完成后下一请求读取新结果；后台异常只记录 1 条日志且保留旧结果。</dd>
+      <dt>复用选择</dt><dd>保留 <code>serve_with_refresh</code>、<code>_Flight</code> 和 <code>_complete</code>。只移出持锁登记回调这一动作，不新增调度器。锁与任务生命周期由共享模块拥有，页面内部无法消除这个锁依赖。</dd>
+      <dt>适用范围</dt><dd>题库、学情、训练和组卷共用刷新机制的读取入口。写入流程不经过该机制。正式服务是否发生过该故障及发生频率，尚未验证。</dd>
+    </dl>
+    <p class="evidence">证据保存在本机 <code>.audit/backend-four-fixes-20261013/refresh/</code> 的 <code>verify_refresh.py</code>、<code>before.json</code> 和 <code>after.json</code>。现有训练诊断接口回归也已通过。</p>
+  </article>
+  <article id="difficulty" class="card">
+    <span class="tag strong">已实施</span><span class="tag">完整响应已比较</span>
+    <h2>02 · 组卷考试依据只读取题号和难度</h2>
+    <p>原路径为获取难度而读取整张题卡，并受展示接口的 500 题总量限制。现路径在已有只读快照中，每批最多读取 500 个题号，直到所有关联题读取完成。</p>
+    <div class="files"><a href="../../integration/diagnosis_profile_service.py">integration/diagnosis_profile_service.py</a> · assembly_exam_questions</div>
+    <div class="pair">
+      <div class="diagram"><div class="label">修改前 · 缓存未命中</div><div class="box">考试依据需要题号、难度</div><div class="arrow">↓</div><div class="box danger">完整题卡、标签、状态与重复题查询</div><div class="arrow">↓</div><div class="box">丢弃其他字段<br>501 道关联题报错</div></div>
+      <div class="diagram"><div class="label">修改后 · 缓存未命中</div><div class="box">沿用考试依据入口</div><div class="seam"></div><div class="box deep">原只读快照<br>分批读取 id / difficulty<br>沿用删除过滤及 difficulty_level</div><div class="arrow">↓</div><div class="box">完整考试依据与原难度规则</div></div>
+    </div>
+    <div class="table-wrap"><table><thead><tr><th>合成关联题号数</th><th>修改前题库 SELECT</th><th>修改后题库 SELECT</th><th>完整响应核对</th></tr></thead><tbody>
+      <tr><td>1</td><td>11</td><td>1</td><td>与基线相同</td></tr><tr><td>25</td><td>34</td><td>1</td><td>与基线相同</td></tr><tr><td>500</td><td>544</td><td>1</td><td>与基线相同</td></tr><tr><td>501</td><td>超过 500 题而报错</td><td>2</td><td>返回全部 501 个考试题目行，难度逐项正确</td></tr><tr><td>1001</td><td>超过 500 题而报错</td><td>3</td><td>返回全部 1001 个考试题目行，难度逐项正确</td></tr>
+    </tbody></table></div>
+    <dl class="facts">
+      <dt>实际验证</dt><dd>运行真实 <code>assembly_exam_questions</code> 与合成 SQLite 题库；评分和知识协作对象提供合成输入。覆盖删除题目、删除试卷、缺失题号、重复关联、重复题号、无关联题号与难度边界。比较完整响应，教师最终满分等未修改字段也保持相同。</dd>
+      <dt>快照边界</dt><dd>另一个连接把难度从 3.2 改为 9.2 后，借用的旧事务仍输出原难度档 3。验证禁止新开连接，并确认借用连接和事务保持开启。</dd>
+      <dt>复用选择</dt><dd>保留完整题卡读取供题卡页面使用。考试依据复用已有 <code>question_bank_connection</code>；没有外部连接时复用 <code>_read_connection</code>。没有新增公共接口、数据库或缓存。</dd>
+      <dt>统计范围</dt><dd>表格只计题库 SELECT，包含本样本的删除和重复题情况。缓存命中时原本就会跳过该读取。本次没有测 HTTP 或页面延迟。</dd>
+    </dl>
+    <p class="evidence">脚本位于 <code>.audit/backend-four-fixes-20261013/difficulty/verify_difficulty.py</code>，结果位于同目录 <code>TEST-difficulty-coeeu1i2/result.json</code>。</p>
+  </article>
+  <article id="analytics" class="card">
+    <span class="tag strong">已实施</span><span class="tag">批量读取与数值聚合</span>
+    <h2>03 · 考试分析在同一事务中读取所选成绩明细</h2>
+    <p>原路径每份成绩单独打开连接读取明细，再构造接口不用的正确、错误学生名单。现路径先筛选班级，在同一只读事务中批量取得成绩身份和明细，直接累计公开统计需要的数值。</p>
+    <div class="files"><a href="../../backend/analytics/service.py">backend/analytics/service.py</a> · SessionAnalysisService<br><a href="../../backend/repositories/results.py">backend/repositories/results.py</a> · get_session_analysis_source</div>
+    <div class="pair">
+      <div class="diagram"><div class="label">修改前 · 100 名合成学生</div><div class="box">A 班 Q1，第一页 1 条统计</div><div class="arrow">↓</div><div class="box danger">全场 100 次逐份明细查询<br>读取 1,000 条明细</div><div class="arrow">↓</div><div class="box">准备全部学生姓名串<br>再筛班级、题目与页码</div></div>
+      <div class="diagram"><div class="label">修改后 · 相同请求和数据</div><div class="box">原统计与学生列表入口</div><div class="seam"></div><div class="box deep">原成绩读取层<br>同一事务批量读取所选班级<br>原分析层直接累计统计</div><div class="arrow">↓</div><div class="box">完整统计和分页相同<br>班级目录仍覆盖全场</div></div>
+    </div>
+    <div class="table-wrap"><table><thead><tr><th>实际路由函数的读取</th><th>修改前</th><th>修改后</th></tr></thead><tbody>
+      <tr><td>SQLite 连接</td><td>102</td><td>2</td></tr><tr><td>SELECT 语句</td><td>102</td><td>3</td></tr><tr><td>明细查询</td><td>100 次逐份查询</td><td>1 次批量查询</td></tr><tr><td>返回给分析层的评分明细</td><td>1,000 条</td><td>500 条</td></tr><tr><td>公开统计</td><td colspan="2">相同的 1 条 A 班 Q1 统计，50 人次作答</td></tr>
+    </tbody></table></div>
+    <dl class="facts">
+      <dt>实际验证</dt><dd>450 组正常完整响应与基线相同，30 组预期题号冲突保持同一错误。覆盖统计行、学生行和实际分页路由，包括全班、单班、未分班、空结果、缺失满分、负分、小数、超满分、重复明细、题号别名、整题满分推断小问，以及人工确认得分。真实复核服务及其评分表加载参与比较。</dd>
+      <dt>统计规则</dt><dd>继续按原顺序处理每份明细，保留分数上限、题号解释、小问推断及复核判断。全部班级先按班级汇总，再按原班级顺序相加；排序与两位小数舍入保持原规则。统计仍处理所选范围的全部相关明细，再筛题和分页，不按页码截断统计样本。</dd>
+      <dt>读取一致性</dt><dd>两条批量 SELECT 在同一只读事务中完成。验证在两条查询之间由另一个 WAL 连接提交更新，读取仍保持原快照。班级提前过滤后，其他班级的无效题号不再阻断所选班级；所选范围内的题号契约错误仍报错。</dd>
+      <dt>复用选择</dt><dd>保留原成绩读取模块及明细解释函数。训练证据和完整性检查的批量方法，字段或过滤规则与考试分析不同，不能直接替代。新能力只加入现有成绩模块，没有新增业务模块。无调用方的旧分析包装、姓名串和完整明细副本已删除。</dd>
+      <dt>统计范围</dt><dd>100 名学生，2 个班，每人 10 条评分明细。运行真实路由函数、分析模块和 SQLite 读取；会话元数据与评分映射由合成输入提供。不是 HTTP 或页面耗时测试。学生复核服务本身的成本保留。</dd>
+    </dl>
+    <p class="evidence">对比脚本与结果位于 <code>.audit/backend-four-fixes-20261013/analytics/</code>。没有更改成绩、排名或教师最终分锁。</p>
+  </article>
+  <article id="model" class="card">
+    <span class="tag strong">已实施</span><span class="tag">逐值一致与交错计时</span>
+    <h2>04 · 掌握度在一次拟合内复用计算资料</h2>
+    <p>现路径为本轮出现的节点准备一次祖先列表，并复用相同学生、节点和周的参数位置。计算把握区间时，复用同一学生的重复系数组合，只更新该条证据涉及的矩阵位置。模型公式与逐条累加顺序不变。</p>
+    <div class="files"><a href="../../question_bank/mastery/model.py">question_bank/mastery/model.py</a> · fit、_state、_entries、_laplace<br><a href="../../question_bank/mastery/current.py">question_bank/mastery/current.py</a> · 沿用 CurrentMasteryCalculator 入口</div>
+    <div class="pair">
+      <div class="diagram"><div class="label">修改前 · 同一次拟合</div><div class="box">每条证据重复查询祖先与状态位置</div><div class="arrow">↓</div><div class="box">沿用原数值求解</div><div class="arrow">↓</div><div class="box danger">每条证据重新准备完整向量<br>对完整局部矩阵执行外积</div></div>
+      <div class="diagram"><div class="label">修改后 · 同一次拟合</div><div class="box">原拟合与结果入口</div><div class="seam"></div><div class="box deep">原掌握度模块<br>复用本轮层级与状态位置<br>按学生复用相关系数组合</div><div class="arrow">↓</div><div class="box">完整掌握度、把握区间与档位</div></div>
+    </div>
+    <h3>相同输入的前后测量</h3>
+    <p>100 名合成学生 × 40 次活动 × 40 个技能，共 160,000 条观测。每个版本各运行 5 次，交替前后顺序。下表给出中位数与最小至最大范围，单位为秒。</p>
+    <div class="table-wrap"><table><thead><tr><th>计时范围</th><th>修改前</th><th>修改后</th><th>中位耗时变化</th></tr></thead><tbody>
+      <tr><td>完整拟合，包含区间</td><td>11.363<br><small>10.875–12.444</small></td><td>10.057<br><small>9.684–11.629</small></td><td>本次减少 11.5%</td></tr>
+      <tr><td>完整掌握度计算入口</td><td>13.631<br><small>12.495–15.706</small></td><td>11.223<br><small>11.132–14.317</small></td><td>本次减少 17.7%</td></tr>
+      <tr><td>单独区间计算</td><td>3.195<br><small>3.092–4.102</small></td><td>2.723<br><small>2.554–2.991</small></td><td>本次减少 14.8%</td></tr>
+    </tbody></table></div>
+    <p class="note">本次五组成对运行均减少耗时。但完整拟合与完整计算的前后范围重叠，中位差小于观测波动，稳定提速幅度尚不能确定。区间分项的前后范围不重叠，支持保留本次优化。表中比例以各自修改前中位数为分母，不代表页面提速比例。</p>
+    <p class="muted" style="font-size:13px">完整计算入口运行 <code>CurrentMasteryCalculator.calculate</code>，从同一合成观测和空训练证据数据库返回 4,500 项学生知识结果。每次新建计算器并重新拟合；计时内不包含输入构造、结果比较和性能分析工具。</p>
+    <dl class="facts">
+      <dt>结果一致</dt><dd>160 组差异用例及其中 32 次改变父节点、参数或动态节点后的重复拟合通过。拟合参数、权重、精度、参数数组及完整协方差的类型、形状和字节一致。公开掌握度、区间、档位与预测相同。覆盖空输入、动态周、多个目标共享祖先、训练证据、NumPy 标量权重、未观测节点与学生，以及不同参数。</dd>
+      <dt>完整规模</dt><dd>修改前后各 5 次拟合的参数、权重和完整协方差摘要相同。各 5 次完整计算返回的 4,500 项全部字段相同，叶级观测数总和均为 160,000。每次重新计算，没有跨请求缓存命中或跳过证据。另以同一拟合参数单独计时区间计算，每侧 5 次，完整协方差字节相同。</dd>
+      <dt>CPU 对比</dt><dd>每侧 5 次的进程 CPU 时间中位数：完整拟合 11.203 → 9.891 秒；完整计算 13.500 → 11.172 秒；区间分项 3.172 → 2.641 秒。完整拟合第 5 对的 CPU 时间增加 0.016 秒，其余 4 对下降；完整计算和区间分项 5 对均下降。CPU 时间接近实际耗时，主要成本仍是本地计算。</dd>
+      <dt>成本定位</dt><dd>独立性能分析中，系数外积调用从 160,000 次降为 4,000 次，参数先验宽度计算从 492,900 次降为 44,400 次。前后数值优化的目标函数调用均为 85 次。优化后的主要成本仍包括区间计算、观测参数准备、目标函数与冲突折扣。分析工具自身会增加耗时，分析结果没有混入上表计时。</dd>
+      <dt>复用边界</dt><dd>层级和状态字典只存在于本轮参数准备；后续预测和公开结果不借用它们。重复拟合重新创建这些资料。区间系数组合按学生准备并释放，没有跨请求缓存，也没有新数据库表。</dd>
+      <dt>保留的计算</dt><dd>全年级统一拟合后再取所选学生。保留冲突折扣、教材层级、完整协方差、阈值、600 轮迭代上限和每轮 40 次试探上限。没有关闭区间、减少学生或减少迭代来换速度。</dd>
+      <dt>测量限制</dt><dd>Python 3.12.1、NumPy 2.5.0、16 个逻辑处理器。其他任务共享机器，不能声称机器空闲。合成分布不代表真实年级；这里只测统计计算，不包含正式业务数据库加载、HTTP 和浏览器。完整计算入口仍不等同于页面端到端耗时。</dd>
+    </dl>
+    <p class="evidence">差异脚本、逐次计时、完整输出摘要和独立性能分析保存在 <code>.audit/backend-four-fixes-20261013/mastery/</code>。速度结论只适用于以上样本与计算范围。</p>
+  </article>
+  <section id="decision" class="card">
+    <h2>实现范围与验证边界</h2>
+    <pre class="mermaid">
+flowchart LR
+  A[本机页面] --> B[FastAPI 单进程]
+  B --> C[考试阅卷 module]
+  B --> D[题库与训练 module]
+  C --> E[(阅卷 SQLite)]
+  D --> F[(题库 SQLite)]
+  E -. 只读证据快照 .-> G[诊断与掌握度]
+  F -. 题目与训练证据 .-> G
+  G --> D
+    </pre>
+    <svg class="graph-fallback" viewBox="0 0 960 300" role="img" aria-label="本机页面通过单进程后端读取阅卷与题库，诊断掌握度组合两端只读资料">
+      <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#648173"/></marker></defs>
+      <g fill="none" stroke="#648173" stroke-width="2" marker-end="url(#arrow)"><path d="M 165 136 H 230"/><path d="M 390 136 H 425 V 61 H 475"/><path d="M 390 136 H 425 V 211 H 475"/><path d="M 625 61 H 695"/><path d="M 625 211 H 695"/><path d="M 770 86 V 111" stroke-dasharray="5 4"/><path d="M 770 186 V 161" stroke-dasharray="5 4"/></g>
+      <g fill="#f5f7f2" stroke="#8ca69a"><rect x="10" y="111" width="155" height="50" rx="3"/><rect x="230" y="111" width="160" height="50" rx="3"/><rect x="475" y="36" width="150" height="50" rx="3"/><rect x="475" y="186" width="150" height="50" rx="3"/><rect x="695" y="36" width="150" height="50" rx="3"/><rect x="695" y="186" width="150" height="50" rx="3"/></g>
+      <rect x="680" y="111" width="180" height="50" rx="3" fill="#183631"/>
+      <g text-anchor="middle" fill="#183631" font-size="17"><text x="88" y="142">本机页面</text><text x="310" y="142">单进程后端</text><text x="550" y="67">考试阅卷</text><text x="550" y="217">题库与训练</text><text x="770" y="67">阅卷数据库</text><text x="770" y="217">题库数据库</text><text x="770" y="142" fill="white">诊断与掌握度</text><text x="480" y="286" fill="#52645f" font-size="14">虚线表示通过既有只读资料协作，数据库归属保持独立。</text></g>
+    </svg>
+    <p>按共享刷新、组卷难度、考试分析、掌握度计算的顺序实现。每项先比较原行为与修改后的行为，再进入下一项。没有新增业务模块或通用框架，没有合并两个业务数据库。</p>
+    <div class="table-wrap"><table><thead><tr><th>保留的能力</th><th>本次边界</th></tr></thead><tbody>
+      <tr><td>已有缓存与后台刷新</td><td>保留请求合并、超时旧结果、完成后更新及失败处理。</td></tr>
+      <tr><td>考试成绩与复核</td><td>保留题号解释、成绩上限、小问推断与既有复核入口；不写成绩。</td></tr>
+      <tr><td>考试与题库协作</td><td>沿用稳定题号与只读快照；不新增跨库写入。</td></tr>
+      <tr><td>全年级掌握度</td><td>先拟合全部学生，再取所选范围；保留完整区间、档位与计算参数。</td></tr>
+    </tbody></table></div>
+    <p>验证使用合成数据，外部模型调用使用替身。掌握度统计运行原有数值求解。正式页面耗时、真实年级分布和真实模型判断质量尚未验证。这些优化没有调用真实模型。</p>
+    <p>数值对比与性能材料留在本机 <code>.audit/backend-four-fixes-20261013/</code>。它们是本次可复跑证据，不属于新增正式回归测试。</p>
+    <p>实现按项保留本地提交。回退可以按对应提交恢复代码；本次没有数据迁移或真实数据写入，无需恢复教师数据库。其他任务的修改不包含在本任务提交中。</p>
+  </section>
+  <footer>
+    <h3>验证记录</h3>
+    <p>验证：现有后端 full --skip-frontend 共 101 个用例通过，耗时 83.1 秒；另一个现有训练诊断接口用例已单独通过。未运行前端和发布迁移组。相同输入的前后对比覆盖完整返回值；模型计时与独立性能分析分开。正式服务未重启，真实数据与真实模型未参与。</p>
+    <p>测试：本任务未改正式测试，原因是缓存、读取和内部计算改造已有合成对比与现有流程回归。测试清点前后均为 22 个测试文件、111 个测试函数、113 个参数化展开后的后端用例。没有删除检查，也没有提高上限。</p>
+    <p>文档：本页由原调查报告改为实现与验证记录，并更新请求索引；ARCHITECTURE.md 补充难度读取、考试分析与拟合内复用的边界。产品规则、模块归属、存储、安全和术语未改。</p>
+    <p>沿用 improve-codebase-architecture、codebase-design 与 poteto-mode。Sequence Verifiable Units 使四项按顺序验证；Model the Domain 使实现沿用已有在途任务、题号映射、统计行和模型参数结构；Explain the Number 使查询数、拟合时间与页面等待时间分别陈述。</p>
+    <p>图中深色框表示现有模块承担的内部工作，虚线表示调用与实现的交接。报告不要求用户了解内部实现即可继续原有操作。</p>
+  </footer>
+</main>
+</body>
+</html>
