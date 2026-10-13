@@ -128,9 +128,15 @@ watch(idx, () => {
 const catChips = computed(() => {
   const order: WalkthroughCategory[] = [1, 2, 3, 4]
   return order.map((cat) => {
-    const first = deck.value.findIndex((c) => c.category === cat)
-    const count = deck.value.filter((c) => c.category === cat).length
-    return { cat, first, count }
+    const entries = deck.value
+      .map((card, i) => ({ card, i }))
+      .filter(({ card }) => card.category === cat)
+    const people = new Set(
+      entries.flatMap(({ card }) => card.groups.flatMap(
+        (group) => group.members.map((member) => member.studentId),
+      )),
+    ).size
+    return { cat, first: entries[0]?.i ?? -1, count: entries.length, people }
   }).filter((c) => c.count > 0)
 })
 const currentChip = computed(() => (
@@ -138,12 +144,15 @@ const currentChip = computed(() => (
 ))
 const metaText = computed(() => {
   if (ended.value) return `${props.scopeLabel} · 已看完 ${deck.value.length} 张`
-  const chip = currentChip.value
-  if (!chip) return props.scopeLabel
-  const catIndex = catChips.value.indexOf(chip) + 1
-  const inCat = idx.value - chip.first + 1
-  return `${props.scopeLabel} · 第 ${catIndex} 类 ${WALKTHROUGH_CATEGORY_LABELS[chip.cat]}` +
-    ` · 第 ${inCat} / ${chip.count} 张 · 全部 ${idx.value + 1} / ${deck.value.length}`
+  return `${props.scopeLabel} · 第 ${idx.value + 1} / ${deck.value.length} 张`
+})
+// 同类别各卡：供卡片头部题号切换条使用
+const siblingCards = computed(() => {
+  const cat = cardOf.value?.category
+  if (cat === undefined) return []
+  return deck.value
+    .map((card, deckIndex) => ({ card, deckIndex }))
+    .filter(({ card }) => card.category === cat)
 })
 
 const endRows = computed(() => catChips.value.map(({ cat }) => ({
@@ -219,8 +228,9 @@ function onKeydown(event: KeyboardEvent): void {
               v-for="chip in catChips" :key="chip.cat" type="button"
               :class="{ 'is-active': currentChip?.cat === chip.cat }"
               :aria-current="currentChip?.cat === chip.cat ? 'page' : undefined"
+              :title="`${chip.people} 人为本类各题列出的不重复学生`"
               @click="idx = chip.first"
-            >{{ WALKTHROUGH_CATEGORY_LABELS[chip.cat] }} {{ chip.count }}</button>
+            >{{ WALKTHROUGH_CATEGORY_LABELS[chip.cat] }}<span class="wt__tab-count">{{ chip.cat === 4 ? `${chip.people}人` : `${chip.count}题 · ${chip.people}人` }}</span></button>
           </nav>
         </template>
       </PageHeader>
@@ -253,11 +263,13 @@ function onKeydown(event: KeyboardEvent): void {
           :students="students"
           :session-id="sessionId"
           :revealed="revealed"
+          :siblings="siblingCards"
           :load-item="loadItem"
           :load-rubric="loadRubric"
           @viewed="onViewed"
           @go-review="onGoReview"
           @zoom="(urls) => { zoomUrls = urls }"
+          @jump="idx = $event"
         />
       </main>
 
@@ -276,6 +288,11 @@ function onKeydown(event: KeyboardEvent): void {
 .wt {
   flex: 1; min-height: 0; display: flex; flex-direction: column;
   background: var(--color-bg-app); color: var(--color-text-primary); outline: none;
+}
+.wt__tab-count {
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-regular);
+  color: var(--color-text-muted);
 }
 .wt__warn {
   margin: 0; padding: 6px 18px; font-size: var(--font-size-dense);

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, reactive, ref, watch } from 'vue'
 
 import type {
   ResolvedReviewItem,
@@ -8,6 +8,7 @@ import type {
 import type { ResultsCenterStudent } from '../../api/results-center'
 import { translateGradingReason } from '../../utils/grading-reasons'
 import ReviewAnswerPanel from '../review/ReviewAnswerPanel.vue'
+import AppButton from '../design-system/AppButton.vue'
 import {
   classDisplayLabel,
   formatScore,
@@ -15,13 +16,14 @@ import {
   resolvedItemScore,
 } from './results-overview'
 import {
-  WALKTHROUGH_CATEGORY_LABELS,
   itemOf,
   type WalkthroughCard,
 } from './paper-walkthrough'
 
 const props = defineProps<{
   card: WalkthroughCard
+  /** 同类别的全部卡（含本卡），>1 时头部显示题号切换条 */
+  siblings: ReadonlyArray<{ card: WalkthroughCard; deckIndex: number }>
   students: readonly ResultsCenterStudent[]
   sessionId: number
   revealed: boolean
@@ -33,11 +35,12 @@ const emit = defineEmits<{
   viewed: [studentId: number]
   'go-review': [studentId: number, questionId: string, reviewItemId: string]
   zoom: [urls: string[]]
+  jump: [deckIndex: number]
 }>()
 
 const byId = new Map(props.students.map((s) => [s.student_id, s] as const))
 
-// ---- 组内 / 同学间浏览 ----
+// ---- 名单浏览：W/S 与「上一位 / 下一位」跨组连续移动，1–9 跳组首 ----
 const groupIdx = ref(0)
 const memberIdx = ref(0)
 const group = computed(() => props.card.groups[groupIdx.value] ?? null)
@@ -45,9 +48,27 @@ const member = computed(() => group.value?.members[memberIdx.value] ?? null)
 const shownStudentId = computed(() => member.value?.studentId ?? 0)
 const shownStudent = computed(() => byId.get(shownStudentId.value) ?? null)
 
+const flatRoster = computed(() => props.card.groups.flatMap(
+  (g, gi) => g.members.map((m, mi) => ({ gi, mi })),
+))
+const flatPos = computed(() => flatRoster.value.findIndex(
+  (entry) => entry.gi === groupIdx.value && entry.mi === memberIdx.value,
+))
+const canPrev = computed(() => flatPos.value > 0)
+const canNext = computed(() => (
+  flatPos.value >= 0 && flatPos.value < flatRoster.value.length - 1
+))
+
+function selectMember(gi: number, mi: number): void {
+  if (!props.card.groups[gi]?.members[mi]) return
+  groupIdx.value = gi
+  memberIdx.value = mi
+}
 function shiftMember(delta: number): void {
-  const size = group.value?.members.length ?? 0
-  memberIdx.value = Math.min(Math.max(memberIdx.value + delta, 0), size - 1)
+  const target = flatRoster.value[
+    Math.min(Math.max(flatPos.value + delta, 0), flatRoster.value.length - 1)
+  ]
+  if (target) selectMember(target.gi, target.mi)
 }
 function selectGroup(index: number): void {
   if (index < 0 || index >= props.card.groups.length) return
@@ -55,6 +76,26 @@ function selectGroup(index: number): void {
   memberIdx.value = 0
 }
 defineExpose({ shiftMember, selectGroup })
+
+// 本卡已看过的学生：键盘或点击切人时滚动到当前行
+const viewedLocal = reactive(new Set<number>())
+const rosterEl = ref<HTMLElement | null>(null)
+watch([groupIdx, memberIdx], async () => {
+  await nextTick()
+  rosterEl.value
+    ?.querySelector('.wtc__member.is-current')
+    ?.scrollIntoView({ block: 'nearest' })
+})
+
+function siblingLabel(sibling: WalkthroughCard): string {
+  const people = new Set(
+    sibling.groups.flatMap((g) => g.members.map((m) => m.studentId)),
+  ).size
+  return sibling.questionId === null ? `${people}人` : `第 ${sibling.questionId} 题 · ${people}人`
+}
+function memberStudent(studentId: number): ResultsCenterStudent | null {
+  return byId.get(studentId) ?? null
+}
 
 // ---- 答卷条目与图片 ----
 const effectiveQid = computed(() => member.value?.questionId ?? '')
@@ -77,6 +118,7 @@ async function loadCurrent(): Promise<void> {
   const generation = ++itemGeneration
   const sid = shownStudentId.value
   emit('viewed', sid)
+  viewedLocal.add(sid)
   reviewItem.value = null
   imageFailed.value = null
   itemPending.value = true
@@ -204,34 +246,60 @@ function goReview(): void {
 
 <template>
   <div class="wtc">
-    <div class="wtc__meta">
-      <span class="wtc__cat">{{ WALKTHROUGH_CATEGORY_LABELS[card.category] }}</span>
-      <strong>{{ card.title }}</strong>
-    </div>
-
-    <div class="wtc__groups">
-      <button
-        v-for="(g, gi) in card.groups"
-        :key="g.label"
-        type="button"
-        class="wtc__chip"
-        :aria-pressed="gi === groupIdx"
-        @click="selectGroup(gi)"
-      >{{ g.label }} {{ g.members.length }}人</button>
-      <span v-if="card.otherLabel" class="wtc__other">{{ card.otherLabel }}</span>
+    <div class="wtc__head">
+      <h2 class="wtc__title">{{ card.title }}</h2>
+      <div
+        v-if="siblings.length > 1"
+        class="app-segmented wtc__seg"
+        role="group"
+        aria-label="本类答卷卡"
+      >
+        <button
+          v-for="sib in siblings" :key="sib.card.id"
+          type="button"
+          :aria-pressed="sib.card.id === card.id"
+          @click="emit('jump', sib.deckIndex)"
+        >{{ siblingLabel(sib.card) }}</button>
+      </div>
     </div>
 
     <div class="wtc__columns">
-      <div class="wtc__left">
-        <div class="wtc__body">
+      <nav ref="rosterEl" class="wtc__roster" aria-label="本卡学生名单">
+        <section v-for="(g, gi) in card.groups" :key="g.label" class="wtc__roster-group">
+          <header class="wtc__roster-head">
+            <span class="wtc__roster-label"><span v-if="gi < 9" class="wtc__roster-key">{{ gi + 1 }}</span>{{ g.label }}</span>
+            <span class="wtc__roster-count">{{ g.members.length }}人</span>
+          </header>
           <button
-            v-if="group && group.members.length > 1"
+            v-for="(m, mi) in g.members" :key="`${m.studentId}|${m.questionId}`"
             type="button"
-            class="wtc__nav"
-            aria-label="上一名同学"
-            :disabled="memberIdx <= 0"
-            @click="shiftMember(-1)"
-          >‹</button>
+            class="wtc__member"
+            :class="{ 'is-current': gi === groupIdx && mi === memberIdx }"
+            :aria-current="gi === groupIdx && mi === memberIdx ? 'true' : undefined"
+            @click="selectMember(gi, mi)"
+          >
+            <span class="wtc__member-name">{{ memberStudent(m.studentId)?.student_name ?? '—' }}</span>
+            <span class="wtc__member-class">{{ classDisplayLabel(memberStudent(m.studentId)?.class_name) }}</span>
+            <span v-if="card.questionId === null" class="wtc__member-q">第 {{ m.questionId }} 题</span>
+            <span v-if="viewedLocal.has(m.studentId)" class="wtc__member-seen" title="已看">✓</span>
+          </button>
+        </section>
+        <p v-if="card.otherLabel" class="wtc__roster-other">{{ card.otherLabel }}</p>
+      </nav>
+
+      <div class="wtc__left">
+        <div v-if="group && shownStudent" class="wtc__namebar">
+          <strong class="wtc__name">{{ shownStudent.student_name }}</strong>
+          <span class="wtc__name-class">{{ classDisplayLabel(shownStudent.class_name) }}</span>
+          <span class="wtc__name-meta">
+            {{ group.label }} · 第 {{ memberIdx + 1 }} / {{ group.members.length }} 人<template v-if="card.questionId === null && member"> · 第 {{ member.questionId }} 题</template>
+          </span>
+          <span class="wtc__name-actions">
+            <AppButton variant="ghost" size="small" :disabled="!canPrev" @click="shiftMember(-1)">上一位</AppButton>
+            <AppButton variant="ghost" size="small" :disabled="!canNext" @click="shiftMember(1)">下一位</AppButton>
+          </span>
+        </div>
+        <div class="wtc__body">
           <div class="wtc__paper">
             <p v-if="itemPending" class="wtc__loading">答卷加载中…</p>
             <template v-else-if="imageUrls.length">
@@ -247,21 +315,7 @@ function goReview(): void {
             </template>
             <p v-else class="wtc__loading">{{ imageFailed ?? '暂无答卷图' }}</p>
           </div>
-          <button
-            v-if="group && group.members.length > 1"
-            type="button"
-            class="wtc__nav"
-            aria-label="下一名同学"
-            :disabled="memberIdx >= group.members.length - 1"
-            @click="shiftMember(1)"
-          >›</button>
         </div>
-        <p v-if="group && shownStudent" class="wtc__pos">
-          第 {{ memberIdx + 1 }} / {{ group.members.length }} 人 ·
-          {{ shownStudent.student_name }}
-          {{ shownStudent.class_name ? classDisplayLabel(shownStudent.class_name) : '' }}
-          <template v-if="card.questionId === null && member"> · 第 {{ member.questionId }} 题</template>
-        </p>
       </div>
 
       <aside v-if="member" class="wtc__aside">
@@ -301,25 +355,66 @@ function goReview(): void {
 
 <style scoped>
 .wtc { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; }
-.wtc__meta { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-.wtc__cat {
-  background: var(--color-accent-subtle); color: var(--color-accent-hover);
-  border-radius: 999px; padding: 2px 10px; font-size: var(--font-size-caption); flex-shrink: 0;
+.wtc__head { display: flex; align-items: baseline; gap: var(--space-3); flex-wrap: wrap; }
+.wtc__title {
+  margin: 0; font-size: var(--font-size-h3); font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
 }
-.wtc__groups { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.wtc__chip {
-  border: 1px solid var(--color-border-default); background: var(--card);
-  border-radius: 999px; padding: 3px 10px; font-size: var(--font-size-caption); cursor: pointer;
-}
-.wtc__chip[aria-pressed="true"] {
-  border-color: var(--color-accent); color: var(--color-accent-hover);
-  background: var(--color-accent-subtle);
-}
-.wtc__other { color: var(--color-text-muted); font-size: var(--font-size-caption); }
+.wtc__seg { margin-left: auto; align-self: center; }
 .wtc__columns { display: flex; gap: 12px; flex: 1; min-height: 0; }
+.wtc__roster {
+  flex: 0 0 220px; min-height: 0; overflow-y: auto; padding-right: 2px;
+}
+.wtc__roster-group + .wtc__roster-group { margin-top: var(--space-3); }
+.wtc__roster-head {
+  display: flex; align-items: baseline; gap: var(--space-2); margin-bottom: 2px;
+  font-size: var(--font-size-dense); font-weight: var(--font-weight-medium);
+  color: var(--color-text-secondary);
+}
+.wtc__roster-key {
+  display: inline-block; min-width: 16px; margin-right: var(--space-1); padding: 0 3px;
+  border: 1px solid var(--color-border-subtle); border-radius: 4px;
+  color: var(--color-text-muted); font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-regular); text-align: center;
+}
+.wtc__roster-count {
+  margin-left: auto; color: var(--color-text-muted);
+  font-size: var(--font-size-caption); font-weight: var(--font-weight-regular);
+}
+.wtc__member {
+  display: flex; align-items: baseline; gap: var(--space-2); width: 100%;
+  padding: 4px 6px; border: 0; border-left: 2px solid transparent; border-radius: 0 6px 6px 0;
+  background: transparent; color: var(--color-text-primary);
+  font-size: var(--font-size-body); text-align: left; cursor: pointer;
+}
+.wtc__member:hover { background: var(--color-bg-subtle); }
+.wtc__member.is-current {
+  background: var(--color-accent-subtle); border-left-color: var(--color-accent);
+}
+.wtc__member-name { font-weight: var(--font-weight-medium); }
+.wtc__member-class { color: var(--color-text-muted); font-size: var(--font-size-caption); }
+.wtc__member-q { color: var(--color-text-muted); font-size: var(--font-size-caption); }
+.wtc__member-seen {
+  margin-left: auto; color: var(--color-text-muted); font-size: var(--font-size-caption);
+}
+.wtc__roster-other {
+  margin: var(--space-2) 0 0; color: var(--color-text-muted); font-size: var(--font-size-caption);
+}
 .wtc__left {
   flex: 1; min-width: 0; min-height: 0;
   display: flex; flex-direction: column; gap: 6px;
+}
+.wtc__namebar {
+  display: flex; align-items: baseline; gap: var(--space-2); flex-wrap: wrap;
+}
+.wtc__name {
+  font-size: var(--font-size-h2); font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+.wtc__name-class { font-size: var(--font-size-body); color: var(--color-text-secondary); }
+.wtc__name-meta { font-size: var(--font-size-dense); color: var(--color-text-muted); }
+.wtc__name-actions {
+  margin-left: auto; align-self: center; display: inline-flex; gap: var(--space-1);
 }
 .wtc__aside {
   width: clamp(320px, 30vw, 440px); flex-shrink: 0; min-height: 0;
@@ -327,16 +422,11 @@ function goReview(): void {
 }
 @media (max-width: 1100px) {
   .wtc__columns { flex-direction: column; overflow-y: auto; }
+  .wtc__roster { flex: none; width: auto; max-height: 30vh; }
   .wtc__left { flex: none; min-height: 40vh; }
   .wtc__aside { width: auto; overflow-y: visible; }
 }
-.wtc__body { display: flex; align-items: stretch; gap: 8px; flex: 1; min-height: 0; }
-.wtc__nav {
-  flex-shrink: 0; width: 44px; font-size: var(--font-size-display); border: 1px solid var(--color-border-default);
-  border-radius: 10px; background: var(--card); cursor: pointer;
-  color: var(--color-text-secondary);
-}
-.wtc__nav:disabled { opacity: 0.3; cursor: default; }
+.wtc__body { display: flex; flex: 1; min-height: 0; }
 .wtc__paper {
   flex: 1; min-height: 0; display: flex; gap: 8px; overflow: auto;
   background: var(--color-bg-subtle); border: 1px solid var(--color-border-subtle);
@@ -352,7 +442,6 @@ function goReview(): void {
   align-self: stretch;
 }
 .wtc__loading { margin: auto; color: var(--color-text-muted); font-size: var(--font-size-body); }
-.wtc__pos { margin: 0; text-align: center; font-size: var(--font-size-dense); color: var(--color-text-secondary); }
 .wtc__reveal {
   border: 1px solid var(--color-border-subtle); border-radius: 10px;
   background: var(--card); padding: 10px 14px; font-size: var(--font-size-dense); flex-shrink: 0;
