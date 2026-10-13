@@ -1553,12 +1553,29 @@ def download_personalized_paper_batch(
         ValueError,
     ) as exc:
         _raise_paper_api_error(exc)
-    filename = "个性化训练卷-批量审核稿.zip" if kind == "bundle" else "个性化训练卷-生成清单.json"
+    background = None
+    if kind in {"bundle", "frozen-bundle"}:
+        from starlette.background import BackgroundTask
+
+        path.touch()
+        background = BackgroundTask(
+            module.consume_batch_bundle,
+            batch_run_id,
+            path.name,
+            path,
+            path.stat().st_mtime_ns,
+        )
+    filename = {
+        "bundle": "个性化训练卷-批量审核稿.zip",
+        "frozen-bundle": "个性化训练卷-批量正式卷.zip",
+        "manifest": "个性化训练卷-生成清单.json",
+    }[kind]
     return FileResponse(
         path,
         filename=filename,
         media_type=media_type,
         headers=NO_STORE_HEADERS,
+        background=background,
     )
 
 

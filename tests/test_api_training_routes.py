@@ -926,6 +926,82 @@ def test_shuffled_pages_group_by_page_identity_and_survive_restart(
         str(instance["paper_instance_id"]),
         "frozen-pdf",
     )
+    import os
+    import time
+    import zipfile
+    from backend.api.dependencies import get_personalized_paper_module
+
+    paper_batch = paper.create_review_batch(
+        str(draft["draft_id"]), operation_token="a" * 32,
+        expected_draft_revision=int(draft["revision"]), actor_ref="teacher-1",
+    )
+    paper_batch_id = str(paper_batch["batch_run_id"])
+    bundle_path, _ = paper.batch_artifact_path(paper_batch_id, "bundle")
+    frozen_bundle_path, _ = paper.batch_artifact_path(paper_batch_id, "frozen-bundle")
+    manifest_path, _ = paper.batch_artifact_path(paper_batch_id, "manifest")
+    with zipfile.ZipFile(bundle_path) as archive:
+        original_bundle = {name: archive.read(name) for name in archive.namelist()}
+    with zipfile.ZipFile(frozen_bundle_path) as archive:
+        original_frozen_bundle = {name: archive.read(name) for name in archive.namelist()}
+    original_manifest = manifest_path.read_bytes()
+    original_pdf = frozen_path.read_bytes()
+    reopened_paper = PersonalizedPaperModule(db_path=db_path, data_root=data_root, clock=lambda: NOW)
+    download_app = create_app()
+    download_app.dependency_overrides[get_personalized_paper_module] = lambda: reopened_paper
+    download_client = TestClient(download_app)
+    cutoff = time.time() - 7 * 24 * 60 * 60
+    assert paper.reclaim_expired_batch_bundles(cutoff=cutoff) == 0
+    review_path, _ = paper.artifact_path(str(instance["paper_instance_id"]), "review-docx")
+    held_review = review_path.with_suffix(".synthetic-held")
+    review_path.replace(held_review)
+    try:
+        cached_download = download_client.get(paper_batch["downloads"]["bundle"])
+        assert cached_download.status_code == 200
+        with zipfile.ZipFile(BytesIO(cached_download.content)) as archive:
+            assert {name: archive.read(name) for name in archive.namelist()} == original_bundle
+        assert bundle_path.is_file()
+        os.utime(bundle_path, (cutoff - 86400, cutoff - 86400))
+        os.utime(frozen_bundle_path, (cutoff - 86400, cutoff - 86400))
+        assert paper.reclaim_expired_batch_bundles(cutoff=cutoff) == 1
+        assert bundle_path.is_file() and not frozen_bundle_path.exists()
+    finally:
+        held_review.replace(review_path)
+    frozen_bundle_path, _ = paper.batch_artifact_path(paper_batch_id, "frozen-bundle")
+    held_pdf = frozen_path.with_suffix(".synthetic-held")
+    frozen_path.replace(held_pdf)
+    try:
+        assert download_client.get(paper_batch["downloads"]["frozen_bundle"]).status_code == 404
+        with zipfile.ZipFile(frozen_bundle_path) as archive:
+            assert {name: archive.read(name) for name in archive.namelist()} == original_frozen_bundle
+        assert frozen_bundle_path.is_file()
+        os.utime(frozen_bundle_path, (cutoff - 86400, cutoff - 86400))
+        assert paper.reclaim_expired_batch_bundles(cutoff=cutoff) == 1
+        assert not bundle_path.exists() and frozen_bundle_path.is_file()
+    finally:
+        held_pdf.replace(frozen_path)
+    assert paper.reclaim_expired_batch_bundles(cutoff=cutoff) == 1
+    assert not bundle_path.exists() and not frozen_bundle_path.exists()
+    assert manifest_path.read_bytes() == original_manifest
+    assert frozen_path.read_bytes() == original_pdf
+
+    downloaded = download_client.get(paper_batch["downloads"]["bundle"])
+    assert downloaded.status_code == 200
+    with zipfile.ZipFile(BytesIO(downloaded.content)) as archive:
+        assert {name: archive.read(name) for name in archive.namelist()} == original_bundle
+    assert not bundle_path.exists()
+    downloaded_again = download_client.get(paper_batch["downloads"]["bundle"])
+    assert downloaded_again.status_code == 200
+    with zipfile.ZipFile(BytesIO(downloaded_again.content)) as archive:
+        assert {name: archive.read(name) for name in archive.namelist()} == original_bundle
+    frozen_download = download_client.get(paper_batch["downloads"]["frozen_bundle"])
+    assert frozen_download.status_code == 200
+    with zipfile.ZipFile(BytesIO(frozen_download.content)) as archive:
+        assert {name: archive.read(name) for name in archive.namelist()} == original_frozen_bundle
+    assert not frozen_bundle_path.exists()
+    assert reopened_paper.get_batch(paper_batch_id) == paper_batch
+    assert reopened_paper.get(str(instance["paper_instance_id"])) == instance
+    assert manifest_path.read_bytes() == original_manifest
+    assert frozen_path.read_bytes() == original_pdf
     pages = training_submissions__pdf_pages(frozen_path)
     module = TrainingSubmissionModule(db_path=db_path, data_root=data_root)
     batch = module.create_batch(

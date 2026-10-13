@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 import sqlite3
 from types import SimpleNamespace
 from pathlib import Path
@@ -330,6 +331,46 @@ def test_historical_database_requires_conversion_manifest_and_keeps_its_records(
         shutil.copy2(file, legacy / file.name)
     database = tmp_path / "TEST-legacy.db"
     ensure_schema_current(target, database, migrations_dir=legacy)
+    if target == "question_bank":
+        draft_id = "d" * 64
+        original = {"draft_id": draft_id, "revision": 1, "students": [], "locked": False}
+        edited = {**original, "revision": 2, "locked": True}
+        first_json, second_json = json.dumps(original), json.dumps(edited)
+        assembly = json.dumps({"source": "TEST-assembly", "revision": "s" * 64})
+        with sqlite3.connect(database) as connection:
+            connection.execute("""INSERT INTO personalized_recommendation_drafts
+                (draft_id, request_token, input_fingerprint, result_version, engine_version,
+                 source_version, request_json, draft_json, revision, created_by)
+                VALUES (?, ?, ?, ?, '', ?, '{}', ?, 2, 'TEST')""",
+                (draft_id, "a" * 32, "b" * 64, "c" * 64, "d" * 64, second_json))
+            connection.executemany("""INSERT INTO personalized_recommendation_events
+                (draft_id, request_token, command_hash, action, actor_ref, reason,
+                 expected_revision, resulting_revision, before_json, after_json, resulting_draft_json)
+                VALUES (?, ?, ?, ?, 'TEST', 'TEST', ?, ?, ?, ?, ?)""", [
+                (draft_id, "a" * 32, "e" * 64, "created", 0, 1, "{}", first_json, first_json),
+                (draft_id, "b" * 32, "f" * 64, "locked", 1, 2, '{"locked":false}', '{"locked":true}', second_json),
+                (draft_id, "c" * 32, "0" * 64, "created", 0, 2, "{}", assembly, second_json),
+            ])
+            connection.execute("""INSERT INTO personalized_paper_instances
+                (paper_instance_id, operation_token, operation_fingerprint, draft_id,
+                 draft_revision, draft_result_version, paper_batch_id, series_version, student_id,
+                 status, layout_version, budget_version, budget_json, snapshot_json, signing_secret,
+                 reviewed_docx_path, reviewed_docx_sha256, frozen_pdf_path, frozen_pdf_sha256,
+                 page_count, created_by)
+                VALUES (?, ?, ?, ?, 2, ?, ?, 1, 'TEST-student', 'frozen', 'TEST', 'TEST',
+                        '{}', ?, ?, 'TEST.docx', ?, 'TEST.pdf', ?, 1, 'TEST')""",
+                ("p" * 64, "p" * 32, "q" * 64, draft_id, "r" * 64, "s" * 64,
+                 second_json, "t" * 64, "u" * 64, "v" * 64))
+            connection.execute("""INSERT INTO personalized_paper_batches
+                (batch_run_id, operation_token, operation_fingerprint, request_json,
+                 draft_id, draft_revision, paper_batch_id, created_by)
+                VALUES (?, ?, ?, '{}', ?, 2, ?, 'TEST')""",
+                ("w" * 64, "w" * 32, "x" * 64, draft_id, "s" * 64))
+            connection.commit()
+            conflict_database = tmp_path / "TEST-conflicting-revisions.db"
+            with sqlite3.connect(conflict_database) as conflict:
+                connection.backup(conflict)
+                conflict.execute("UPDATE personalized_recommendation_events SET resulting_draft_json='{}' WHERE request_token=?", ("c" * 32,))
     before = database.read_bytes()
     manifest_root = tmp_path / "TEST-current-sql"
     shutil.copytree(PROJECT_ROOT / "migrations" / target, manifest_root / target)
@@ -344,3 +385,29 @@ def test_historical_database_requires_conversion_manifest_and_keeps_its_records(
         ensure_schema_current(target, database, allow_existing_migrations=False)
     assert required.value.pending == (source[-1].stem,)
     assert database.read_bytes() == before
+    report = run_migrations(target, db_path=database, migrations_dir=manifest_root / target,
+                            backup_dir_override=tmp_path / "TEST-backups")
+    assert report.error is None
+    if target == "question_bank":
+        with sqlite3.connect(database) as connection:
+            assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+            assert connection.execute("SELECT draft_json FROM personalized_recommendation_revisions ORDER BY revision").fetchall() == [(first_json,), (second_json,)]
+            assert connection.execute("SELECT action,before_json,after_json FROM personalized_recommendation_events ORDER BY event_id").fetchall() == [
+                ("created", "{}", "{}"), ("locked", '{"locked":false}', '{"locked":true}'),
+                ("created", "{}", assembly),
+            ]
+            assert connection.execute("""SELECT r.draft_json FROM personalized_recommendation_drafts d
+                JOIN personalized_recommendation_revisions r USING (draft_id,revision)""").fetchone() == (second_json,)
+            assert connection.execute("SELECT status,snapshot_json,frozen_pdf_path FROM personalized_paper_instances").fetchone() == ("frozen", second_json, "TEST.pdf")
+            assert connection.execute("SELECT draft_id,draft_revision FROM personalized_paper_batches").fetchone() == (draft_id, 2)
+            with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+                connection.execute("UPDATE personalized_recommendation_revisions SET draft_json='{}'")
+        conflict_report = run_migrations(target, db_path=conflict_database,
+            migrations_dir=manifest_root / target, backup_dir_override=tmp_path / "TEST-conflict-backups")
+        assert conflict_report.error is not None
+        assert "conflicting recommendation revision bodies" in conflict_report.results[-1].message
+        with sqlite3.connect(conflict_database) as connection:
+            assert connection.execute("SELECT draft_json FROM personalized_recommendation_drafts").fetchone() == (second_json,)
+            assert connection.execute("SELECT COUNT(*) FROM personalized_recommendation_events").fetchone() == (3,)
+            assert connection.execute("SELECT resulting_draft_json FROM personalized_recommendation_events WHERE request_token=?", ("c" * 32,)).fetchone() == ("{}",)
+            assert connection.execute("SELECT name FROM sqlite_master WHERE name='personalized_recommendation_revisions'").fetchone() is None

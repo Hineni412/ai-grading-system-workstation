@@ -65,6 +65,7 @@ QUESTION_BANK_VERSION_DOMAIN_TABLES: dict[str, frozenset[str]] = {
             "personalized_paper_pages",
             "personalized_recommendation_drafts",
             "personalized_recommendation_events",
+            "personalized_recommendation_revisions",
             "training_exports",
             "training_scan_batches",
             "training_submission_events",

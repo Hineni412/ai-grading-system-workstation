@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, BinaryIO, Literal
 
+from backend.files.data_transfer_service import ensure_controlled_path
 from question_bank.database.schema import connect, initialize_database
 from question_bank.document_pipeline import build_math_expression
 from question_bank.personalized_papers.latex_render import (
@@ -1253,9 +1254,88 @@ class PersonalizedPaperModule:
             raise PaperArtifactNotFound(kind)
         relative = str(row[column])
         path = self._absolute_artifact(relative)
+        if kind == "bundle" and not path.is_file() and row["manifest_path"]:
+            manifest_path = self._absolute_artifact(str(row["manifest_path"]))
+            if not manifest_path.is_file():
+                raise PaperArtifactNotFound("manifest")
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            temporary_root = self.artifact_root / ".tmp"
+            temporary_root.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(
+                prefix=f"batch-{clean_id[:12]}-", dir=temporary_root,
+                ignore_cleanup_errors=True,
+            ) as temporary:
+                staged = Path(temporary) / "papers.zip"
+                self._write_review_bundle(staged, manifest_path, manifest["items"])
+                _atomic_publish(staged, path)
         if not path.is_file():
             raise PaperArtifactNotFound(kind)
         return path, media_type
+
+    def reclaim_expired_batch_bundles(self, *, cutoff: float) -> int:
+        with connect(self.db_path) as connection:
+            rows = connection.execute(
+                """
+                SELECT batch_run_id, bundle_path, frozen_bundle_path
+                FROM personalized_paper_batches WHERE status != 'creating'
+                """
+            ).fetchall()
+        removed = 0
+        for row in rows:
+            for column, name in (
+                ("bundle_path", "papers.zip"),
+                ("frozen_bundle_path", "frozen-papers.zip"),
+            ):
+                if not row[column]:
+                    continue
+                try:
+                    path = self._absolute_artifact(str(row[column]))
+                    modified = path.stat()
+                    if modified.st_mtime > cutoff:
+                        continue
+                    if self.consume_batch_bundle(
+                        str(row["batch_run_id"]), name, path, modified.st_mtime_ns
+                    ):
+                        removed += 1
+                except (OSError, PersonalizedPaperError):
+                    continue
+        return removed
+
+    def consume_batch_bundle(
+        self, batch_run_id: str, name: str, path: Path, modified_ns: int
+    ) -> bool:
+        if name not in {"papers.zip", "frozen-papers.zip"}:
+            return False
+        try:
+            clean_id = _identifier(batch_run_id, "batch_run_id")
+            expected = (
+                self.data_root / "question_bank" / "personalized_papers"
+                / "batches" / clean_id / name
+            )
+            ensure_controlled_path(expected, self.data_root)
+            if path != expected.resolve():
+                return False
+            manifest_name = "manifest.json" if name == "papers.zip" else "frozen-manifest.json"
+            with zipfile.ZipFile(path) as archive:
+                manifest_bytes = archive.read(manifest_name)
+            if name == "papers.zip":
+                if expected.with_name("manifest.json").read_bytes() != manifest_bytes:
+                    return False
+            manifest = json.loads(manifest_bytes)
+            if not manifest["items"]:
+                return False
+            for item in manifest["items"]:
+                self._artifact_path_ready(
+                    str(item["paper_instance_id"]),
+                    "review-docx" if name == "papers.zip" else "frozen-pdf",
+                )
+            if path.stat().st_mtime_ns != modified_ns:
+                return False
+            path.unlink()
+            return True
+        except (OSError, PersonalizedPaperError, ValueError, TypeError, KeyError,
+                sqlite3.Error, zipfile.BadZipFile):
+            return False
 
     def _publish_frozen_batch(self, batch_run_id: str) -> None:
         with connect(self.db_path) as connection:
@@ -1328,7 +1408,7 @@ class PersonalizedPaperModule:
             connection.execute(
                 """
                 UPDATE personalized_paper_batches
-                SET frozen_bundle_path = ?, updated_at = datetime('now','localtime')
+                SET frozen_bundle_path = ?
                 WHERE batch_run_id = ?
                 """,
                 (relative, batch_run_id),
@@ -1391,40 +1471,7 @@ class PersonalizedPaperModule:
             staged_manifest = Path(temporary) / "manifest.json"
             staged_manifest.write_text(_json(manifest), encoding="utf-8")
             staged_bundle = Path(temporary) / "papers.zip"
-            used_names: set[str] = set()
-            name_counts: dict[str, int] = {}
-            for item in instances:
-                stem = _safe_filename(
-                    str(item.get("student_name") or item.get("student_code") or item.get("student_id") or "学生")
-                )
-                name_counts[stem.casefold()] = name_counts.get(stem.casefold(), 0) + 1
-            with zipfile.ZipFile(staged_bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-                archive.write(staged_manifest, "manifest.json")
-                for item in instances:
-                    paper_id = str(item.get("paper_instance_id") or "")
-                    try:
-                        source, _ = self._artifact_path_ready(
-                            paper_id,
-                            "review-docx",
-                        )
-                    except PaperArtifactNotFound:
-                        continue
-                    stem = _safe_filename(
-                        str(item.get("student_name") or item.get("student_code") or item.get("student_id") or "学生")
-                    )
-                    if name_counts.get(stem.casefold(), 0) > 1:
-                        stable = _safe_filename(
-                            str(item.get("student_code") or item.get("student_id") or "编号")
-                        )
-                        stem = f"{stem}-{stable}"
-                    version = int(item.get("series_version") or 1)
-                    candidate = f"{stem}-个性化训练卷-V{version}.docx"
-                    suffix = 2
-                    while candidate.casefold() in used_names:
-                        candidate = f"{stem}-个性化训练卷-V{version}-{suffix}.docx"
-                        suffix += 1
-                    used_names.add(candidate.casefold())
-                    archive.write(source, candidate)
+            self._write_review_bundle(staged_bundle, staged_manifest, instances)
             _atomic_publish(staged_manifest, manifest_path)
             _atomic_publish(staged_bundle, bundle_path)
         return {
@@ -1433,6 +1480,40 @@ class PersonalizedPaperModule:
             "bundle_path": (relative_root / "papers.zip").as_posix() if instances else None,
             "manifest_path": (relative_root / "manifest.json").as_posix(),
         }
+
+    def _write_review_bundle(
+        self, destination: Path, manifest_path: Path,
+        instances: Sequence[Mapping[str, Any]],
+    ) -> None:
+        used_names: set[str] = set()
+        name_counts: dict[str, int] = {}
+        for item in instances:
+            stem = _safe_filename(
+                str(item.get("student_name") or item.get("student_code") or item.get("student_id") or "学生")
+            )
+            name_counts[stem.casefold()] = name_counts.get(stem.casefold(), 0) + 1
+        with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.write(manifest_path, "manifest.json")
+            for item in instances:
+                source, _ = self._artifact_path_ready(
+                    str(item.get("paper_instance_id") or ""), "review-docx"
+                )
+                stem = _safe_filename(
+                    str(item.get("student_name") or item.get("student_code") or item.get("student_id") or "学生")
+                )
+                if name_counts.get(stem.casefold(), 0) > 1:
+                    stable = _safe_filename(
+                        str(item.get("student_code") or item.get("student_id") or "编号")
+                    )
+                    stem = f"{stem}-{stable}"
+                version = int(item.get("series_version") or 1)
+                candidate = f"{stem}-个性化训练卷-V{version}.docx"
+                suffix = 2
+                while candidate.casefold() in used_names:
+                    candidate = f"{stem}-个性化训练卷-V{version}-{suffix}.docx"
+                    suffix += 1
+                used_names.add(candidate.casefold())
+                archive.write(source, candidate)
 
     def artifact_path(
         self,

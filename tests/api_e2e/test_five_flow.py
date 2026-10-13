@@ -123,6 +123,7 @@ def test_auto_regions_supplement_commit_scan_and_complete_grading_plan(api_e2e, 
 
 def test_api_five_flow_persists_reviewed_score_in_downloaded_report(
     api_e2e,
+    monkeypatch,
 ) -> None:
     session_id = api_e2e.create_configured_session()
     assert api_e2e.controls.fake_llm_calls == []
@@ -256,6 +257,56 @@ def test_api_five_flow_persists_reviewed_score_in_downloaded_report(
     ]
     assert str(api_e2e.paths.data_root) in str(report_job["result"]["file_path"])
 
+    import os
+    import time
+    from backend.files.service import JobFileService
+
+    files = JobFileService(api_e2e.paths.reports_dir)
+    store = api_e2e.manager.store
+    export_path = Path(report_job["result"]["file_path"])
+    retained_path = api_e2e.paths.reports_dir / "synthetic-retained.html"
+    retained_path.write_text("synthetic paid report", encoding="utf-8")
+    retained = store.create_job("report_export", {"report_type": "personal_analysis_html"})
+    store.finish(retained.id, "succeeded", result={"file_path": str(retained_path)})
+    original_path = api_e2e.paths.exams_dir / "synthetic-original.pdf"
+    original_path.write_bytes(b"synthetic original paper")
+    outside = store.create_job("report_export", {})
+    store.finish(outside.id, "succeeded", result={"file_path": str(original_path)})
+    cutoff = time.time() - 7 * 24 * 60 * 60
+    assert files.reclaim_expired_files(store, cutoff=cutoff) == 0
+    assert export_path.is_file()
+    with store._connect() as conn:
+        conn.execute(
+            "UPDATE jobs SET finished_at = datetime('now','localtime','-8 days') WHERE id IN (?, ?, ?)",
+            (report_job["id"], retained.id, outside.id),
+        )
+    assert files.reclaim_expired_files(store, cutoff=cutoff) == 0
+    os.utime(export_path, (cutoff - 86400, cutoff - 86400))
+    os.utime(retained_path, (cutoff - 86400, cutoff - 86400))
+    os.utime(original_path, (cutoff - 86400, cutoff - 86400))
+    original_unlink = Path.unlink
+
+    def busy_export(path, *args, **kwargs):
+        if path == export_path:
+            raise PermissionError("synthetic export is being downloaded")
+        return original_unlink(path, *args, **kwargs)
+
+    with monkeypatch.context() as busy:
+        busy.setattr(Path, "unlink", busy_export)
+        assert files.reclaim_expired_files(store, cutoff=cutoff) == 0
+    assert export_path.is_file()
+    assert store.get_job(report_job["id"]).result["file_path"] == str(export_path)
+    assert files.reclaim_expired_files(store, cutoff=cutoff) == 1
+    assert not export_path.exists()
+    assert retained_path.read_text(encoding="utf-8") == "synthetic paid report"
+    assert original_path.read_bytes() == b"synthetic original paper"
+    assert store.get_job(retained.id).result["file_path"] == str(retained_path)
+    assert store.get_job(outside.id).result["file_path"] == str(original_path)
+    assert api_e2e.client.get(report_job["result"]["download_url"]).status_code == 410
+
+    exported = api_e2e.client.post(f"/api/sessions/{session_id}/reports/export")
+    assert exported.status_code == 202
+    report_job = api_e2e.poll_job(exported.json()["id"], "succeeded")
     download = api_e2e.client.get(report_job["result"]["download_url"])
     assert download.status_code == 200
     assert download.headers["cache-control"] == "no-store"
@@ -263,6 +314,7 @@ def test_api_five_flow_persists_reviewed_score_in_downloaded_report(
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
     assert api_e2e.xlsx_score(download.content, "SYN-001") == 90.0
+    assert not Path(report_job["result"]["file_path"]).exists()
 
 
 def original_paper_score_contract__ocr_row(text, x, y, w=250, h=24, confidence=0.95):

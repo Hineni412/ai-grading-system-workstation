@@ -209,13 +209,32 @@ def test_restore_rechecks_source_overlays_files_and_backs_up_latest_state(
     (paths.taxonomy_state_path.parent / "api_profiles.json").write_text('secret', encoding="utf-8")
     from backend.ops.jobs import _backup_entries
     from update_tools.backup_core import preview_backup
+    data_transfer_service__write(
+        paths.reports_dir / ".training_diagnosis" / "entries" / "synthetic.entry",
+        "regenerable diagnosis",
+    )
+    data_transfer_service__write(
+        paths.qb_data_dir / "personalized_papers" / "image_cache" / "synthetic.jpg",
+        "regenerable print image",
+    )
+    data_transfer_service__write(
+        paths.reports_dir / ".personal_reports" / "session_1" / "SYN-001.json",
+        '{"narrative":"saved paid report"}',
+    )
     preview = preview_backup(path_manager=paths)
     assert "config/taxonomy-governance/state.json" in preview["files"]
     assert not any("api_profiles" in name for name in preview["files"])
+    assert "user_data/reports/.personal_reports/session_1/SYN-001.json" in preview["files"]
+    assert "user_data/reports/.training_diagnosis/entries/synthetic.entry" not in preview["files"]
+    assert "user_data/question_bank/personalized_papers/image_cache/synthetic.jpg" not in preview["files"]
     staging = tmp_path / "backup-staging"
     staging.mkdir()
     entries = _backup_entries(paths, staging, scopes=["grading"])
     assert any(entry.arc_name == "config/taxonomy-governance/state.json" for entry in entries)
+    archive_members = {entry.arc_name for entry in entries}
+    assert "user_data/reports/.personal_reports/session_1/SYN-001.json" in archive_members
+    assert "user_data/reports/.training_diagnosis/entries/synthetic.entry" not in archive_members
+    assert "user_data/question_bank/personalized_papers/image_cache/synthetic.jpg" not in archive_members
     older_id = "22222222-2222-4222-8222-222222222222"
     older_root = paths.ops_state_dir / "operations" / older_id
     older_staging = older_root / "staging"

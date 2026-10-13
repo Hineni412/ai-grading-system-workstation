@@ -2189,7 +2189,7 @@ class PersonalizedRecommendationModule:
                 return repeated
             with connect(self.db_path) as connection:
                 connection.execute('BEGIN IMMEDIATE')
-                same = connection.execute("SELECT draft_json FROM personalized_recommendation_drafts WHERE json_extract(request_json, '$.assembly_snapshot.revision')=? AND json_extract(request_json, '$.assembly_snapshot.class_ids')=?",
+                same = connection.execute("SELECT r.draft_json FROM personalized_recommendation_drafts d JOIN personalized_recommendation_revisions r USING (draft_id, revision) WHERE json_extract(request_json, '$.assembly_snapshot.revision')=? AND json_extract(request_json, '$.assembly_snapshot.class_ids')=?",
                     (assembly_snapshot['revision'], _json(assembly_snapshot['class_ids']))).fetchone()
                 if same is not None:
                     return self._assembly_reuse_receipt(connection, token, actor, assembly_snapshot, same['draft_json'])
@@ -2324,14 +2324,15 @@ class PersonalizedRecommendationModule:
             ).fetchone()[0]
             write_connection.execute("BEGIN IMMEDIATE")
             if assembly_snapshot is not None:
-                same = write_connection.execute("SELECT draft_json FROM personalized_recommendation_drafts WHERE json_extract(request_json, '$.assembly_snapshot.revision')=? AND json_extract(request_json, '$.assembly_snapshot.class_ids')=?",
+                same = write_connection.execute("SELECT r.draft_json FROM personalized_recommendation_drafts d JOIN personalized_recommendation_revisions r USING (draft_id, revision) WHERE json_extract(request_json, '$.assembly_snapshot.revision')=? AND json_extract(request_json, '$.assembly_snapshot.class_ids')=?",
                     (assembly_snapshot['revision'], _json(assembly_snapshot['class_ids']))).fetchone()
                 if same is not None:
                     return self._assembly_reuse_receipt(write_connection, token, actor, assembly_snapshot, same['draft_json'])
             row = write_connection.execute(
                 """
-                SELECT input_fingerprint, draft_json
-                FROM personalized_recommendation_drafts
+                SELECT d.input_fingerprint, r.draft_json
+                FROM personalized_recommendation_drafts d
+                JOIN personalized_recommendation_revisions r USING (draft_id, revision)
                 WHERE request_token = ?
                 """,
                 (token,),
@@ -2347,8 +2348,8 @@ class PersonalizedRecommendationModule:
                 INSERT INTO personalized_recommendation_drafts (
                     draft_id, request_token, input_fingerprint,
                     result_version, engine_version, source_version,
-                    request_json, draft_json, status, revision, created_by
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?)
+                    request_json, status, revision, created_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', 1, ?)
                 """,
                 (
                     draft_id,
@@ -2358,18 +2359,20 @@ class PersonalizedRecommendationModule:
                     "",
                     draft_id,
                     encoded_request,
-                    encoded_draft,
                     actor,
                 ),
+            )
+            write_connection.execute(
+                "INSERT INTO personalized_recommendation_revisions (draft_id, revision, draft_json) VALUES (?, 1, ?)",
+                (draft_id, encoded_draft),
             )
             write_connection.execute(
                 """
                 INSERT INTO personalized_recommendation_events (
                     draft_id, request_token, command_hash, action,
                     actor_ref, reason, expected_revision,
-                    resulting_revision, before_json, after_json,
-                    resulting_draft_json
-                ) VALUES (?, ?, ?, 'created', ?, ?, 0, 1, '{}', ?, ?)
+                    resulting_revision, before_json, after_json
+                ) VALUES (?, ?, ?, 'created', ?, ?, 0, 1, '{}', '{}')
                 """,
                 (
                     draft_id,
@@ -2377,8 +2380,6 @@ class PersonalizedRecommendationModule:
                     _hash_json(encoded_request),
                     actor,
                     "教师生成个性化推荐草稿",
-                    encoded_draft,
-                    encoded_draft,
                 ),
             )
             write_connection.commit()
@@ -2435,7 +2436,7 @@ class PersonalizedRecommendationModule:
         clean_id = _draft_id(draft_id)
         with connect(self.db_path) as connection:
             row = connection.execute(
-                "SELECT draft_json, created_at FROM personalized_recommendation_drafts WHERE draft_id=?",
+                "SELECT r.draft_json, d.created_at FROM personalized_recommendation_drafts d JOIN personalized_recommendation_revisions r USING (draft_id, revision) WHERE d.draft_id=?",
                 (clean_id,),
             ).fetchone()
             if row is None:
@@ -2501,9 +2502,10 @@ class PersonalizedRecommendationModule:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 """
-                SELECT *
-                FROM personalized_recommendation_drafts
-                WHERE draft_id = ?
+                SELECT d.*, r.draft_json
+                FROM personalized_recommendation_drafts d
+                JOIN personalized_recommendation_revisions r USING (draft_id, revision)
+                WHERE d.draft_id = ?
                 """,
                 (clean_id,),
             ).fetchone()
@@ -2545,17 +2547,19 @@ class PersonalizedRecommendationModule:
             for field in ("result_version", "source_version", "engine_version"):
                 draft.pop(field, None)
             encoded = _json(draft)
+            connection.execute(
+                "INSERT INTO personalized_recommendation_revisions (draft_id, revision, draft_json) VALUES (?, ?, ?)",
+                (clean_id, next_revision, encoded),
+            )
             cursor = connection.execute(
                 """
                 UPDATE personalized_recommendation_drafts
-                SET draft_json = ?,
-                    result_version = ?,
+                SET result_version = ?,
                     revision = ?,
                     updated_at = datetime('now','localtime')
                 WHERE draft_id = ? AND revision = ?
                 """,
                 (
-                    encoded,
                     clean_id,
                     next_revision,
                     clean_id,
@@ -2572,9 +2576,8 @@ class PersonalizedRecommendationModule:
                 INSERT INTO personalized_recommendation_events (
                     draft_id, request_token, command_hash, action,
                     actor_ref, reason, expected_revision,
-                    resulting_revision, before_json, after_json,
-                    resulting_draft_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    resulting_revision, before_json, after_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     clean_id,
@@ -2587,7 +2590,6 @@ class PersonalizedRecommendationModule:
                     next_revision,
                     _json(before),
                     _json(after),
-                    encoded,
                 ),
             )
         return draft
@@ -4168,24 +4170,28 @@ class PersonalizedRecommendationModule:
 
     def _assembly_reuse_receipt(self, connection, token, actor, snapshot, encoded_draft):
         result = json.loads(encoded_draft)
-        used = connection.execute("SELECT resulting_draft_json FROM personalized_recommendation_events WHERE request_token=? AND action='created'", (token,)).fetchone()
-        if used is not None and json.loads(used['resulting_draft_json']).get('config', {}).get('assembly_source') != dict(snapshot):
+        used = connection.execute("""SELECT r.draft_json FROM personalized_recommendation_events e
+            JOIN personalized_recommendation_revisions r ON r.draft_id=e.draft_id AND r.revision=e.resulting_revision
+            WHERE e.request_token=? AND e.action='created'""", (token,)).fetchone()
+        if used is not None and json.loads(used['draft_json']).get('config', {}).get('assembly_source') != dict(snapshot):
             raise RecommendationRequestConflict('assembly request token was reused')
         connection.execute("""INSERT OR IGNORE INTO personalized_recommendation_events
-            (draft_id,request_token,command_hash,action,actor_ref,reason,expected_revision,resulting_revision,before_json,after_json,resulting_draft_json)
-            VALUES (?,?,?,'created',?,'复用同一班级组卷修订的训练草稿',0,?,'{}',?,?)""",
-            (result['draft_id'],token,_hash_payload(snapshot),actor,result['revision'],_json(snapshot),encoded_draft))
+            (draft_id,request_token,command_hash,action,actor_ref,reason,expected_revision,resulting_revision,before_json,after_json)
+            VALUES (?,?,?,'created',?,'复用同一班级组卷修订的训练草稿',0,?,'{}',?)""",
+            (result['draft_id'],token,_hash_payload(snapshot),actor,result['revision'],_json(snapshot)))
         return result
 
     def _by_request_token(self, token: str) -> dict[str, Any] | None:
         with connect(self.db_path) as connection:
             row = connection.execute(
                 """
-                SELECT input_fingerprint, draft_json
-                FROM personalized_recommendation_drafts
+                SELECT d.input_fingerprint, r.draft_json
+                FROM personalized_recommendation_drafts d
+                JOIN personalized_recommendation_revisions r USING (draft_id, revision)
                 WHERE request_token = ?
                 UNION ALL
-                SELECT d.input_fingerprint, d.draft_json FROM personalized_recommendation_drafts d
+                SELECT d.input_fingerprint, r.draft_json FROM personalized_recommendation_drafts d
+                JOIN personalized_recommendation_revisions r USING (draft_id, revision)
                 JOIN personalized_recommendation_events e ON e.draft_id=d.draft_id
                 WHERE e.request_token=? AND e.action='created'
                 LIMIT 1

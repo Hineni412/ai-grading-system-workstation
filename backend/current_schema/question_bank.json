@@ -41,8 +41,9 @@
     "CREATE TABLE personalized_paper_instances (\n    paper_instance_id TEXT PRIMARY KEY,\n    operation_token TEXT NOT NULL UNIQUE,\n    operation_fingerprint TEXT NOT NULL,\n    draft_id TEXT NOT NULL,\n    draft_revision INTEGER NOT NULL CHECK (draft_revision >= 1),\n    draft_result_version TEXT NOT NULL,\n    paper_batch_id TEXT NOT NULL,\n    series_version INTEGER NOT NULL CHECK (series_version >= 1),\n    student_id TEXT NOT NULL,\n    student_code_snapshot TEXT,\n    student_name_snapshot TEXT,\n    class_id_snapshot TEXT,\n    status TEXT NOT NULL DEFAULT 'creating'\n        CHECK (status IN ('creating', 'review_pending', 'failed', 'frozen')),\n    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),\n    layout_version TEXT NOT NULL,\n    budget_version TEXT NOT NULL,\n    budget_json TEXT NOT NULL,\n    snapshot_json TEXT NOT NULL,\n    signing_secret TEXT NOT NULL,\n    review_docx_path TEXT,\n    review_docx_sha256 TEXT,\n    reviewed_docx_path TEXT,\n    reviewed_docx_sha256 TEXT,\n    frozen_pdf_path TEXT,\n    frozen_pdf_sha256 TEXT,\n    page_count INTEGER,\n    error_code TEXT,\n    created_by TEXT NOT NULL,\n    frozen_by TEXT,\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    frozen_at TEXT,\n    CHECK (length(paper_instance_id) = 64),\n    CHECK (length(operation_token) = 32),\n    CHECK (length(operation_fingerprint) = 64),\n    CHECK (length(draft_id) = 64),\n    CHECK (length(draft_result_version) = 64),\n    CHECK (length(paper_batch_id) = 64),\n    CHECK (length(signing_secret) = 64),\n    CHECK (json_valid(budget_json)),\n    CHECK (json_valid(snapshot_json)),\n    CHECK (\n        (status = 'frozen'\n         AND reviewed_docx_path IS NOT NULL\n         AND reviewed_docx_sha256 IS NOT NULL\n         AND frozen_pdf_path IS NOT NULL\n         AND frozen_pdf_sha256 IS NOT NULL\n         AND page_count IS NOT NULL\n         AND page_count > 0)\n        OR status <> 'frozen'\n    ),\n    UNIQUE(draft_id, student_id, series_version),\n    FOREIGN KEY(draft_id)\n        REFERENCES personalized_recommendation_drafts(draft_id)\n        ON DELETE RESTRICT\n)",
     "CREATE TABLE personalized_paper_items (\n    item_id INTEGER PRIMARY KEY AUTOINCREMENT,\n    paper_instance_id TEXT NOT NULL,\n    task_item_code TEXT NOT NULL UNIQUE,\n    item_order INTEGER NOT NULL CHECK (item_order >= 1),\n    bank_question_id INTEGER,\n    question_content_hash TEXT NOT NULL,\n    question_snapshot_json TEXT NOT NULL,\n    criterion_version_id TEXT NOT NULL,\n    criterion_hash TEXT NOT NULL,\n    criterion_snapshot_json TEXT NOT NULL,\n    recommendation_snapshot_json TEXT NOT NULL,\n    CHECK (length(question_content_hash) = 64),\n    CHECK (length(criterion_version_id) = 64),\n    CHECK (length(criterion_hash) = 64),\n    CHECK (json_valid(question_snapshot_json)),\n    CHECK (json_valid(criterion_snapshot_json)),\n    CHECK (json_valid(recommendation_snapshot_json)),\n    UNIQUE(paper_instance_id, item_order),\n    FOREIGN KEY(paper_instance_id)\n        REFERENCES personalized_paper_instances(paper_instance_id)\n        ON DELETE CASCADE\n)",
     "CREATE TABLE personalized_paper_pages (\n    page_id INTEGER PRIMARY KEY AUTOINCREMENT,\n    paper_instance_id TEXT NOT NULL,\n    page_number INTEGER NOT NULL CHECK (page_number >= 1),\n    total_pages INTEGER NOT NULL CHECK (total_pages >= 1),\n    page_identity TEXT NOT NULL UNIQUE,\n    page_signature TEXT NOT NULL,\n    page_content_hash TEXT NOT NULL,\n    layout_version TEXT NOT NULL,\n    pdf_sha256 TEXT NOT NULL,\n    width_points REAL NOT NULL CHECK (width_points > 0),\n    height_points REAL NOT NULL CHECK (height_points > 0),\n    CHECK (page_number <= total_pages),\n    CHECK (length(page_signature) = 32),\n    CHECK (length(page_content_hash) = 64),\n    CHECK (length(pdf_sha256) = 64),\n    UNIQUE(paper_instance_id, page_number),\n    FOREIGN KEY(paper_instance_id)\n        REFERENCES personalized_paper_instances(paper_instance_id)\n        ON DELETE CASCADE\n)",
-    "CREATE TABLE personalized_recommendation_drafts (\n    draft_id TEXT PRIMARY KEY,\n    request_token TEXT NOT NULL UNIQUE,\n    input_fingerprint TEXT NOT NULL,\n    result_version TEXT NOT NULL,\n    engine_version TEXT NOT NULL,\n    source_version TEXT NOT NULL,\n    request_json TEXT NOT NULL,\n    draft_json TEXT NOT NULL,\n    status TEXT NOT NULL DEFAULT 'draft'\n        CHECK (status IN ('draft', 'reviewed')),\n    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),\n    created_by TEXT NOT NULL,\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    CHECK (length(draft_id) = 64),\n    CHECK (length(request_token) = 32),\n    CHECK (length(input_fingerprint) = 64),\n    CHECK (length(result_version) = 64),\n    CHECK (length(source_version) = 64),\n    CHECK (json_valid(request_json)),\n    CHECK (json_valid(draft_json))\n)",
-    "CREATE TABLE personalized_recommendation_events (\n    event_id INTEGER PRIMARY KEY AUTOINCREMENT,\n    draft_id TEXT NOT NULL,\n    request_token TEXT NOT NULL,\n    command_hash TEXT NOT NULL,\n    action TEXT NOT NULL\n        CHECK (action IN ('created', 'locked', 'unlocked', 'excluded', 'replaced')),\n    actor_ref TEXT NOT NULL,\n    reason TEXT NOT NULL,\n    expected_revision INTEGER NOT NULL CHECK (expected_revision >= 0),\n    resulting_revision INTEGER NOT NULL CHECK (resulting_revision >= 1),\n    before_json TEXT NOT NULL,\n    after_json TEXT NOT NULL,\n    resulting_draft_json TEXT NOT NULL,\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    CHECK (length(request_token) = 32),\n    CHECK (length(command_hash) = 64),\n    CHECK (TRIM(actor_ref) <> ''),\n    CHECK (TRIM(reason) <> ''),\n    CHECK (json_valid(before_json)),\n    CHECK (json_valid(after_json)),\n    CHECK (json_valid(resulting_draft_json)),\n    UNIQUE(draft_id, request_token),\n    FOREIGN KEY(draft_id)\n        REFERENCES personalized_recommendation_drafts(draft_id)\n        ON DELETE CASCADE\n)",
+    "CREATE TABLE \"personalized_recommendation_drafts\" (\n    draft_id TEXT PRIMARY KEY,\n    request_token TEXT NOT NULL UNIQUE,\n    input_fingerprint TEXT NOT NULL,\n    result_version TEXT NOT NULL,\n    engine_version TEXT NOT NULL,\n    source_version TEXT NOT NULL,\n    request_json TEXT NOT NULL,\n    status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'reviewed')),\n    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),\n    created_by TEXT NOT NULL,\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    CHECK (length(draft_id) = 64),\n    CHECK (length(request_token) = 32),\n    CHECK (length(input_fingerprint) = 64),\n    CHECK (length(result_version) = 64),\n    CHECK (length(source_version) = 64),\n    CHECK (json_valid(request_json)),\n    FOREIGN KEY (draft_id, revision)\n        REFERENCES personalized_recommendation_revisions(draft_id, revision)\n        DEFERRABLE INITIALLY DEFERRED\n)",
+    "CREATE TABLE \"personalized_recommendation_events\" (\n    event_id INTEGER PRIMARY KEY AUTOINCREMENT,\n    draft_id TEXT NOT NULL,\n    request_token TEXT NOT NULL,\n    command_hash TEXT NOT NULL,\n    action TEXT NOT NULL CHECK (action IN ('created', 'locked', 'unlocked', 'excluded', 'replaced')),\n    actor_ref TEXT NOT NULL,\n    reason TEXT NOT NULL,\n    expected_revision INTEGER NOT NULL CHECK (expected_revision >= 0),\n    resulting_revision INTEGER NOT NULL CHECK (resulting_revision >= 1),\n    before_json TEXT NOT NULL,\n    after_json TEXT NOT NULL,\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    CHECK (length(request_token) = 32),\n    CHECK (length(command_hash) = 64),\n    CHECK (TRIM(actor_ref) <> ''),\n    CHECK (TRIM(reason) <> ''),\n    CHECK (json_valid(before_json)),\n    CHECK (json_valid(after_json)),\n    UNIQUE (draft_id, request_token),\n    FOREIGN KEY (draft_id) REFERENCES personalized_recommendation_drafts(draft_id)\n        ON DELETE CASCADE,\n    FOREIGN KEY (draft_id, resulting_revision)\n        REFERENCES personalized_recommendation_revisions(draft_id, revision)\n)",
+    "CREATE TABLE personalized_recommendation_revisions (\n    draft_id TEXT NOT NULL,\n    revision INTEGER NOT NULL CHECK (revision >= 1),\n    draft_json TEXT NOT NULL CHECK (json_valid(draft_json)),\n    PRIMARY KEY (draft_id, revision),\n    FOREIGN KEY (draft_id) REFERENCES personalized_recommendation_drafts(draft_id)\n        ON DELETE CASCADE\n)",
     "CREATE TABLE question_analysis_items (\n    operation_id TEXT NOT NULL,\n    question_id INTEGER NOT NULL,\n    source_content_hash TEXT NOT NULL,\n    tag_status TEXT NOT NULL\n        CHECK (\n            tag_status IN (\n                'pending', 'succeeded', 'failed', 'cancelled', 'not_requested'\n            )\n        ),\n    criteria_status TEXT NOT NULL\n        CHECK (\n            criteria_status IN (\n                'pending', 'succeeded', 'failed', 'cancelled', 'not_requested'\n            )\n        ),\n    tag_payload_hash TEXT,\n    criteria_payload_json TEXT,\n    tag_error_category TEXT NOT NULL DEFAULT '',\n    criteria_error_category TEXT NOT NULL DEFAULT '',\n    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    PRIMARY KEY(operation_id, question_id),\n    CHECK (length(source_content_hash) = 64),\n    CHECK (\n        tag_payload_hash IS NULL OR length(tag_payload_hash) = 64\n    ),\n    CHECK (\n        criteria_payload_json IS NULL\n        OR json_valid(criteria_payload_json)\n    ),\n    FOREIGN KEY(operation_id)\n        REFERENCES question_analysis_operations(operation_id)\n        ON DELETE CASCADE,\n    FOREIGN KEY(question_id)\n        REFERENCES questions(id)\n)",
     "CREATE TABLE question_analysis_operations (\n    operation_id TEXT PRIMARY KEY,\n    input_fingerprint TEXT NOT NULL,\n    contract_version TEXT NOT NULL\n        CHECK (contract_version IN ('combined-v2', 'tag-only-v1')),\n    requested_projection TEXT NOT NULL\n        CHECK (\n            requested_projection IN ('both', 'tag', 'training_criteria')\n        ),\n    status TEXT NOT NULL DEFAULT 'running'\n        CHECK (status IN ('running', 'partial', 'succeeded', 'failed', 'cancelled')),\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    CHECK (TRIM(operation_id) <> ''),\n    CHECK (length(input_fingerprint) = 64)\n)",
     "CREATE TABLE question_analysis_requests (\n    request_id TEXT PRIMARY KEY,\n    operation_id TEXT NOT NULL,\n    projection TEXT NOT NULL\n        CHECK (projection IN ('both', 'tag', 'training_criteria')),\n    batch_hash TEXT NOT NULL,\n    question_ids_json TEXT NOT NULL,\n    status TEXT NOT NULL\n        CHECK (status IN ('running', 'succeeded', 'failed')),\n    model_name TEXT NOT NULL DEFAULT '',\n    prompt_tokens INTEGER NOT NULL DEFAULT 0 CHECK (prompt_tokens >= 0),\n    completion_tokens INTEGER NOT NULL DEFAULT 0\n        CHECK (completion_tokens >= 0),\n    total_tokens INTEGER NOT NULL DEFAULT 0 CHECK (total_tokens >= 0),\n    latency_ms INTEGER NOT NULL DEFAULT 0 CHECK (latency_ms >= 0),\n    error_category TEXT NOT NULL DEFAULT '',\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    finished_at TEXT,\n    CHECK (length(request_id) = 64),\n    CHECK (length(batch_hash) = 64),\n    CHECK (json_valid(question_ids_json)),\n    FOREIGN KEY(operation_id)\n        REFERENCES question_analysis_operations(operation_id)\n        ON DELETE CASCADE\n)",
@@ -98,6 +99,7 @@
     "INSERT INTO \"data_versions\" (\"domain\", \"version\") VALUES ('training_ops', 0)",
     "INSERT INTO \"data_versions\" (\"domain\", \"version\") VALUES ('training_records', 0)",
     "INSERT INTO \"mastery_v2_rollout_state\" (\"singleton_id\", \"enabled\", \"active_parameter_version\", \"approved_evaluation_id\", \"revision\", \"updated_by\", \"reason\") VALUES (1, 0, NULL, NULL, 1, NULL, NULL)",
+    "INSERT INTO sqlite_sequence (name, seq) VALUES ('personalized_recommendation_events', 0)",
     "INSERT INTO sqlite_sequence (name, seq) VALUES ('question_tags', 0)",
     "CREATE TRIGGER dv_authoring_assets_del AFTER DELETE ON authoring_assets FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
     "CREATE TRIGGER dv_authoring_assets_ins AFTER INSERT ON authoring_assets FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
@@ -222,6 +224,9 @@
     "CREATE TRIGGER dv_personalized_recommendation_events_del AFTER DELETE ON personalized_recommendation_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
     "CREATE TRIGGER dv_personalized_recommendation_events_ins AFTER INSERT ON personalized_recommendation_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
     "CREATE TRIGGER dv_personalized_recommendation_events_upd AFTER UPDATE ON personalized_recommendation_events FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_personalized_recommendation_revisions_del AFTER DELETE ON personalized_recommendation_revisions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_personalized_recommendation_revisions_ins AFTER INSERT ON personalized_recommendation_revisions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
+    "CREATE TRIGGER dv_personalized_recommendation_revisions_upd AFTER UPDATE ON personalized_recommendation_revisions FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'training_ops';\nEND",
     "CREATE TRIGGER dv_question_analysis_items_del AFTER DELETE ON question_analysis_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
     "CREATE TRIGGER dv_question_analysis_items_ins AFTER INSERT ON question_analysis_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
     "CREATE TRIGGER dv_question_analysis_items_upd AFTER UPDATE ON question_analysis_items FOR EACH ROW BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials';\nEND",
@@ -606,6 +611,7 @@
     "CREATE TRIGGER qvg_training_criterion_backfill_runs_del AFTER DELETE ON training_criterion_backfill_runs FOR EACH ROW WHEN NOT json_valid(OLD.question_ids_json) BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
     "CREATE TRIGGER qvg_training_criterion_backfill_runs_ins AFTER INSERT ON training_criterion_backfill_runs FOR EACH ROW WHEN NOT json_valid(NEW.question_ids_json) BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
     "CREATE TRIGGER qvg_training_criterion_backfill_runs_upd AFTER UPDATE ON training_criterion_backfill_runs FOR EACH ROW WHEN NOT json_valid(NEW.question_ids_json) OR NOT json_valid(OLD.question_ids_json) BEGIN\n    UPDATE data_versions SET version = version + 1 WHERE domain = 'materials_global';\nEND",
+    "CREATE TRIGGER recommendation_revision_immutable\nBEFORE UPDATE ON personalized_recommendation_revisions\nBEGIN\n    SELECT RAISE(ABORT, 'recommendation revisions are immutable');\nEND",
     "CREATE UNIQUE INDEX uq_knowledge_active_pair\nON knowledge_relations(\n    graph_release_id,\n    CASE WHEN source_key < target_key THEN source_key ELSE target_key END,\n    CASE WHEN source_key < target_key THEN target_key ELSE source_key END\n)\nWHERE status = 'confirmed' AND graph_release_id IS NOT NULL",
     "CREATE UNIQUE INDEX uq_knowledge_graph_active_release\nON knowledge_graph_releases((1))\nWHERE status = 'active'",
     "CREATE UNIQUE INDEX uq_paper_question_occurrences\n    ON paper_question_occurrences(paper_id, question_number)"
@@ -806,6 +812,10 @@
     [
       "048_question_versions",
       "f77007b25a9c698dc268cad62b86eca3"
+    ],
+    [
+      "049_deduplicate_recommendation_drafts",
+      "cf397ef6757b4cdcf463d217787c61f9"
     ]
   ],
   "schema": {
@@ -1904,6 +1914,21 @@
         "trigger",
         "dv_personalized_recommendation_events_upd",
         "create trigger dv_personalized_recommendation_events_upd after update on personalized_recommendation_events for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_personalized_recommendation_revisions_del",
+        "create trigger dv_personalized_recommendation_revisions_del after delete on personalized_recommendation_revisions for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_personalized_recommendation_revisions_ins",
+        "create trigger dv_personalized_recommendation_revisions_ins after insert on personalized_recommendation_revisions for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
+      ],
+      [
+        "trigger",
+        "dv_personalized_recommendation_revisions_upd",
+        "create trigger dv_personalized_recommendation_revisions_upd after update on personalized_recommendation_revisions for each row begin update data_versions set version = version + 1 where domain = 'training_ops'; end"
       ],
       [
         "trigger",
@@ -3359,6 +3384,11 @@
         "trigger",
         "qvg_training_criterion_backfill_runs_upd",
         "create trigger qvg_training_criterion_backfill_runs_upd after update on training_criterion_backfill_runs for each row when not json_valid(new.question_ids_json) or not json_valid(old.question_ids_json) begin update data_versions set version = version + 1 where domain = 'materials_global'; end"
+      ],
+      [
+        "trigger",
+        "recommendation_revision_immutable",
+        "create trigger recommendation_revision_immutable before update on personalized_recommendation_revisions begin select raise(abort, 'recommendation revisions are immutable'); end"
       ]
     ],
     "tables": {
@@ -7781,7 +7811,6 @@
       },
       "personalized_recommendation_drafts": {
         "checks": [
-          "json_valid(draft_json)",
           "json_valid(request_json)",
           "length(draft_id) = 64",
           "length(input_fingerprint) = 64",
@@ -7811,13 +7840,6 @@
             0,
             "none",
             1,
-            0
-          ],
-          "draft_json": [
-            "text",
-            1,
-            "none",
-            0,
             0
           ],
           "engine_version": [
@@ -7884,7 +7906,22 @@
             0
           ]
         },
-        "foreign_keys": [],
+        "foreign_keys": [
+          [
+            "personalized_recommendation_revisions",
+            "draft_id",
+            "draft_id",
+            "NO ACTION",
+            "NO ACTION"
+          ],
+          [
+            "personalized_recommendation_revisions",
+            "revision",
+            "revision",
+            "NO ACTION",
+            "NO ACTION"
+          ]
+        ],
         "unique_constraints": [
           [
             [
@@ -7906,7 +7943,6 @@
           "expected_revision >= 0",
           "json_valid(after_json)",
           "json_valid(before_json)",
-          "json_valid(resulting_draft_json)",
           "length(command_hash) = 64",
           "length(request_token) = 32",
           "resulting_revision >= 1",
@@ -7991,18 +8027,72 @@
             0,
             0
           ],
-          "resulting_draft_json": [
+          "resulting_revision": [
+            "integer",
+            1,
+            "none",
+            0,
+            0
+          ]
+        },
+        "foreign_keys": [
+          [
+            "personalized_recommendation_drafts",
+            "draft_id",
+            "draft_id",
+            "NO ACTION",
+            "CASCADE"
+          ],
+          [
+            "personalized_recommendation_revisions",
+            "draft_id",
+            "draft_id",
+            "NO ACTION",
+            "NO ACTION"
+          ],
+          [
+            "personalized_recommendation_revisions",
+            "resulting_revision",
+            "revision",
+            "NO ACTION",
+            "NO ACTION"
+          ]
+        ],
+        "unique_constraints": [
+          [
+            [
+              "draft_id",
+              "request_token"
+            ],
+            0
+          ]
+        ]
+      },
+      "personalized_recommendation_revisions": {
+        "checks": [
+          "json_valid(draft_json)",
+          "revision >= 1"
+        ],
+        "columns": {
+          "draft_id": [
+            "text",
+            1,
+            "none",
+            1,
+            0
+          ],
+          "draft_json": [
             "text",
             1,
             "none",
             0,
             0
           ],
-          "resulting_revision": [
+          "revision": [
             "integer",
             1,
             "none",
-            0,
+            2,
             0
           ]
         },
@@ -8019,7 +8109,7 @@
           [
             [
               "draft_id",
-              "request_token"
+              "revision"
             ],
             0
           ]

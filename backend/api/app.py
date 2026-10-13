@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import asynccontextmanager, nullcontext, suppress
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -75,6 +76,32 @@ def _validation_error_details(exc: RequestValidationError) -> dict[str, Any]:
     return {"errors": errors}
 
 
+def _reclaim_temporary_exports(paths: PathManager, store: Any) -> None:
+    from backend.files.service import JobFileService
+    from question_bank.personalized_papers import PersonalizedPaperModule
+
+    cutoff = time.time() - 7 * 24 * 60 * 60
+    try:
+        JobFileService(paths.reports_dir).reclaim_expired_files(store, cutoff=cutoff)
+    except Exception:
+        LOGGER.warning("temporary_report_cleanup_failed")
+    try:
+        PersonalizedPaperModule(
+            db_path=paths.qb_db_path, data_root=paths.data_root
+        ).reclaim_expired_batch_bundles(cutoff=cutoff)
+    except Exception:
+        LOGGER.warning("temporary_training_bundle_cleanup_failed")
+
+
+async def _maintain_temporary_exports(paths: PathManager, store: Any) -> None:
+    while True:
+        worker = asyncio.create_task(asyncio.to_thread(_reclaim_temporary_exports, paths, store))
+        try:
+            await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            await worker
+            raise
+        await asyncio.sleep(60 * 60)
 
 
 @asynccontextmanager
@@ -90,6 +117,7 @@ async def _lifespan(api: FastAPI) -> AsyncIterator[None]:
     manager = None
     ops_service = None
     prewarm_worker = None
+    export_cleanup_task = None
     try:
         owns_manager = get_job_manager not in api.dependency_overrides
         owns_ops_service = get_ops_write_service not in api.dependency_overrides
@@ -112,10 +140,17 @@ async def _lifespan(api: FastAPI) -> AsyncIterator[None]:
             prewarm_worker = start_prewarm(paths, manager)
             if prewarm_worker is not None:
                 api.state.training_prewarm = prewarm_worker
+            export_cleanup_task = asyncio.create_task(
+                _maintain_temporary_exports(paths, manager.store)
+            )
         if ops_service is not None:
             api.state.ops_write_service = ops_service
         yield
     finally:
+        if export_cleanup_task is not None:
+            export_cleanup_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await export_cleanup_task
         if prewarm_worker is not None:
             prewarm_worker.stop()
             if hasattr(api.state, "training_prewarm"):

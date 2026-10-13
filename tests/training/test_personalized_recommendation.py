@@ -989,7 +989,7 @@ def test_saved_lock_replace_exclude_and_revision_guard(direct_module):
         direct_module.edit(draft["draft_id"], lock)
     with pytest.raises(RecommendationEditInvalid):
         direct_module.edit(draft["draft_id"], command("replace", "c", 2))
-    direct_module.edit(draft["draft_id"], command("unlock", "d", 2))
+    unlocked = direct_module.edit(draft["draft_id"], command("unlock", "d", 2))
     with pytest.raises(RecommendationEditInvalid):
         direct_module.edit(draft["draft_id"], command("replace", "e", 3, 46))
     other = next(q for q in draft["students"][0]["items"] if q["question_id"] == 300)
@@ -1047,6 +1047,21 @@ def test_saved_lock_replace_exclude_and_revision_guard(direct_module):
         len(updated["students"][0]["items"]) == len(removed["students"][0]["items"]) - 1
     )
     assert direct_module.get(draft["draft_id"]) == updated
+    assert _make_direct(direct_module, difficulty_max=10) == updated
+    with connect(direct_module.db_path) as connection:
+        saved_history = connection.execute(
+            """SELECT e.action, e.before_json, e.after_json, r.draft_json
+               FROM personalized_recommendation_events e
+               JOIN personalized_recommendation_revisions r
+                 ON r.draft_id = e.draft_id AND r.revision = e.resulting_revision
+               WHERE e.draft_id = ? ORDER BY e.event_id""",
+            (draft["draft_id"],),
+        ).fetchall()
+    assert [json.loads(row["draft_json"]) for row in saved_history] == [
+        draft, locked, unlocked, replaced, removed, updated,
+    ]
+    assert json.loads(saved_history[1]["before_json"])["locked"] is False
+    assert json.loads(saved_history[1]["after_json"])["locked"] is True
 
     measured_correct = _direct_diagnosis()
     measured_correct["students"][0]["weak_points"][0]["source_question_refs"][0]["score_awarded"] = 5
@@ -1342,6 +1357,14 @@ def test_fixed_class_assembly_preserves_all_members_order_and_idempotency(direct
     assert direct_module.ensure_current(first['draft_id']) == first
     with connect(direct_module.db_path) as conn:
         assert conn.execute('SELECT COUNT(*) FROM personalized_recommendation_drafts').fetchone()[0] == 1
+        receipts = conn.execute("""SELECT e.request_token, e.after_json, r.draft_json
+            FROM personalized_recommendation_events e
+            JOIN personalized_recommendation_revisions r
+              ON r.draft_id=e.draft_id AND r.revision=e.resulting_revision
+            ORDER BY e.event_id""").fetchall()
+        assert [row['request_token'] for row in receipts] == ['1'*32, '2'*32]
+        assert [json.loads(row['draft_json']) for row in receipts] == [first, first]
+        assert json.loads(receipts[1]['after_json']) == snapshot
     from fastapi.testclient import TestClient
     from types import SimpleNamespace
     from backend.api.app import create_app

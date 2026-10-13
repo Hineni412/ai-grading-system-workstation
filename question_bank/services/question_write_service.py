@@ -1506,33 +1506,88 @@ class QuestionBankWriteService:
             raise QuestionImportUploadNotFound("Question import upload not found")
         upload_root = self._controlled_staging_path("uploads", normalized_upload_id)
         manifest_path = upload_root / "upload.json"
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            raw_filename = str(manifest["filename"])
-            safe_filename = _safe_client_filename(raw_filename)
-            upload = StagedImportUpload(
-                upload_id=str(manifest["upload_id"]),
-                filename=safe_filename,
-                suffix=str(manifest["suffix"]),
-                size=int(manifest["size"]),
-                sha256=str(manifest["sha256"]),
-            )
-            source_path = upload_root / f"source{upload.suffix}"
-            actual_size, actual_sha256 = _file_size_and_sha256(source_path)
-        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise QuestionImportUploadNotFound(
-                "Question import upload not found"
-            ) from exc
-        if (
-            upload.upload_id != normalized_upload_id
-            or upload.filename != raw_filename
-            or upload.suffix not in {".docx", ".pdf"}
-            or Path(upload.filename).suffix.casefold() != upload.suffix
-            or actual_size != upload.size
-            or actual_sha256 != upload.sha256
-        ):
-            raise QuestionImportUploadNotFound("Question import upload not found")
+        with _shared_request_lock(manifest_path):
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                raw_filename = str(manifest["filename"])
+                safe_filename = _safe_client_filename(raw_filename)
+                upload = StagedImportUpload(
+                    upload_id=str(manifest["upload_id"]),
+                    filename=safe_filename,
+                    suffix=str(manifest["suffix"]),
+                    size=int(manifest["size"]),
+                    sha256=str(manifest["sha256"]),
+                )
+                if manifest.get("archived_source"):
+                    source_path = self._import_archive_path(manifest["archived_source"])
+                else:
+                    source_path = upload_root / f"source{upload.suffix}"
+                actual_size, actual_sha256 = _file_size_and_sha256(source_path)
+            except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise QuestionImportUploadNotFound(
+                    "Question import upload not found"
+                ) from exc
+            if (
+                upload.upload_id != normalized_upload_id
+                or upload.filename != raw_filename
+                or upload.suffix not in {".docx", ".pdf"}
+                or Path(upload.filename).suffix.casefold() != upload.suffix
+                or actual_size != upload.size
+                or actual_sha256 != upload.sha256
+            ):
+                raise QuestionImportUploadNotFound("Question import upload not found")
         return upload, source_path
+
+    def release_import_upload(
+        self,
+        resource: QuestionImportResource,
+        *,
+        archived_source: str,
+    ) -> bool:
+        from backend.files.data_transfer_service import ensure_controlled_path
+
+        upload_root = self._controlled_staging_path("uploads", resource.upload_id)
+        manifest_path = upload_root / "upload.json"
+        source_path = upload_root / f"source{resource.suffix}"
+        with _shared_request_lock(manifest_path):
+            temporary = upload_root / f".upload.{uuid.uuid4().hex}.tmp"
+            try:
+                ensure_controlled_path(source_path, self.data_root)
+                ensure_controlled_path(self.data_root / archived_source, self.data_root)
+                archive = self._import_archive_path(archived_source)
+                if archive.suffix.casefold() != resource.suffix:
+                    return False
+                if _file_size_and_sha256(archive) != (resource.size, resource.sha256):
+                    return False
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest["archived_source"] = archive.relative_to(
+                    self.data_root.resolve()
+                ).as_posix()
+                temporary.write_text(
+                    json.dumps(manifest, ensure_ascii=False, sort_keys=True),
+                    encoding="utf-8",
+                )
+                # The source reference must survive a restart before its upload is removed.
+                os.replace(temporary, manifest_path)
+                source_path.unlink(missing_ok=True)
+                return True
+            except (OSError, TypeError, ValueError):
+                LOGGER.warning("Question import upload retained for request %s", resource.request_id)
+                return False
+            finally:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    def _import_archive_path(self, stored_path: str) -> Path:
+        raw_root = (self.data_root / "question_bank" / "raw_papers").resolve()
+        raw_root.relative_to(self.data_root.resolve())
+        source = (self.data_root / stored_path).resolve()
+        source.relative_to(raw_root)
+        if source.suffix.casefold() not in {".docx", ".pdf"}:
+            raise ValueError("Question import archive type is not supported")
+        return source
 
     def _controlled_staging_path(self, *parts: str) -> Path:
         self.data_root.mkdir(parents=True, exist_ok=True)

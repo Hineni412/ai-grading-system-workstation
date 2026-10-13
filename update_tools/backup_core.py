@@ -131,6 +131,10 @@ def _should_skip(rel_path: Path) -> bool:
         if part in _SKIP_PATTERNS:
             return True
     folded = tuple(part.casefold() for part in parts)
+    if folded[:3] == ("user_data", "reports", ".training_diagnosis"):
+        return True
+    if folded[:4] == ("user_data", "question_bank", "personalized_papers", "image_cache"):
+        return True
     if (
         len(folded) >= 5
         and folded[:2] == ("user_data", "workspaces")

@@ -1012,18 +1012,47 @@ def test_exact_duplicate_entries_report_matched_paper_and_number(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    from unittest.mock import Mock
+
+    from backend.jobs.manager import JobContext
+    from backend.jobs.question_import import run_question_import_job
+    from backend.jobs.store import JobStore
+
     monkeypatch.setattr(batch_importer, "_extract_paper", question_import_duplicates__fake_extract(question_import_duplicates_PAPER_TEXT))
     question_import_duplicates__import_paper(
         tmp_path, question_import_duplicates_bank["db"], question_import_duplicates_bank["data_root"], name="a.docx", text=question_import_duplicates_PAPER_TEXT
     )
     source_id = question_import_duplicates__single_question_id(question_import_duplicates_bank["db"], "a")
 
-    second = question_import_duplicates__import_paper(
-        tmp_path, question_import_duplicates_bank["db"], question_import_duplicates_bank["data_root"], name="b.docx", text=question_import_duplicates_PAPER_TEXT
+    data_root = question_import_duplicates_bank["data_root"]
+    db_path = question_import_duplicates_bank["db"]
+    service = QuestionBankWriteService(db_path, data_root=data_root)
+    upload = service.stage_upload(filename="b.docx", content=b"synthetic-paper-b")
+    request = service.create_import_request(upload_id=upload.upload_id)
+    staged_source = service.load_import_resource(request.request_id).source_path
+    store = JobStore(tmp_path / "jobs.db")
+    payload = {"request_id": request.request_id}
+    failed_job = store.create_job("question_import", payload)
+    with monkeypatch.context() as failing:
+        failing.setattr(batch_importer, "_extract_paper", Mock(side_effect=RuntimeError("synthetic import failure")))
+        failed = run_question_import_job(
+            context=JobContext(failed_job.id, "question_import", payload, store),
+            question_bank_db_path=db_path, data_root=data_root, write_service=service,
+        )
+    assert failed["outcome"] == "failed"
+    assert failed["retryable"] is True
+    assert staged_source.read_bytes() == b"synthetic-paper-b"
+    assert service.load_import_resource(request.request_id).source_path == staged_source
+
+    retry_job = store.create_job("question_import", payload)
+    second = run_question_import_job(
+        context=JobContext(retry_job.id, "question_import", payload, store),
+        question_bank_db_path=db_path, data_root=data_root, write_service=service,
     )
 
-    assert second.exact_duplicate_count == 1
-    assert list(second.exact_duplicates) == [
+    assert second["outcome"] == "complete"
+    assert second["exact_duplicate_count"] == 1
+    assert second["exact_duplicates"] == [
         {
             "question_number": "1",
             "matched_question_id": source_id,
@@ -1031,3 +1060,32 @@ def test_exact_duplicate_entries_report_matched_paper_and_number(
             "matched_question_number": "1",
         }
     ]
+    assert not staged_source.exists()
+    reopened_service = QuestionBankWriteService(db_path, data_root=data_root)
+    resource = reopened_service.load_import_resource(request.request_id)
+    assert resource.source_path.parent == data_root / "question_bank" / "raw_papers"
+    assert resource.source_path.read_bytes() == b"synthetic-paper-b"
+    assert resource.filename == "b.docx"
+    assert reopened_service.create_import_request(upload_id=upload.upload_id) == request
+    read_service = QuestionBankReadService(db_path, data_root=data_root)
+    assert read_service.import_task_filename(request.request_id) == "b.docx"
+    with connect(db_path) as conn:
+        imported_source = conn.execute(
+            "SELECT source_file FROM papers WHERE id = ?",
+            (second["imported_paper_ids"][0],),
+        ).fetchone()[0]
+    assert (data_root / imported_source).read_bytes() == b"synthetic-paper-b"
+    preview = read_service.get_question_for_preview(source_id)
+    assert Path(preview["source_file"]).read_bytes() == b"content-of-a.docx"
+
+    replay_job = store.create_job("question_import", payload)
+    with monkeypatch.context() as replaying:
+        extraction = Mock(side_effect=AssertionError("completed import must not extract again"))
+        replaying.setattr(batch_importer, "_extract_paper", extraction)
+        replay = run_question_import_job(
+            context=JobContext(replay_job.id, "question_import", payload, store),
+            question_bank_db_path=db_path, data_root=data_root, write_service=reopened_service,
+        )
+    assert replay["outcome"] == "complete"
+    assert replay["imported_papers"] == 0
+    extraction.assert_not_called()

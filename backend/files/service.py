@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from backend.file_access import (
+    ControlledFileError,
     ControlledFileExpired,
     ResolvedFile,
     resolve_controlled_file,
 )
+from backend.files.data_transfer_service import ensure_controlled_path
 from backend.jobs.store import JobRecord, JobStore
 
 
@@ -145,7 +148,8 @@ class JobFileService:
             freed = resolved.path.stat().st_size
         except OSError:
             freed = 0
-        self._unlink_quietly(resolved.path)
+        if not self._unlink_file(job, resolved.path):
+            return None
         store.clear_downloadable_file(job.id)
         return freed
 
@@ -154,22 +158,59 @@ class JobFileService:
         job: JobRecord,
         resolved: ResolvedFile,
         store: JobStore,
+        modified_ns: int | None = None,
     ) -> None:
         if not self.should_consume(job):
             return
-        self._unlink_quietly(resolved.path)
-        store.clear_downloadable_file(job.id)
+        if self._unlink_file(job, resolved.path, modified_ns=modified_ns):
+            store.clear_downloadable_file(job.id)
 
-    @staticmethod
-    def _unlink_quietly(path: Path) -> None:
+    def reclaim_expired_files(self, store: JobStore, *, cutoff: float) -> int:
+        jobs = store.expired_downloadable_jobs(
+            job_types=tuple(
+                name for name, rule in JOB_FILE_RULES.items()
+                if rule.consume_after_download
+            ),
+            finished_before=datetime.fromtimestamp(cutoff).isoformat(sep=" "),
+        )
+        removed = 0
+        for job in jobs:
+            if not self.should_consume(job):
+                continue
+            try:
+                resolved = self.resolve(job)
+                modified = resolved.path.stat()
+                if modified.st_mtime > cutoff:
+                    continue
+                if self._unlink_file(job, resolved.path, modified_ns=modified.st_mtime_ns):
+                    store.clear_downloadable_file(job.id)
+                    removed += 1
+            except ControlledFileExpired:
+                store.clear_downloadable_file(job.id)
+            except (ControlledFileError, OSError):
+                continue
+        return removed
+
+    def _unlink_file(
+        self, job: JobRecord, path: Path, *, modified_ns: int | None = None
+    ) -> bool:
         try:
+            candidate = Path(str(job.result["file_path"]))
+            if not candidate.is_absolute():
+                root = (
+                    self.reports_dir.parent
+                    if candidate.parts[0] == self.reports_dir.name
+                    else self.reports_dir
+                )
+                candidate = root / candidate
+            ensure_controlled_path(candidate, self.reports_dir.parent)
+            if candidate.resolve() != path:
+                return False
+            if modified_ns is not None and path.stat().st_mtime_ns != modified_ns:
+                return False
             path.unlink(missing_ok=True)
-            return
-        except OSError:
-            pass
-        try:
-            graveyard = path.with_name(path.name + ".downloaded")
-            path.replace(graveyard)
-            graveyard.unlink(missing_ok=True)
-        except OSError:
-            return
+            return True
+        except FileNotFoundError:
+            return True
+        except (OSError, ValueError):
+            return False

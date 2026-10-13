@@ -12,7 +12,7 @@
 
 | 位置 | 职责 |
 |---|---|
-| `backend/api/app.py` | 应用生命周期、API 装配、错误处理、静态页面 |
+| `backend/api/app.py` | 应用生命周期、API 装配、错误处理、静态页面；启动与停止临时导出回收任务 |
 | `frontend/src/router/index.ts`、`frontend/src/navigation.ts` | 页面路由与核心导航 |
 | `frontend/src/api/`、`frontend/src/stores/` | 请求契约与页面状态 |
 | `frontend/src/stores/review-queue.ts` | 复核队列、地址参数与选中状态同步；页面离开或考试切换后忽略旧加载结果 |
@@ -44,6 +44,10 @@
 | `user_data/cache/annotated_pages/session_N/` | 旧版本复核时生成的批注页残留；系统不再生成，由设置页“数据与空间”清理 |
 
 SQLite 当前结构由 `backend/current_schema/` 定义，包含当前 DDL、稳定初始记录及迁移身份。空库在事务内直接建立当前结构，核对实际签名后登记成功；完整当前库只核对当前定义、实际结构和迁移记录，不读取历史 SQL。旧库升级仍严格使用 `migrations/` 的历史清单。程序更新复用现有 `backend.ops` 的预演、备份、日志和待执行操作，不另建迁移协调路径，具体入口见打包与更新文档。API 文件引用通过模块受控根目录解析，数据库保存业务标识或相对引用。
+
+训练推荐正文由题库内 `personalized_recommendation_revisions` 按草稿编号与修订号唯一保存，采用未压缩 JSON，已保存正文不可更新。草稿主记录引用当前修订，事件引用对应结果修订并保存操作差异；读取当前草稿与重复操作回执均连接这张表。三张表同属 `training_ops` 数据版本域，迁移保持冻结训练实例和批次的原草稿关联。
+
+题库导入复用 `raw_papers/` 正式来源归档。导入完整成功后，写服务先原子更新上传说明中的正式原件引用，再回收暂存上传副本；重试请求及预览继续读取已归档原件。临时导出回收复用 `JobFileService` 的可消费任务类型与训练模块的批次 ZIP 路径，由应用生命周期在后台调度；训练 ZIP 缺失时由原批次清单和逐人文件重新打包。保留期限与备份排除范围统一见 [存储策略](docs/maintenance/storage-policy.md)。
 
 跨数据库没有原子事务。已有跨库流程用稳定身份、修订、快照、操作令牌和回执对账；不能把一个数据库提交成功等同于整个业务成功。训练证据先写来源 outbox，再投影到掌握度。
 

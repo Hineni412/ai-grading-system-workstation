@@ -159,6 +159,14 @@ def _run_question_import_job_locked(
         outcome = "complete"
     else:
         outcome = "partial" if question_ids else "failed"
+    if outcome == "complete" and len(result.files) == 1:
+        imported_file = result.files[0]
+        if imported_file.paper_id is not None and imported_file.status in {
+            "imported", "needs_review", "duplicate",
+        }:
+            write_service.release_import_upload(
+                resource, archived_source=imported_file.source_file,
+            )
     context.report(1.0, "question_import", outcome)
     public_result: dict[str, object] = {
         "request_id": resource.request_id,

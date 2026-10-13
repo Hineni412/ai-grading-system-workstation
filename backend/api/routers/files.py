@@ -96,11 +96,14 @@ def download_job_file(
         ) from exc
     background = None
     if file_service.should_consume(job):
+        resolved.path.touch()
+        modified_ns = resolved.path.stat().st_mtime_ns
         background = BackgroundTask(
             file_service.consume_after_send,
             job,
             resolved,
             manager.store,
+            modified_ns,
         )
     return FileResponse(
         resolved.path,

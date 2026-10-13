@@ -2139,6 +2139,27 @@ class JobStore:
                 input_ids.add(input_id)
         return input_ids
 
+    def expired_downloadable_jobs(
+        self, *, job_types: tuple[str, ...], finished_before: str
+    ) -> list[JobRecord]:
+        if not job_types:
+            return []
+        placeholders = ",".join("?" for _ in job_types)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM jobs
+                WHERE status = 'succeeded' AND job_type IN ({placeholders})
+                  AND finished_at <= ?
+                  AND CASE WHEN json_valid(result_json)
+                      THEN COALESCE(json_extract(result_json, '$.file_path'), '') != ''
+                      ELSE 0 END
+                ORDER BY id
+                """,
+                (*job_types, finished_before),
+            ).fetchall()
+        return [_job_record(row) for row in rows]
+
     def clear_downloadable_file(self, job_id: int) -> bool:
         job = self.get_job(job_id)
         if job is None or job.status != "succeeded":

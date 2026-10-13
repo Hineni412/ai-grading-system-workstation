@@ -65,7 +65,8 @@ def build_report(question_bank_db: Path, *, days: int) -> dict[str, Any]:
     drafts = {
         str(row["draft_id"]): row["draft_json"]
         for row in conn.execute(
-            "SELECT draft_id, draft_json FROM personalized_recommendation_drafts"
+            "SELECT d.draft_id, r.draft_json FROM personalized_recommendation_drafts d "
+            "JOIN personalized_recommendation_revisions r USING (draft_id, revision)"
         )
     }
     evidence = conn.execute(

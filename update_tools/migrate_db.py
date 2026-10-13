@@ -93,6 +93,9 @@ _DROP_TABLE_TARGET_RE = re.compile(
     re.IGNORECASE,
 )
 _APPROVED_TABLE_REBUILDS = {
+    "049_deduplicate_recommendation_drafts": frozenset(
+        {"personalized_recommendation_drafts", "personalized_recommendation_events"}
+    ),
     "036_allow_training_evidence_without_time_estimate": frozenset({"training_evidence_records"}),
     "005_add_status_constraints": frozenset(
         {"grading_sessions", "exam_papers", "answer_regions"}
