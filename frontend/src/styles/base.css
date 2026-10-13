@@ -477,8 +477,10 @@ h3 {
 }
 
 .app-heat-table thead th {
-  background: var(--color-accent);
-  color: #fff;
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  border-radius: 0;
+  box-shadow: 0 -1px 0 3px var(--color-bg-surface), 0 2px 0 2px var(--color-accent);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-medium);
   white-space: nowrap;

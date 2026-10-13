@@ -518,7 +518,7 @@
 .review-red-tag { display: inline-block; font-style: normal; font-size: var(--font-size-caption); line-height: 15px; padding: 0 4px; border: 1px solid var(--color-danger); border-radius: 4px; color: var(--color-danger); background: var(--color-danger-subtle); white-space: nowrap; }
 .review-step-record { min-width: 0; font-size: var(--font-size-caption); line-height: 1.45; color: var(--color-text-muted); }
 .review-step-record p { margin: 0; }
-.review-step-record__text { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.review-step-record__text { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .review-step-record__recheck { padding: 3px 6px; border-radius: 5px; color: var(--color-danger); background: var(--color-danger-subtle); }
 .review-step-record__note { display: grid; gap: 2px; font-size: var(--font-size-caption); }
 .review-step-record__note input { width: 100%; min-height: 22px; padding: 0 5px; border: 1px solid var(--color-border-strong); border-radius: 5px; background: var(--color-bg-surface); font-size: var(--font-size-caption); color: var(--color-text-primary); }

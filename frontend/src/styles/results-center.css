@@ -376,9 +376,14 @@
 
 .results-matrix thead th > span {
   margin-top: 2px;
-  color: rgb(255 255 255 / 0.78);
+  color: var(--color-text-secondary);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-regular);
+}
+
+.results-matrix thead th[aria-sort="ascending"],
+.results-matrix thead th[aria-sort="descending"] {
+  color: var(--color-accent);
 }
 
 .results-matrix .results-matrix__identity {
@@ -429,17 +434,17 @@
 }
 
 .results-matrix__sort:hover {
-  color: inherit;
-  text-decoration: underline;
+  color: var(--color-accent);
+  text-decoration: none;
 }
 
 .results-matrix__sort:focus-visible {
-  outline: 2px solid #fff;
+  outline: 2px solid var(--color-accent);
   outline-offset: 2px;
 }
 
 .results-matrix__sort > i {
-  color: rgb(255 255 255 / 0.78);
+  color: var(--color-text-muted);
   font-size: var(--font-size-caption);
   font-style: normal;
 }
