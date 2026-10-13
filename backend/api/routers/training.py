@@ -18,6 +18,7 @@ from urllib.parse import unquote
 from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, TypeAdapter
+from starlette.concurrency import run_in_threadpool
 
 from backend.api.app import ApiError, ErrorResponse
 from backend.api.read_connections import RequestReadContextCleanupError
@@ -1726,7 +1727,7 @@ async def ingest_training_scan_upload(
                     )
                 upload.write(chunk)
             upload.seek(0)
-            result = module.ingest(batch_id, command, upload)
+            result = await run_in_threadpool(module.ingest, batch_id, command, upload)
     except ApiError:
         raise
     except (
