@@ -5,6 +5,7 @@ import type { AssemblyQuestion } from '../../api/assembly'
 import { useAssemblyStore } from '../../stores/assembly'
 import StatePanel from '../design-system/StatePanel.vue'
 import QuestionContentRenderer from '../question-bank/QuestionContentRenderer.vue'
+import QuestionHtmlBlock from '../question-bank/QuestionHtmlBlock.vue'
 import {
   SHEET_CHUNK_SIZE,
   analysisBlocks,
@@ -360,7 +361,7 @@ onBeforeUnmount(() => observer?.disconnect())
               <template v-if="!answerOpen(question.id) && printedAnswer(question)">
                 <div class="aps-answer__short">
                   <strong>答案：</strong>
-                  <QuestionContentRenderer :fallback="printedAnswer(question)!" typeset-text dense />
+                  <QuestionHtmlBlock :html="printedAnswer(question)!" typeset-text />
                 </div>
                 <button type="button" class="aps-answer__toggle" @click="toggleAnswer(question.id)">看解析</button>
               </template>

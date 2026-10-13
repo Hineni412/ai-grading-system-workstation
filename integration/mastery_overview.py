@@ -47,23 +47,22 @@ def _exam_refs(point: Mapping[str, Any] | None) -> list[Mapping[str, Any]]:
     ]
 
 
-def _type_exam_questions(
-    key: str,
+def _exam_question_key(ref):
+    bank_id = int(ref.get("bank_question_id") or 0)
+    root_id = _PART_SUFFIX.sub("", str(ref.get("question_id") or ""))
+    return int(ref.get("session_id") or 0), str(bank_id) if bank_id else root_id
+
+
+def _exam_question_totals(
     students: list[Mapping[str, Any]],
     weak_points_by_student: Mapping[str, Mapping[str, Mapping[str, Any]]],
-) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
-    """Class-weighted exam questions for one type node.
-
-    Per (session, printed question) the class rate is ``Σ score / Σ full``
-    over the scoped students, each student counted once. The typical question
-    is the lowest class rate; smaller bank question ids break ties.
-    """
+):
     totals: dict[tuple[int, str], dict[str, Any]] = {}
     for student in students:
         student_id = str(student.get("student_id") or "")
-        point = weak_points_by_student.get(student_id, {}).get(key)
+        points = weak_points_by_student.get(student_id, {}).values()
         seen: set[tuple[int, str]] = set()
-        for ref in _exam_refs(point):
+        for ref in (ref for point in points for ref in _exam_refs(point)):
             assessment = ref.get("assessment") or {}
             if (
                 assessment.get("eligible") is False
@@ -72,8 +71,8 @@ def _type_exam_questions(
                 continue
             try:
                 session_id = int(ref.get("session_id") or 0)
-                score = float(ref.get("score_awarded"))
-                full = float(ref.get("full_score"))
+                score = float(ref.get("question_score_awarded", ref.get("score_awarded")))
+                full = float(ref.get("question_full_score", ref.get("full_score")))
             except (TypeError, ValueError):
                 continue
             question_id = str(ref.get("question_id") or "")
@@ -84,10 +83,11 @@ def _type_exam_questions(
                 continue
             seen.add(pair)
             bucket = totals.setdefault(
-                pair,
+                _exam_question_key(ref),
                 {
+                    "session_id": session_id,
                     "session_name": str(ref.get("session_name") or ""),
-                    "question_label": _printed_label(question_id),
+                    "question_label": _printed_label(_PART_SUFFIX.sub("", question_id)),
                     "bank_question_id": int(ref.get("bank_question_id") or 0),
                     "score": 0.0,
                     "full": 0.0,
@@ -95,8 +95,23 @@ def _type_exam_questions(
             )
             bucket["score"] += score
             bucket["full"] += full
+    return totals
+
+
+def _type_exam_questions(
+    key: str,
+    students: list[Mapping[str, Any]],
+    weak_points_by_student: Mapping[str, Mapping[str, Mapping[str, Any]]],
+    *, question_totals=None,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    totals = question_totals if question_totals is not None else _exam_question_totals(students, weak_points_by_student)
+    relevant = {
+        _exam_question_key(ref)
+        for student in students
+        for ref in _exam_refs(weak_points_by_student.get(str(student.get("student_id") or ""), {}).get(key))
+    }
     ranked = sorted(
-        totals.values(),
+        (item for pair, item in totals.items() if pair in relevant),
         key=lambda item: (
             item["score"] / item["full"],
             item["bank_question_id"] or 1 << 60,
@@ -107,6 +122,7 @@ def _type_exam_questions(
     others: list[dict[str, Any]] = []
     for index, item in enumerate(ranked):
         entry = {
+            "session_id": item["session_id"],
             "session_name": item["session_name"],
             "question_label": item["question_label"],
             "class_rate": round(item["score"] / item["full"], 4),
@@ -234,6 +250,7 @@ def build_mastery_overview(
                 index[str(point["knowledge_key"])] = point
         weak_points_by_student[str(student.get("student_id") or "")] = index
 
+    question_totals = _exam_question_totals(students, weak_points_by_student) if has_types else {}
     node_keys = [spec[0] for spec in node_specs]
     topic_keys = [key for key, kind, _c, _s in node_specs if kind == "topic"]
     skill_keys = [key for key, kind, _c, _s in node_specs if kind == "skill"]
@@ -293,7 +310,7 @@ def build_mastery_overview(
         }
         if kind == "type":
             node["typical_question"], node["other_questions"] = (
-                _type_exam_questions(key, students, weak_points_by_student)
+                _type_exam_questions(key, students, weak_points_by_student, question_totals=question_totals)
             )
         nodes.append(node)
 
@@ -419,11 +436,11 @@ def overview_payload(
 
     profile_key = service.tag_profile_cache_key(scope=scope, exam_scope=exam_scope)
     key = (
-        "mastery-overview-v3",
+        "mastery-overview-v4",
         profile_key,
         str(volume_id),
     )
-    local_key = (*profile_key, 'overview-payload-v3', str(volume_id))
+    local_key = (*profile_key, 'overview-payload-v4', str(volume_id))
     def compute():
         reader = getattr(service, '_read_local_profile', None)
         entry = reader(local_key) if callable(reader) else None

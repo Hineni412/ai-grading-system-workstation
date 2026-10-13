@@ -131,8 +131,7 @@ def _normalized_profile_scope(
 
 
 def _profile_semantics() -> tuple:
-    """Only the calendar week changes time-weighted temporary summaries."""
-    return (str(week_of(datetime.now(UTC))),)
+    return ("exam-source-scores-v2", str(week_of(datetime.now(UTC))))
 
 
 class DiagnosisSnapshot(TypedDict, total=False):
@@ -599,6 +598,8 @@ class DiagnosisProfileService:
                     "bank_question_id": int(row.get("bank_question_id") or 0),
                     "score_awarded": point_score if has_contributions else awarded,
                     "full_score": point_full if has_contributions else full_score,
+                    "question_score_awarded": awarded,
+                    "question_full_score": full_score,
                     "assessment": dict(row.get("assessment") or {}) if include_source_details else {},
                     "deduction_reason": str(row.get("deduction_reason") or "").strip(),
                     "error_summary": str(row.get("error_summary") or "").strip(),

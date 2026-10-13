@@ -110,7 +110,7 @@ export const useAssemblyStore = defineStore('assembly', () => {
     0,
   ))
   const selectedQuestionCount = computed(() => draft.value.order_ids.length)
-  const canExport = computed(() => selectedQuestionCount.value > 0 && saveState.value !== 'saving')
+  const canExport = computed(() => selectedQuestionCount.value > 0 && saveState.value === 'idle')
 
   function configure(next?: Partial<AssemblyStoreDependencies>): void {
     dependencies = { ...defaultDependencies, ...next }
@@ -209,9 +209,9 @@ export const useAssemblyStore = defineStore('assembly', () => {
     return done
   }
 
-  /** Resolves once every save queued so far has settled. */
-  function whenSaved(): Promise<void> {
-    return saveQueuePromise ?? Promise.resolve()
+  async function whenSaved(): Promise<boolean> {
+    await saveQueuePromise
+    return saveState.value === 'idle'
   }
 
   async function runSaveQueue(): Promise<void> {
@@ -418,8 +418,7 @@ export const useAssemblyStore = defineStore('assembly', () => {
   }
 
   async function submitExport(format: AssemblyExportSubmitFormat): Promise<JobResponse | null> {
-    // Export must use a settled revision, so queued saves flush first.
-    await whenSaved()
+    if (!await whenSaved()) return null
     if (!canExport.value || submitting.value) return null
     submitting.value = true
     message.value = ''

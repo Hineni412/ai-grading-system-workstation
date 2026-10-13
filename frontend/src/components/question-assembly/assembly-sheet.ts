@@ -55,9 +55,18 @@ export function stripStemBlocks(
 const ANSWER_REVEAL = /故\s*(?:答案为|选)\s*[:：]/g
 
 // 从 answer_text 提取最后一个「故答案为：X / 故选：X」片段（到 。或行尾）。
-// HTML 只用于定位，截取仍回到原文，保留 <sup>/<span class="qm"> 等排版标记。
 export function extractPrintedAnswer(answerText: string): string | null {
-  const { visible, offsets } = visibleChars(answerText)
+  const body = new DOMParser().parseFromString(answerText, 'text/html').body
+  const walker = document.createTreeWalker(body, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT)
+  const texts: Array<{ node: Text; start: number; end: number }> = []
+  let visible = ''
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (node instanceof Text) {
+      const start = visible.length
+      visible += node.data
+      texts.push({ node, start, end: visible.length })
+    } else if (node instanceof HTMLBRElement) visible += '\n'
+  }
   let last: RegExpExecArray | null = null
   for (const match of visible.matchAll(ANSWER_REVEAL)) last = match
   if (!last) return null
@@ -68,11 +77,15 @@ export function extractPrintedAnswer(answerText: string): string | null {
     if (index >= 0 && index < end) end = index
   }
   if (end <= start) return null
-  const first = offsets[start]
-  const lastOffset = offsets[end - 1]
-  if (first === undefined || lastOffset === undefined) return null
-  const fragment = answerText.slice(first, lastOffset + 1).trim()
-  return fragment || null
+  if (!visible.slice(start, end).trim()) return null
+  for (const text of texts) {
+    if (text.end <= start || text.start >= end) text.node.remove()
+    else text.node.data = text.node.data.slice(Math.max(0, start - text.start), end - text.start)
+  }
+  for (const element of [...body.querySelectorAll('*')].reverse()) {
+    if (!element.textContent?.trim()) element.remove()
+  }
+  return body.innerHTML.trim() || null
 }
 
 const ANALYSIS_MARK = '【'
@@ -98,7 +111,6 @@ export function analysisFallback(answerText: string | null | undefined): string 
 // 选择（含多选）/填空/解答；解答题子类是标签，不再单独成组。
 export function canonicalTypeGroup(questionType: string | null | undefined): string {
   const value = (questionType ?? '').trim()
-  if (!value) return '未分类'
   if (['choice', 'single_choice', 'multiple_choice', 'multi_choice', '选择题', '多选题'].includes(value)) {
     return '选择题'
   }
@@ -147,7 +159,7 @@ export function useSheetSections() {
         (question) => !assignedQuestionIds.value.has(question.id),
       )
       return remaining.length
-        ? [{ id: 'unassigned', title: '未分节', type: null, questions: remaining }, ...manualSections]
+        ? [...manualSections, { id: 'unassigned', title: '未分节', type: null, questions: remaining }]
         : manualSections
     }
     if (assembly.draft.layout_mode === 'grouped_by_type') {
@@ -156,11 +168,11 @@ export function useSheetSections() {
         const type = canonicalTypeGroup(question.question_type)
         groups.set(type, [...(groups.get(type) ?? []), question])
       }
-      return [...groups.entries()].map(([title, questions], index) => ({
+      return ['选择题', '填空题', '解答题'].filter(title => groups.has(title)).map((title, index) => ({
         id: `type-${index}`,
         title,
         type: title,
-        questions,
+        questions: groups.get(title) ?? [],
       }))
     }
     return [{

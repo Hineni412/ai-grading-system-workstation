@@ -88,7 +88,9 @@ watch(() => route.query.rules, (value) => {
 const generating = ref(false)
 const generateMessage = ref('')
 const primaryReason = computed(() => (
-  !valid(settings.value)
+  assembly.saveState !== 'idle'
+    ? assembly.saveState === 'saving' ? '正在保存出卷设置，请稍候。' : assembly.message || '出卷设置尚未保存，请重试。'
+    : !valid(settings.value)
     ? '请先核对出卷设置。'
     : rulesChanged.value
       ? '出卷设置尚未保存，请重试。'
@@ -99,10 +101,18 @@ const primaryReason = computed(() => (
 ))
 
 async function generate(): Promise<void> {
+  if (generating.value) return
   generateMessage.value = ''
-  await assembly.whenSaved()
   generating.value = true
   try {
+    if (!await assembly.whenSaved()) {
+      generateMessage.value = assembly.message || '出卷设置尚未保存，请重试。'
+      return
+    }
+    if (primaryReason.value) {
+      generateMessage.value = primaryReason.value
+      return
+    }
     const draft = await createTrainingFromAssembly({
       class_ids: assembly.draft.assembly_context?.class_ids ?? [],
       draft_revision: assembly.draft.revision,

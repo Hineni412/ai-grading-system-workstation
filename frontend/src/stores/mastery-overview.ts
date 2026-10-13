@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref, shallowRef } from 'vue'
 import { fetchStudents, type StudentSummary } from '../api/students'
-import { trainingApi, type TrainingKeyStepTypeStatsResponse, type TrainingOverview, type TrainingOverviewNode } from '../api/training'
+import { trainingApi, type TrainingKeyStepTypeStatsResponse, type TrainingOverview, type TrainingOverviewNode, type TrainingOverviewExamQuestion } from '../api/training'
 import { requestWithRefresh } from '../api/display-refresh'
 import { loadEvidenceScope, saveEvidenceScope, semesterEvidenceQuery } from '../features/evidence-scope/session'
 
@@ -114,12 +114,12 @@ export const useMasteryOverviewStore = defineStore('mastery-overview', () => {
   const examUsesByQuestion = computed(() => {
     const map = new Map<number, { session: string; label: string; rate: number | null }[]>()
     const seen = new Map<number, Set<string>>()
-    const add = (item: { session_name: string; question_label: string; class_rate: number | null; bank_question_id?: number } | null | undefined) => {
+    const add = (item: TrainingOverviewExamQuestion | null | undefined) => {
       if (!item) return
       const id = item.bank_question_id ?? 0
       if (id <= 0) return
       const session = item.session_name.replace(/学情反馈$/, '') || item.session_name
-      const key = `${session}|${item.question_label}`
+      const key = String(item.session_id)
       let keys = seen.get(id)
       if (!keys) { keys = new Set(); seen.set(id, keys) }
       if (keys.has(key)) return
@@ -142,12 +142,19 @@ export const useMasteryOverviewStore = defineStore('mastery-overview', () => {
   let keyStepKey = ''
 
   function ensureKeySteps(volumeId: string | null) {
-    if (!volumeId) return
+    if (!volumeId) {
+      keyStepController?.abort()
+      keyStepStats.value = null
+      keyStepState.value = 'idle'
+      keyStepKey = ''
+      return
+    }
     const key = JSON.stringify([volumeId, scopeSelection.value])
     if (key === keyStepKey && (keyStepState.value === 'loading' || keyStepState.value === 'ready')) return
     keyStepController?.abort()
     const current = new AbortController()
     keyStepController = current
+    if (key !== keyStepKey) keyStepStats.value = null
     keyStepKey = key
     const scope = scopeSelection.value === 'all' ? { mode: 'all' as const }
       : { mode: 'class' as const, class_id: scopeSelection.value, class_ids: [scopeSelection.value] }

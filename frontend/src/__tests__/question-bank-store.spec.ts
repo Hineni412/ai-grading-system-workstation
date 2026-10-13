@@ -146,6 +146,7 @@ describe('assembly draft save queue', () => {
         })),
       resolveQuestions: vi.fn(async () => ({ items: [], missing_question_ids: [] })),
       listRecords: vi.fn(async () => ({ items: [], total: 0 })),
+      submitExport: vi.fn(assemblyApi.submitExport),
     }
     const store = useAssemblyStore()
     await store.load({ api })
@@ -177,6 +178,7 @@ describe('assembly draft save queue', () => {
     expect(store.draft.revision).toBe('rev-c')
     expect(store.draft.order_ids).toEqual([3, 2, 1])
     expect(store.saveState).toBe('idle')
+    expect(await store.whenSaved()).toBe(true)
 
     // A rejected PUT reloads the authoritative draft and reports the conflict.
     getDraft.mockResolvedValueOnce(serverDraft('rev-server', [7, 8]))
@@ -199,7 +201,9 @@ describe('assembly draft save queue', () => {
     expect(store.draft.order_ids).toEqual([7, 8])
     expect(store.saveState).toBe('conflict')
     expect(store.message).toBe('组卷草稿已经被另一个窗口更新，请重新加载后再保存。')
-    await store.whenSaved()
+    expect(await store.whenSaved()).toBe(false)
+    expect(await store.submitExport('docx')).toBeNull()
+    expect(api.submitExport).not.toHaveBeenCalled()
   })
 
 })

@@ -461,6 +461,8 @@ class TrainingEvidenceReference(_TrainingModel):
     bank_question_id: int
     score_awarded: float
     full_score: float
+    question_score_awarded: float | None = None
+    question_full_score: float | None = None
     score_rate: float | None = None
     source_kind: Literal["current_exam", "historical_exam"] = "current_exam"
     assessment: dict[str, Any] = Field(default_factory=dict)

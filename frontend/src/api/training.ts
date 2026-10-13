@@ -453,6 +453,8 @@ export interface TrainingEvidenceReference {
   bank_question_id: number
   score_awarded: number
   full_score: number
+  question_score_awarded?: number | null
+  question_full_score?: number | null
   score_rate?: number | null
   source_kind?: 'current_exam' | 'historical_exam'
 }
@@ -640,6 +642,7 @@ export interface TrainingOverviewDistribution {
 }
 
 export interface TrainingOverviewExamQuestion {
+  session_id: number
   session_name: string
   question_label: string
   class_rate: number | null
@@ -1097,6 +1100,7 @@ function isOverviewNodeKind(value: unknown): value is OverviewNodeKind {
 function isOverviewExamQuestion(value: unknown): value is TrainingOverviewExamQuestion {
   return (
     isRecord(value)
+    && isInteger(value.session_id) && value.session_id > 0
     && typeof value.session_name === 'string'
     && typeof value.question_label === 'string'
     && (value.class_rate === null || isFiniteNumber(value.class_rate))

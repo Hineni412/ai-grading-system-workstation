@@ -99,9 +99,9 @@ export function buildQuestionInsight(
   if (!skillKeys.length) {
     steps = { state: 'no-steps', rows: [] }
   } else {
-    const stepState: QuestionInsight['steps']['state'] = !inputs.keyStepStats && inputs.keyStepState === 'error'
+    const stepState: QuestionInsight['steps']['state'] = inputs.keyStepState === 'error'
       ? 'unavailable'
-      : !inputs.keyStepStats && (inputs.keyStepState === 'idle' || inputs.keyStepState === 'loading')
+      : inputs.keyStepState === 'idle' || inputs.keyStepState === 'loading'
         ? 'loading'
         : 'ready'
     if (stepState !== 'ready' || !inputs.keyStepStats) {
