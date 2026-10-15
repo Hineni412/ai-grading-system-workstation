@@ -247,6 +247,7 @@ export const useReviewDraftStore = defineStore('review-drafts', () => {
         carryExplicit: false } as ReviewStepDraft
     })
     const hasAi = steps.some((step) => step.scoreText !== '')
+    if (steps.length === 1 && !hasAi) steps[0]!.scoreText = draft.scoreText
     const valid = steps.every((step) => scoreIssue(step.scoreText, step.maxScore) === null)
       && steps.reduce((sum, step) => sum + Number(step.scoreText), 0) === Number(draft.scoreText)
     draft.stepNotice = hasAi && !valid ? 'AI 步骤分与总分不一致，请逐步给分' : ''

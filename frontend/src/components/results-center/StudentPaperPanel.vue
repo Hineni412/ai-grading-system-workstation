@@ -1,12 +1,33 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
+import { ApiError } from '../../api/errors'
 import type {
   ResultsCenterItem,
   ResultsCenterResponse,
   ResultsCenterStudent,
 } from '../../api/results-center'
+import {
+  confirmReviewItem,
+  type ResolvedReviewItem,
+  type ReviewConfirmInput,
+  type ReviewRubricPoint,
+  type ReviewRubricSection,
+} from '../../api/review'
 import type { PageRole, RegionWorkspace } from '../../api/template-regions'
+import {
+  canReviewSteps,
+  reviewDraftIssue,
+  reviewDraftKey,
+  reviewDraftRevision,
+  stepNeedsReview,
+  stepNumber,
+  submittedSteps,
+  useReviewDraftStore,
+  type ReviewStepDraft,
+} from '../../stores/review-drafts'
+import { dedupeAcceptedAnswers } from '../../utils/answer-dedupe'
 import AppButton from '../design-system/AppButton.vue'
+import QuestionHtmlBlock from '../question-bank/QuestionHtmlBlock.vue'
 import PaperMarksLayer from './PaperMarksLayer.vue'
 import {
   formatScore,
@@ -27,11 +48,15 @@ const props = defineProps<{
   results: ResultsCenterResponse
   student: ResultsCenterStudent
   items: ResultsCenterItem[]
+  editable?: boolean
 }>()
 
 const emit = defineEmits<{
   review: [item: ResultsCenterItem]
+  saved: []
 }>()
+
+const draftStore = useReviewDraftStore()
 
 const page = ref<PageRole>('front')
 const scale = ref(1)
@@ -177,9 +202,213 @@ const deductionText = computed(() => {
   return deduction.value.text ?? '无扣分说明'
 })
 
+// 展开行的复核上下文：复核条目按 review_item_id 严格对应
+// （student_id 兜底只用于上方扣分理由），与成绩快照同源缓存。
+const reviewContext = ref<{
+  key: string | null
+  state: 'idle' | 'loading' | 'ready'
+  item: ResolvedReviewItem | null
+  rubric: ReviewRubricSection | null
+  rubricFailed: boolean
+}>({ key: null, state: 'idle', item: null, rubric: null, rubricFailed: false })
+let reviewContextRequest = 0
+
+const rubricParts = computed(() => {
+  const parts = new Map<string, {
+    partId: string
+    label: string
+    reference: ReviewRubricPoint
+    points: { point: ReviewRubricPoint; index: number }[]
+  }>()
+  ;(reviewContext.value.rubric?.points ?? []).forEach((point, index) => {
+    const part = parts.get(point.part_id)
+    if (part) {
+      part.points.push({ point, index })
+    } else {
+      parts.set(point.part_id, {
+        partId: point.part_id,
+        label: point.part_label,
+        reference: point,
+        points: [{ point, index }],
+      })
+    }
+  })
+  return [...parts.values()]
+})
+
+const contextEditable = computed(() => {
+  const context = reviewContext.value
+  const row = selectedItem.value
+  return props.editable === true
+    && context.state === 'ready'
+    && context.item !== null
+    && row !== null
+    && row.combined_group !== true
+})
+
+const currentDraft = computed(() => {
+  const item = reviewContext.value.item
+  if (!contextEditable.value || item === null) return null
+  return draftStore.drafts[reviewDraftKey(item)] ?? null
+})
+
+const draftIssue = computed(() => {
+  const draft = currentDraft.value
+  const item = reviewContext.value.item
+  if (draft === null || item === null) return null
+  return reviewDraftIssue(draft, item.max_score)
+})
+
+const submitting = ref(false)
+const submitFailed = ref<'' | 'conflict' | 'error'>('')
+
+const saveVisible = computed(() => {
+  const draft = currentDraft.value
+  const item = reviewContext.value.item
+  return draft !== null && item !== null
+    && (draft.dirty || item.score_status === 'ai_review')
+})
+
+const saveDisabled = computed(() => draftIssue.value !== null || submitting.value)
+
+function hasUnsavedDraft(item: ResultsCenterItem): boolean {
+  return draftStore.drafts[`review-item:${item.review_item_id}`]?.dirty === true
+}
+
+function prepareDraft(): void {
+  const item = reviewContext.value.item
+  if (!contextEditable.value || item === null) return
+  const draft = draftStore.ensureDraft(item)
+  if (canReviewSteps(item, reviewContext.value.rubric) && !draft.stepScores) {
+    draftStore.ensureSteps(item, reviewContext.value.rubric)
+  }
+}
+
+function loadReviewContext(item: ResultsCenterItem): void {
+  const request = ++reviewContextRequest
+  reviewContext.value = {
+    key: item.review_item_id,
+    state: 'loading',
+    item: null,
+    rubric: null,
+    rubricFailed: false,
+  }
+  const data = walkthroughDataFor(props.results)
+  void Promise.all([
+    data.items(item.question_id).then(
+      (items) => items,
+      () => null,
+    ),
+    data.rubric(item.question_id).then(
+      (rubric) => ({ rubric, failed: false }),
+      () => ({ rubric: null, failed: true }),
+    ),
+  ]).then(([items, rubricResult]) => {
+    if (request !== reviewContextRequest) return
+    reviewContext.value = {
+      key: item.review_item_id,
+      state: 'ready',
+      item: items?.find(
+        (entry) => entry.review_item_id === item.review_item_id,
+      ) ?? null,
+      rubric: rubricResult.rubric,
+      rubricFailed: rubricResult.failed,
+    }
+    prepareDraft()
+  })
+}
+
+async function submitReviewContext(): Promise<void> {
+  const item = reviewContext.value.item
+  const draft = currentDraft.value
+  if (item === null || draft === null || saveDisabled.value) return
+  const note = draft.note.trim()
+  const input: ReviewConfirmInput = {
+    review_item_id: item.review_item_id,
+    expected_revision: reviewDraftRevision(draft),
+    student_id: item.student_id,
+    result_id: item.result_id,
+    detail_id: item.detail_id,
+    score_awarded: Number(draft.scoreText.trim()),
+    ...(note ? { deduction_reason: note } : {}),
+    ...(draft.stepScores ? { step_scores: submittedSteps(draft) } : {}),
+  }
+  submitting.value = true
+  submitFailed.value = ''
+  try {
+    await confirmReviewItem(item.session_id, item.question_id, input)
+    draftStore.markConfirmed(draft.key)
+    emit('saved')
+  } catch (error) {
+    submitFailed.value = error instanceof ApiError && error.kind === 'conflict'
+      ? 'conflict'
+      : 'error'
+  } finally {
+    submitting.value = false
+  }
+}
+
+function resetDraft(): void {
+  const item = reviewContext.value.item
+  if (item === null) return
+  draftStore.markConfirmed(reviewDraftKey(item))
+  submitFailed.value = ''
+  prepareDraft()
+}
+
+function discardDraft(): void {
+  const item = reviewContext.value.item
+  if (item !== null) draftStore.markConfirmed(reviewDraftKey(item))
+  emit('saved')
+}
+
+function pointStep(point: ReviewRubricPoint): ReviewStepDraft | undefined {
+  return currentDraft.value?.stepScores?.find(
+    (step) => step.partId === point.part_id && step.stepId === point.step_id,
+  )
+}
+
+function updatePointScore(point: ReviewRubricPoint, event: Event): void {
+  const draft = currentDraft.value
+  if (!draft?.stepScores) return
+  const input = event.target as HTMLInputElement
+  const raw = input.value.trim()
+  const normalized = /^\d+$/.test(raw) ? String(Number(raw)) : raw
+  const index = draft.stepScores.findIndex(
+    (step) => step.partId === point.part_id && step.stepId === point.step_id,
+  )
+  if (index < 0) return
+  draftStore.updateStep(draft.key, index, { scoreText: normalized })
+  input.value = normalized
+}
+
+function updateTotalScore(event: Event): void {
+  const draft = currentDraft.value
+  if (draft === null || draft.stepScores) return
+  draftStore.updateScore(draft.key, (event.target as HTMLInputElement).value)
+}
+
+function selectScore(event: Event): void {
+  ;(event.currentTarget as HTMLInputElement).select()
+}
+
+function pointTag(point: ReviewRubricPoint): { red: boolean; label: string } {
+  const item = reviewContext.value.item
+  return item === null
+    ? { red: false, label: '' }
+    : stepNeedsReview(item, pointStep(point))
+}
+
+function dedupedAnswers(point: ReviewRubricPoint): string[] {
+  return dedupeAcceptedAnswers(point.accepted_answers, point.standard_answer)
+}
+
+function scoreInputMaxLength(maxScore: number): number {
+  return Math.max(1, Math.min(3, String(Math.max(0, maxScore)).length + 1))
+}
+
 function selectItem(item: ResultsCenterItem): void {
   selectedItemKey.value = item.review_item_id
-  ensureDeduction(item)
   const mark = markByItem.value.get(item.review_item_id)
   if (mark) {
     page.value = mark.page
@@ -190,11 +419,32 @@ function selectItem(item: ResultsCenterItem): void {
   }
 }
 
+watch(
+  [() => props.results, selectedItemKey],
+  ([, key]) => {
+    reviewContextRequest += 1
+    submitFailed.value = ''
+    const row = props.items.find(
+      (entry) => entry.review_item_id === key,
+    ) ?? null
+    if (row === null) {
+      deduction.value = { key: null, state: 'idle', text: null }
+      reviewContext.value = {
+        key: null, state: 'idle', item: null, rubric: null, rubricFailed: false,
+      }
+      return
+    }
+    ensureDeduction(row)
+    loadReviewContext(row)
+  },
+)
+
 watch(() => props.student.student_id, () => {
   page.value = 'front'
   scale.value = 1
   selectedItemKey.value = null
   deduction.value = { key: null, state: 'idle', text: null }
+  submitFailed.value = ''
   imageFailed.value = { front: false, back: false }
 })
 </script>
@@ -282,6 +532,7 @@ watch(() => props.student.student_id, () => {
           <span class="results-status" :data-status="item.score_status">
             {{ scoreStatusLabel(item.score_status) }}
           </span>
+          <span v-if="hasUnsavedDraft(item)" class="paper-list__tag">未保存</span>
           <span
             v-if="item.combined_group"
             class="paper-list__tag"
@@ -300,11 +551,165 @@ watch(() => props.student.student_id, () => {
           class="paper-list__detail"
         >
           <p>{{ deductionText }}</p>
+          <p v-if="reviewContext.state !== 'ready'" class="paper-list__muted">
+            正在读取评分标准…
+          </p>
+          <template v-else>
+            <p v-if="reviewContext.rubricFailed" class="paper-list__warning">
+              评分标准暂时无法读取
+            </p>
+            <template v-else-if="reviewContext.rubric && rubricParts.length">
+              <section
+                v-for="part in rubricParts"
+                :key="part.partId"
+                class="paper-rubric-part"
+              >
+                <h4 v-if="rubricParts.length > 1" class="paper-rubric-part__label">
+                  {{ part.label || part.partId }}
+                </h4>
+                <details
+                  v-if="part.reference.standard_answer || dedupedAnswers(part.reference).length"
+                  class="paper-rubric-details"
+                >
+                  <summary>参考解答</summary>
+                  <dl class="paper-rubric-fields">
+                    <template v-if="part.reference.standard_answer">
+                      <dt>{{ part.points.some((entry) => entry.point.answer_kind === 'conditions') ? '参考解答与示例答案' : '参考解答' }}</dt>
+                      <dd>
+                        <QuestionHtmlBlock :text="part.reference.standard_answer" typeset-text />
+                      </dd>
+                    </template>
+                    <template v-if="dedupedAnswers(part.reference).length">
+                      <dt>等价答案</dt>
+                      <dd>
+                        <QuestionHtmlBlock :text="dedupedAnswers(part.reference).join('；')" typeset-text />
+                      </dd>
+                    </template>
+                  </dl>
+                </details>
+                <div
+                  v-for="entry in part.points"
+                  :key="`${entry.point.part_id}:${entry.point.step_id}`"
+                  class="paper-rubric-point"
+                >
+                  <div class="paper-rubric-point__row">
+                    <span class="paper-rubric-point__goal">
+                      {{ stepNumber(entry.index) }}
+                      <QuestionHtmlBlock
+                        :text="entry.point.core_goal || entry.point.part_label"
+                        inline
+                        typeset-text
+                      />
+                      <i v-if="pointTag(entry.point).red" class="paper-list__red-tag">{{ pointTag(entry.point).label }}</i>
+                    </span>
+                    <span
+                      v-if="currentDraft?.stepScores && pointStep(entry.point)"
+                      class="paper-rubric-point__input"
+                    >
+                      <input
+                        :value="pointStep(entry.point)!.scoreText"
+                        type="text"
+                        inputmode="numeric"
+                        :maxlength="scoreInputMaxLength(entry.point.score)"
+                        :aria-label="`第${entry.index + 1}步给分，满分${formatScore(entry.point.score)}`"
+                        :disabled="submitting"
+                        @input="updatePointScore(entry.point, $event)"
+                        @keydown.enter.prevent="submitReviewContext"
+                        @focus="selectScore"
+                        @click="selectScore"
+                      >
+                      <i>/ {{ formatScore(entry.point.score) }}</i>
+                    </span>
+                    <span v-else class="paper-rubric-point__max">{{ formatScore(entry.point.score) }} 分</span>
+                  </div>
+                  <p
+                    v-if="pointStep(entry.point)?.recheck"
+                    class="paper-list__warning paper-rubric-point__recheck"
+                  >{{ pointStep(entry.point)!.recheck }}</p>
+                  <details
+                    v-if="entry.point.required_elements.length || entry.point.deduction_rules.length"
+                    class="paper-rubric-details"
+                  >
+                    <summary>评分要点</summary>
+                    <dl class="paper-rubric-fields">
+                      <template v-if="entry.point.required_elements.length">
+                        <dt>{{ entry.point.answer_kind === 'conditions' ? '判对条件' : '得分条件' }}</dt>
+                        <dd>
+                          <QuestionHtmlBlock :text="entry.point.required_elements.join('；')" typeset-text />
+                        </dd>
+                      </template>
+                      <template v-if="entry.point.deduction_rules.length">
+                        <dt>扣分例外</dt>
+                        <dd>
+                          <QuestionHtmlBlock :text="entry.point.deduction_rules.join('；')" typeset-text />
+                        </dd>
+                      </template>
+                    </dl>
+                  </details>
+                </div>
+              </section>
+            </template>
+            <p
+              v-else-if="!reviewContext.rubric"
+              class="paper-list__muted"
+            >当前题没有可展示的评分标准</p>
+          </template>
+          <template v-if="currentDraft">
+            <p v-if="currentDraft.stepNotice" class="paper-list__warning">{{ currentDraft.stepNotice }}</p>
+            <p v-if="currentDraft.stepScores" class="paper-list__total">
+              合计 {{ currentDraft.scoreText || '—' }} / {{ formatScore(item.max_score) }}
+            </p>
+            <p v-else class="paper-list__total">
+              <input
+                :value="currentDraft.scoreText"
+                type="text"
+                inputmode="numeric"
+                :maxlength="scoreInputMaxLength(item.max_score)"
+                aria-label="教师最终分"
+                :aria-invalid="draftIssue !== null ? 'true' : 'false'"
+                :disabled="submitting"
+                @input="updateTotalScore"
+                @keydown.enter.prevent="submitReviewContext"
+                @focus="selectScore"
+                @click="selectScore"
+              >
+              <span>/ {{ formatScore(item.max_score) }} 分</span>
+            </p>
+            <p v-if="draftIssue" class="paper-list__warning">{{ draftIssue }}</p>
+            <p v-if="submitFailed === 'conflict'" class="paper-list__warning" role="alert">
+              这道题已在别处更新，草稿已保留。
+            </p>
+            <p v-else-if="submitFailed === 'error'" class="paper-list__warning" role="alert">
+              保存失败，草稿已保留，请重试。
+            </p>
+            <div class="paper-list__actions">
+              <AppButton
+                v-if="saveVisible"
+                variant="primary"
+                size="small"
+                :disabled="saveDisabled"
+                @click="submitReviewContext"
+              >{{ submitting ? '正在保存…' : currentDraft.dirty ? '保存' : '确认原分' }}</AppButton>
+              <AppButton
+                v-if="currentDraft.dirty"
+                variant="ghost"
+                size="small"
+                :disabled="submitting"
+                @click="resetDraft"
+              >撤销修改</AppButton>
+              <AppButton
+                v-if="submitFailed === 'conflict'"
+                variant="ghost"
+                size="small"
+                @click="discardDraft"
+              >放弃草稿并重新读取</AppButton>
+            </div>
+          </template>
           <AppButton
             variant="ghost"
             size="small"
             @click="emit('review', item)"
-          >去复核这题</AppButton>
+          >去复核页细看</AppButton>
         </div>
       </li>
     </ol>
@@ -323,7 +728,7 @@ watch(() => props.student.student_id, () => {
 
 .paper-panel {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 340px;
+  grid-template-columns: minmax(0, 1fr) 400px;
   grid-template-rows: minmax(0, 1fr);
   min-height: 0;
   gap: var(--space-4);
@@ -458,6 +863,7 @@ watch(() => props.student.student_id, () => {
 
 .paper-list {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   align-content: start;
   min-height: 0;
   margin: 0;
@@ -536,6 +942,131 @@ watch(() => props.student.student_id, () => {
   margin: 0 0 var(--space-2);
   font-size: var(--font-size-dense);
   white-space: pre-wrap;
+}
+
+.paper-list__muted {
+  color: var(--muted-foreground);
+}
+
+.paper-list__warning {
+  color: var(--color-warning);
+}
+
+.paper-list__red-tag {
+  display: inline-block;
+  margin-inline-start: var(--space-1);
+  padding: 0 4px;
+  border: 1px solid var(--color-danger);
+  border-radius: 4px;
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
+  font-size: var(--font-size-caption);
+  font-style: normal;
+  line-height: 15px;
+  white-space: nowrap;
+}
+
+.paper-rubric-part {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-1);
+  margin-bottom: var(--space-2);
+}
+
+.paper-rubric-part__label {
+  margin: 0;
+  font-size: var(--font-size-dense);
+  font-weight: var(--font-weight-semibold);
+}
+
+.paper-rubric-details > summary {
+  color: var(--muted-foreground);
+  font-size: var(--font-size-caption);
+  cursor: pointer;
+}
+
+.paper-rubric-fields {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-1) var(--space-2);
+  margin: var(--space-1) 0 var(--space-2);
+  font-size: var(--font-size-dense);
+}
+
+.paper-rubric-fields dt {
+  color: var(--muted-foreground);
+}
+
+.paper-rubric-fields dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.paper-rubric-point {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+}
+
+.paper-rubric-point__row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: var(--font-size-dense);
+}
+
+.paper-rubric-point__goal {
+  flex: 1;
+  min-width: 0;
+}
+
+.paper-rubric-point__max,
+.paper-rubric-point__input {
+  flex: none;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.paper-rubric-point__input i {
+  font-style: normal;
+}
+
+.paper-list__detail input {
+  width: 3em;
+  min-height: var(--control-height-small);
+  padding: 0 var(--space-1);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--card);
+  color: var(--foreground);
+  font-size: var(--font-size-dense);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.paper-list__detail input:focus-visible {
+  outline: var(--border-selected-width) solid var(--primary);
+  outline-offset: 1px;
+}
+
+.paper-rubric-point__recheck {
+  margin: 0;
+}
+
+.paper-list__total {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.paper-list__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
 }
 
 @container (max-width: 760px) {

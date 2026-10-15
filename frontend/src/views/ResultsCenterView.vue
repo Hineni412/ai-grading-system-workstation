@@ -722,6 +722,20 @@ function reviewFromPaperPanel(item: ResultsCenterItem): void {
   navigateToReview(item, student)
 }
 
+async function onPaperPanelSaved(): Promise<void> {
+  const sessionId = sessionStore.selectedSessionId
+  if (sessionId === null) return
+  const studentId = selectedStudent.value?.student_id
+  await resultsStore.load(sessionId)
+  if (studentId !== undefined) {
+    const fresh = results.value?.students.find(
+      (student) => student.student_id === studentId,
+    )
+    if (fresh) selectedStudent.value = fresh
+  }
+  void refreshPersonalStates()
+}
+
 function openStudentDrawer(
   student: ResultsCenterStudent,
   event?: MouseEvent,
@@ -1163,7 +1177,9 @@ function closeStudentDrawer(restoreFocus = true): void {
           :results="results"
           :student="selectedStudent"
           :items="orderedDrawerItems"
+          :editable="!isImportSession"
           @review="reviewFromPaperPanel"
+          @saved="onPaperPanelSaved"
         />
       </template>
     </SheetContent>
