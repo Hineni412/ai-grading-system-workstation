@@ -434,7 +434,80 @@ class DiagnosisProfileService:
             self._local_profile_path(),
             max_entries=_LOCAL_PROFILE_MAX_ENTRIES,
             max_bytes=_LOCAL_PROFILE_MAX_BYTES,
+            compact=True,
         )
+
+    def maintain_local_profiles(self, *, can_continue=lambda: True, compact=True,
+                                dry_run=False) -> dict:
+        """Maintain only free-to-rebuild diagnosis caches, using read rules.
+
+        Last-display responses deliberately survive input changes so a page
+        can show its previous result while refreshing. They are not pruned.
+        """
+        asset_states = []
+
+        def profile_current(key, signature):
+            if (not isinstance(key, tuple) or len(key) < 5
+                    or key[0] != "tag-profile"):
+                return False
+            if len(key) > 5 and key[5] in ("overview-payload-v2", "overview-payload-v3"):
+                return False
+            try:
+                if len(key) > 6 and key[5] == "api-diagnosis-json" and key[6] is not None:
+                    grouping = key[6]
+                    if (not isinstance(grouping, tuple) or len(grouping) != 4
+                            or grouping[0] != "grouping-public-v2"
+                            or grouping[2] != str(datetime.now(UTC).date())):
+                        return False
+                    if not asset_states:
+                        from question_bank.services.question_read_service import _skill_asset_manifest
+                        manifest = _skill_asset_manifest(self.data_root)
+                        asset_states.append(tuple(sorted(manifest.items())) if manifest is not None else None)
+                    if asset_states[0] is None:
+                        return None
+                    if grouping[3] != asset_states[0]:
+                        return False
+                scope, exam_scope = json.loads(key[3]), json.loads(key[4])
+                if not isinstance(scope, dict) or not isinstance(exam_scope, dict):
+                    return False
+                base = self.tag_profile_cache_key(scope=scope, exam_scope=exam_scope)
+                if key[:5] != base[1:]:
+                    return False
+                expected = self._local_profile_signature((base[0], *key))
+                return None if expected is None else signature == expected
+            except (ValueError, TypeError, OSError, sqlite3.Error):
+                return None
+
+        def session_current(key, signature):
+            if (not isinstance(key, tuple) or len(key) != 2
+                    or key[0] != "session-error-records"):
+                return False
+            try:
+                session = self.db.sessions.get_grading_session(int(key[1]))
+                if not session or session.get("is_deleted"):
+                    return False
+                expected = self._session_error_change_stamp(int(key[1]))
+                return None if expected is None else signature == expected
+            except (ValueError, TypeError, OSError, sqlite3.Error):
+                return None
+
+        result = {"removed_files": 0, "rewritten_files": 0,
+                  "freed_bytes": 0, "completed": True}
+        for name, count, size, predicate in (
+            ("entries", _LOCAL_PROFILE_MAX_ENTRIES, _LOCAL_PROFILE_MAX_BYTES, profile_current),
+            ("sessions", _SESSION_ERROR_MAX_ENTRIES, _SESSION_ERROR_MAX_BYTES, session_current),
+        ):
+            store = persistent_entry_store(
+                self.data_root / "reports" / ".training_diagnosis" / name,
+                max_entries=count, max_bytes=size, compact=compact,
+            )
+            outcome = store.maintain(predicate, can_continue=can_continue, dry_run=dry_run)
+            for field in ("removed_files", "rewritten_files", "freed_bytes"):
+                result[field] += outcome[field]
+            if not outcome["completed"]:
+                result["completed"] = False
+                break
+        return result
 
     def _local_profile_entry_path(self, cache_key: tuple[str, ...]) -> Path:
         return self._local_profile_store().entry_path(cache_key[1:])
@@ -1582,6 +1655,7 @@ class DiagnosisProfileService:
             self.data_root / "reports" / ".training_diagnosis" / "sessions",
             max_entries=_SESSION_ERROR_MAX_ENTRIES,
             max_bytes=_SESSION_ERROR_MAX_BYTES,
+            compact=True,
         )
         pkey = ("session-error-records", session_id)
         records = store.get(pkey, changes)

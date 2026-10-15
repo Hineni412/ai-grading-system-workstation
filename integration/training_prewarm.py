@@ -22,7 +22,7 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -246,6 +246,8 @@ class TrainingPrewarmWorker:
         self._seen_qb_browse_generation: object = None
         self._recents_loaded = False
         self._persisted_recents: str | None = None
+        self._maintained_sources: tuple | None = None
+        self._next_cache_maintenance = 0.0
         self.batches: list[tuple[int, float]] = []
 
     def start(self) -> None:
@@ -286,6 +288,10 @@ class TrainingPrewarmWorker:
         )
         day = datetime.now(timezone(timedelta(hours=8))).date().isoformat()
         group_day = datetime.now(timezone.utc).date().isoformat()
+        maintenance_sources = (generations, day, group_day)
+        if (maintenance_sources != self._maintained_sources
+                or time.monotonic() >= self._next_cache_maintenance):
+            self._maintain_caches(maintenance_sources)
         recent_generation = _recent_generation()
         if (self._startup_done and generations == self._seen_generations and day == self._seen_day
                 and group_day == self._seen_group_day
@@ -333,6 +339,39 @@ class TrainingPrewarmWorker:
             self._seen_group_day = group_day
             self._seen_recent_generation = recent_generation
         return True
+
+    def _maintenance_idle(self) -> bool:
+        with _FOREGROUND_LOCK:
+            quiet = (_FOREGROUND_ACTIVE == 0 and
+                     time.monotonic() - _FOREGROUND_LAST_FINISH >= self._foreground_quiet_seconds)
+        return (quiet and not self._stop.is_set() and not display_refresh_busy()
+                and not self._jobs_active())
+
+    def _maintain_caches(self, sources: tuple) -> None:
+        if not self._maintenance_idle():
+            return
+        from backend.repositories.grading_database import open_grading_repositories
+        from integration.diagnosis_profile_service import DiagnosisProfileService
+
+        # Maintenance reads only versions, file metadata and session paths.
+        # Use the existing database in place; no snapshot copies or fitting.
+        grading_path = Path(self._paths.db_path).resolve()
+        with closing(sqlite3.connect(grading_path.as_uri() + "?mode=ro", uri=True)) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA query_only = ON")
+            service = DiagnosisProfileService(
+                grading_path, self._paths.qb_db_path, data_root=self._paths.data_root,
+                grading_db=open_grading_repositories(grading_path, external_connection=connection),
+            )
+            result = service.maintain_local_profiles(
+                can_continue=self._maintenance_idle,
+            )
+        if result["completed"]:
+            self._maintained_sources = sources
+            self._next_cache_maintenance = time.monotonic() + 60 * 60
+        if result["removed_files"] or result["rewritten_files"]:
+            _LOG.info("training cache maintenance removed=%d compacted=%d freed_bytes=%d",
+                      result["removed_files"], result["rewritten_files"], result["freed_bytes"])
 
     def _jobs_active(self) -> bool:
         manager = self._job_manager
