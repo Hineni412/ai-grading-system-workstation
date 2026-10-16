@@ -28,7 +28,7 @@ subtitle: 读取与保存规则已实施，本机应用已更新，旧报告与�
 
 本轮用内存测试库运行了现有函数。只修改另一张表，选定的成绩没有变化，两段整库比较的结果仍改变。这个实验确认了比较范围，未测量真实页面延迟。尚不能断言后端慢主要由它造成，也不能给出提速比例。
 
-当前代码见[错因读取](D:/AI阅卷系统_工作机版_v1.5.0/backend/class_analysis.py)、[读取改动检测](D:/AI阅卷系统_工作机版_v1.5.0/integration/data_generation.py)和[学情缓存读取](D:/AI阅卷系统_工作机版_v1.5.0/integration/diagnosis_profile_service.py)。
+当前代码见[错因读取](../../backend/class_analysis.py)、[读取改动检测](../../integration/data_generation.py)和[学情缓存读取](../../integration/diagnosis_profile_service.py)。
 
 ## C 各个地方采用同一规则
 

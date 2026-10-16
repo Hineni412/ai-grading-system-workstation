@@ -2,6 +2,7 @@ import { expect, type Page, type Route } from '@playwright/test';
 import { test } from './mock-fixtures'
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import type { SessionSummary } from '../src/api/sessions'
 
 const sourceId = 'a'.repeat(32)
 const sourceRevision = 'b'.repeat(64)
@@ -11,7 +12,8 @@ const savedRevision = 'd'.repeat(64)
 const session = {
   id: 7, name: '七年级数学期末', status: 'created', curriculum_volume_id: null, is_deleted: false,
   deleted_at: null, created_at: '2026-07-15T08:00:00Z', updated_at: '2026-07-15T08:00:00Z',
-}
+  kind: 'scan', exam_date: null,
+} satisfies SessionSummary
 
 const questions = [
   {

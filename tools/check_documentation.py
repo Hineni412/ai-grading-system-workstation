@@ -204,7 +204,16 @@ def check_markdown_links(project_root: Path) -> list[DocumentationIssue]:
             target = _markdown_target(raw).split("#", 1)[0]
             if not target or "://" in target or target.startswith("#"):
                 continue
-            if not (path.parent / target).resolve().exists():
+            if Path(target).is_absolute():
+                issues.append(
+                    DocumentationIssue(
+                        "DOC001",
+                        _relative(root, path),
+                        _line_number(text, match.start()),
+                        f"Markdown target must use a relative path: {raw}",
+                    )
+                )
+            elif not (path.parent / target).resolve().exists():
                 issues.append(
                     DocumentationIssue(
                         "DOC001",
