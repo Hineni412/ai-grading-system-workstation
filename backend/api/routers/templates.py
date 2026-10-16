@@ -369,7 +369,7 @@ def get_answer_region_auto_proposal(
     session_dir = Path(templates_dir) / f"session_{int(session_id)}"
     front, back = _template_paths(template, session_dir)
     draft_service = AnswerRegionDraftService(session_dir)
-    fingerprint = draft_service.compute_template_fingerprint(
+    fingerprint = draft_service.template_revision(
         *_stored_template_paths(template)
     )
     rubric_path = resolve_stored_file_path(
@@ -385,7 +385,7 @@ def get_answer_region_auto_proposal(
     current = _require_template(db, session_id)
     _template_paths(current, session_dir)
     if (current["id"] != template["id"] or
-            draft_service.compute_template_fingerprint(
+            draft_service.template_revision(
                 *_stored_template_paths(current)
             ) != fingerprint):
         raise ApiError(409, "region_draft_template_changed", "Session template changed during recognition")
@@ -469,7 +469,7 @@ def _template_fingerprint(
         template,
         Path(draft_service.draft_path).parent,
     )
-    return draft_service.compute_template_fingerprint(
+    return draft_service.template_revision(
         *_stored_template_paths(template)
     )
 

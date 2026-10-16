@@ -38,7 +38,7 @@ from .journal import (
 )
 from .lock import OpsLockBusy, OpsOperationLock
 from .plan_store import OpsPlanStore
-from .write_service import OpsWriteService, _file_sha256
+from .write_service import OpsWriteService, _file_revision
 
 
 class _QuietLogger:
@@ -211,7 +211,7 @@ def _revalidate_and_stage(*, paths: Any, manifest: OpsOperationManifest) -> None
         raise ValueError("unsupported offline operation")
     if not source.is_file() or source.is_symlink():
         raise FileNotFoundError("prepared source is missing")
-    if _file_sha256(source) != manifest.resource_fingerprint:
+    if _file_revision(source) != manifest.resource_fingerprint:
         raise ValueError("prepared source changed")
     if staging.exists():
         shutil.rmtree(staging)

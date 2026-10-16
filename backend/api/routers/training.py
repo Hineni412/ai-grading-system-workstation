@@ -227,8 +227,17 @@ def _reject_nonfinite_diagnosis_model(model: BaseModel) -> None:
 
 
 def _validated_diagnosis_json(public, *, include_student_detail=True, response_mode='full') -> bytes:
+    public = {key: value for key, value in public.items() if not str(key).startswith('_')}
+    if public.get('diagnosis_identity') != 'question_tag':
+        raise ValueError('unexpected diagnosis identity')
     if response_mode in {'display', 'display_shared'}:
-        model = TrainingDisplayDiagnosisResponse.model_validate(_diagnosis_display(public))
+        # Select the response fields before walking nested evidence that this
+        # view never returns. The retained fields still use the same cleanup
+        # and numeric validation as the complete response.
+        public = _diagnosis_display(public)
+    public = _public_training_mapping(public, reject_nonfinite=True)
+    if response_mode in {'display', 'display_shared'}:
+        model = TrainingDisplayDiagnosisResponse.model_validate(public)
     else:
         model = (TrainingDiagnosisResponse.model_validate(public) if include_student_detail
                  else TrainingDiagnosisSummaryResponse.model_validate(_diagnosis_summary(public)))
@@ -289,13 +298,11 @@ def _diagnosis_response_bytes(service: DiagnosisProfileService, *, scope, exam_s
             tail = json.dumps(group_payload, ensure_ascii=False, allow_nan=False,
                               separators=(',', ':')).encode('utf-8')
             return gzip.compress(base[:-1] + b',"grouping":' + tail + b'}', compresslevel=1, mtime=0)
-        source = diagnosis if diagnosis is not None else service.build_profiles(scope=scope, exam_scope=exam_scope)
-        public = _public_training_mapping({k: v for k, v in source.items() if not str(k).startswith('_')},
-                                          reject_nonfinite=True)
-        if public.get('diagnosis_identity') != 'question_tag':
-            raise ValueError('unexpected diagnosis identity')
+        reader = (getattr(service, 'build_summary_profiles', service.build_profiles) if response_mode in {'display', 'display_shared'}
+                  else service.build_profiles)
+        source = diagnosis if diagnosis is not None else reader(scope=scope, exam_scope=exam_scope)
         # Direct serialization avoids another full dict construction and walk.
-        encoded = _validated_diagnosis_json(public, include_student_detail=include_student_detail,
+        encoded = _validated_diagnosis_json(source, include_student_detail=include_student_detail,
                                            response_mode=response_mode)
         compressed = gzip.compress(encoded, compresslevel=1, mtime=0)
         return compressed
@@ -381,6 +388,21 @@ def _build_grouped_diagnosis(service, grouping_module, *, scope_dump, exam_scope
     return diagnosis
 
 
+def _grouped_asset_state(service):
+    from question_bank.services.question_read_service import _skill_asset_manifest
+    manifest = _skill_asset_manifest(service.data_root)
+    return tuple(sorted(manifest.items())) if manifest is not None else None
+
+
+def _grouped_display_source_version(service, scope, exam_scope):
+    assets = _grouped_asset_state(service)
+    if assets is None:
+        return None
+    return (service.tag_profile_cache_key(scope=scope, exam_scope=exam_scope, live=True),
+            data_version_token(service.question_bank_db_path, 'training_ops'), assets,
+            str(datetime.now(UTC).date()))
+
+
 def _grouped_diagnosis_response_bytes(service, module, *, scope, exam_scope, grouping,
                                      include_student_detail=True, response_mode='full') -> bytes:
     record_request('grouped_diagnosis', scope=scope, exam_scope=exam_scope,
@@ -388,16 +410,12 @@ def _grouped_diagnosis_response_bytes(service, module, *, scope, exam_scope, gro
                            'include_student_detail': include_student_detail, 'response_mode': response_mode})
     # Reuse the existing complete asset manifest. Database versions do not
     # detect edits to rich content, image fallbacks or preview files.
-    from question_bank.services.question_read_service import _skill_asset_manifest
-    manifest = _skill_asset_manifest(service.data_root)
-    asset_state = tuple(sorted(manifest.items())) if manifest is not None else None
+    asset_state = _grouped_asset_state(service)
     factory = lambda: _build_grouped_diagnosis(service, module() if callable(module) else module,
         scope_dump=scope, exam_scope_dump=exam_scope, grouping=grouping,
         asset_state=asset_state)
     if asset_state is None:
-        public = _public_training_mapping({k: v for k, v in factory().items() if not str(k).startswith('_')},
-                                          reject_nonfinite=True)
-        return _validated_diagnosis_json(public, include_student_detail=include_student_detail,
+        return _validated_diagnosis_json(factory(), include_student_detail=include_student_detail,
                                         response_mode=response_mode)
     # The outer response key already covers both source database generations.
     # The saved entry is checked against their logical content revisions, so
@@ -489,7 +507,10 @@ def _compute_overview_bytes(
             "students": [],
             "nodes": [{**node, "students": []} for node in overview.get("nodes", [])],
         }
-    return json_bytes(TrainingOverviewResponse.model_validate(overview))
+    # Pydantic already prepares JSON-compatible fields; avoid FastAPI walking
+    # the entire nested result again, while retaining the finite-number check.
+    return json.dumps(TrainingOverviewResponse.model_validate(overview).model_dump(mode='json'),
+                      ensure_ascii=False, allow_nan=False, separators=(',', ':')).encode('utf-8')
 
 
 def _grouped_record(scope: Mapping[str, Any], exam_scope: Mapping[str, Any],
@@ -528,6 +549,7 @@ def build_training_diagnosis(
             content, refreshing = serve_with_refresh(
                 data_root=_display_root(service),
                 endpoint='training-diagnosis',
+                source_version=lambda: service.tag_profile_cache_key(scope=scope_dump, exam_scope=exam_scope_dump, live=True),
                 request_key={'scope': scope_dump, 'exam_scope': exam_scope_dump,
                              'include_student_detail': body.include_student_detail,
                              'response_mode': body.response_mode},
@@ -545,6 +567,7 @@ def build_training_diagnosis(
             content, refreshing = serve_with_refresh(
                 data_root=_display_root(service),
                 endpoint='training-diagnosis',
+                source_version=lambda: _grouped_display_source_version(service, scope_dump, exam_scope_dump),
                 request_key={'scope': scope_dump, 'exam_scope': exam_scope_dump,
                              'grouping': body.grouping.model_dump(),
                              'include_student_detail': body.include_student_detail,
@@ -560,11 +583,7 @@ def build_training_diagnosis(
         diagnosis = _build_grouped_diagnosis(service, resolved_module, scope_dump=scope_dump,
             exam_scope_dump=exam_scope_dump, grouping=body.grouping)
         if body.response_mode == 'display_shared':
-            public = _public_training_mapping(
-                {k: v for k, v in diagnosis.items() if not str(k).startswith('_')}, reject_nonfinite=True)
-            if public.get('diagnosis_identity') != 'question_tag':
-                raise ValueError('unexpected diagnosis identity')
-            return Response(content=_validated_diagnosis_json(public, response_mode='display_shared'),
+            return Response(content=_validated_diagnosis_json(diagnosis, response_mode='display_shared'),
                             media_type='application/json')
     except ValueError as exc:
         raise ApiError(
@@ -622,6 +641,7 @@ def build_training_overview(
             content, refreshing = serve_with_refresh(
                 data_root=_display_root(service),
                 endpoint='training-overview',
+                source_version=lambda: service.tag_profile_cache_key(scope=scope_dump, exam_scope=exam_scope_dump, live=True),
                 request_key={'scope': scope_dump, 'exam_scope': exam_scope_dump,
                              'include_student_detail': body.include_student_detail},
                 compute=lambda: _compute_overview_bytes(

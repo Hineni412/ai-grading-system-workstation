@@ -8,7 +8,6 @@ from typing import Any
 
 from question_bank.models.tag_schema import PREDICTED_TRIGGER_KINDS
 from question_bank.services.error_pattern_service import (
-    _content_fingerprint,
     _stale_prediction,
 )
 
@@ -43,9 +42,7 @@ def record_predicted_patterns(
     ).fetchone()
     if question is None:
         return 0
-    content_token = "content:" + _content_fingerprint(
-        question["question_text"], question["answer_text"]
-    )
+    content_token = "source-current"
     from backend.error_patterns import (
         extract_canonical_option,
         normalize_option_answer,
@@ -104,7 +101,7 @@ def record_predicted_patterns(
         if any(not _stale_prediction(conn, row) for row in matches):
             continue
         # 内容修改后，旧题上确实出现过的同名错法不能删除；新分析明确再次
-        # 给出同一名称时，更新其内容指纹并保留原出现证据。
+        # 给出同一名称时，更新其来源状态并保留原出现证据。
         reusable = next((
             row for row in matches
             if row["source"] == PREDICTED_SOURCE

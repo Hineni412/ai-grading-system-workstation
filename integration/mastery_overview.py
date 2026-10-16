@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from collections import defaultdict
 import pickle
 import re
 import sqlite3
@@ -85,17 +86,17 @@ def _exam_question_totals(
             if pair in seen:
                 continue
             seen.add(pair)
-            bucket = totals.setdefault(
-                _exam_question_key(ref),
-                {
+            total_key = _exam_question_key(ref)
+            bucket = totals.get(total_key)
+            if bucket is None:
+                bucket = totals[total_key] = {
                     "session_id": session_id,
                     "session_name": str(ref.get("session_name") or ""),
                     "question_label": _printed_label(_PART_SUFFIX.sub("", question_id)),
                     "bank_question_id": int(ref.get("bank_question_id") or 0),
                     "score": 0.0,
                     "full": 0.0,
-                },
-            )
+                }
             bucket["score"] += score
             bucket["full"] += full
     return totals
@@ -300,7 +301,8 @@ def build_mastery_overview(
             "kind": kind,
             "chapter_key": chapter_key,
             "section_key": section_key,
-            "target_kind": chapter_kinds.get(chapter_key, target_kind_for_key(key, resolver, clean_id)),
+            "target_kind": (chapter_kinds[chapter_key] if chapter_key in chapter_kinds
+                            else target_kind_for_key(key, resolver, clean_id)),
             "definition": str(catalog[key].get("definition") or ""),
             "in_volume": key in in_volume_keys,
             "group_mastery": (group_mastery_by_key.get(key) or {}).get("mastery"),
@@ -423,6 +425,150 @@ def build_mastery_overview(
 _OVERVIEW_CACHE = ResultCache(limit=32)
 
 
+def _semester_overview_population(service, exam_scope, resolver):
+    """Project only overview fields; fit the same complete semester population.
+
+    The overview never displays a prior without evidence or diagnostic error
+    details. Keep source question references for its examples and retain the
+    same scope, score, coverage and mastery contracts as the full diagnosis.
+    """
+    from integration.evidence_scope import EvidenceScopeResolver
+    from integration.diagnosis_profile_service import _number
+    from question_bank.mastery.current import aggregate_current_mastery
+    from question_bank.mastery.model import build_exam_observations
+    from question_bank.recommendation.target_matching import target_index
+
+    scope = {'mode': 'all', 'use_historical_fallback': False}
+    resolved = EvidenceScopeResolver(service.db).resolve(scope=scope, exam_scope=exam_scope)
+    session_ids = [int(s['id']) for s in resolved.sessions]
+    student_ids = [str(s['id']) for s in resolved.students]
+    projections = service._tag_projections(session_ids)
+    rows = service._projected_tag_evidence(student_ids=student_ids, session_ids=session_ids,
+                                          projection_by_session=projections, include_diagnostics=False)
+    times = service.mastery_session_times(exam_scope=exam_scope)
+    profile = {'exam_scope': dict(exam_scope), '_mastery_session_times': times,
+               '_mastery_population': set(student_ids) == {str(s['id']) for s in service.db.students.list_students()},
+               '_mastery_observations': build_exam_observations(rows, resolver, times)}
+    selected = set(student_ids)
+    mastery = {identity: value for identity, value in service.semester_mastery(
+        profile, include_unobserved=False).items() if identity[0] in selected}
+    parents = {r.source_key: r.target_key for r in resolver.relations if r.relation_type == 'parent'}
+    nodes = {n.stable_key: n for n in resolver.nodes}
+    kinds = target_index(resolver)
+    catalog = [{'knowledge_key': key, 'knowledge_point': n.display_name,
+                'definition': n.definition, 'parent_knowledge_key': parents.get(key),
+                'node_kind': kinds.get(key, {}).get('kind', 'topic')}
+               for key, n in nodes.items()]
+    points = defaultdict(dict)
+    # Keep the first source per question, matching governed-point deduplication.
+    # A reference may belong to several targets, but its total is counted once.
+    for row in rows:
+        awarded = max(_number(row.get('score_awarded')), 0.0)
+        full = max(_number(row.get('full_score')), 0.0)
+        contributions = row.get('target_contributions')
+        targets = (contributions if isinstance(contributions, Mapping)
+                   else (row.get('question_tags') or {}).get('knowledge_point', ()))
+        sid, qid = int(row.get('session_id') or 0), str(row.get('question_id') or '')
+        ref = {'session_id': sid, 'session_name': str(row.get('session_name') or ''),
+               'question_id': qid, 'bank_question_id': int(row.get('bank_question_id') or 0),
+               'question_score_awarded': awarded, 'question_full_score': full}
+        if row.get('combined_group_id'):
+            ref['combined_group_id'] = row['combined_group_id']
+        student_points = points[str(row.get('student_id') or '')]
+        for raw_key in targets:
+            key = str(raw_key or '').strip()
+            if key not in nodes:
+                matches = resolver.resolve(key)
+                key = matches[0].stable_key if matches else f'knowledge_point:{raw_key}'
+            item = student_points.get(key)
+            if item is None:
+                item = student_points[key] = {
+                    'knowledge_key': key, 'mastery': None, 'evidence_count': 0, 'refs': {}}
+            item['refs'].setdefault((sid, qid), ref)
+    for (student, key), current in mastery.items():
+        if key not in nodes:
+            continue
+        item = points[student].setdefault(key, {'knowledge_key': key, 'refs': {}})
+        item.update(mastery=current.value, evidence_count=current.evidence_count,
+                    observation_count=current.observation_count, tier=current.tier,
+                    full_correct_count=current.full_correct_count, recent_trend=current.recent_trend,
+                    interval_low=current.interval_low, interval_high=current.interval_high)
+    parent_keys = set(parents.values())
+    def point_order(item):
+        key = item['knowledge_key']
+        name = nodes[key].display_name if key in nodes else key.removeprefix('knowledge_point:')
+        parent = nodes.get(parents.get(key))
+        return (parent.display_name if parent else name, key not in parent_keys, name)
+    students = []
+    for student in resolved.students:
+        sid = str(student['id'])
+        values = sorted(points[sid].values(), key=point_order)
+        for point in values:
+            refs = point.pop('refs')
+            point['source_question_refs'] = [refs[key] for key in sorted(refs)]
+        students.append({'student_id': sid, 'student_code': str(student.get('student_code') or ''),
+                         'student_name': str(student.get('name') or ''), 'class_id': str(student.get('class_name') or ''),
+                         **resolved.score_profiles.get(sid, {}), 'weak_points': values})
+    warnings = list(resolved.warnings)
+    covered = sum(p.covered_items for p in projections.values())
+    total = sum(p.total_items for p in projections.values())
+    if any(p.missing_items for p in projections.values()):
+        warnings.append(f'知识图谱仅覆盖 {covered}/{total} 个评分题；缺失题目已列出。')
+    if not any(s['weak_points'] for s in students):
+        warnings.append('所选范围内没有已关联且带知识点标签的诊断证据。')
+    return {'scope': resolved.normalized_scope(scope),
+            'exam_scope': {'mode': 'semester', 'curriculum_volume_id': str(exam_scope.get('curriculum_volume_id') or ''),
+                           'session_ids': session_ids,
+                           'sessions': [{'session_id': int(s['id']), 'session_name': str(s.get('session_name') or '')}
+                                        for s in resolved.sessions]},
+            'students': students, 'knowledge_catalog': catalog, 'warnings': list(dict.fromkeys(warnings)),
+            'group_weak_points': [{'knowledge_key': key, 'mastery': value.value,
+                                   'interval_low': value.interval_low, 'interval_high': value.interval_high,
+                                   'tier': value.tier}
+                                  for key, value in aggregate_current_mastery(mastery).items() if value.value is not None]}
+
+
+def _semester_overview_input(service, scope, exam_scope, resolver):
+    from integration.evidence_scope import EvidenceScopeResolver
+    from integration.diagnosis_profile_service import _normalized_profile_scope
+    from question_bank.mastery.current import aggregate_current_mastery
+
+    population_scope = {'mode': 'all', 'use_historical_fallback': False}
+    population_key = service.tag_profile_cache_key(scope=population_scope, exam_scope=exam_scope)
+    # Reuse the existing bounded overview cache for the small semester input.
+    # A first class selection only selects students and recomputes group means.
+    population = _OVERVIEW_CACHE.get_or_compute(('overview-population-v1', population_key),
+        lambda: _semester_overview_population(service, exam_scope, resolver))
+    scope = _normalized_profile_scope(scope, exam_scope)
+    # The unrestricted semester request already resolved these students and
+    # scores while building population. Do not read the same exam totals again.
+    if (str(scope.get('mode') or 'all') == 'all'
+            and not any(scope.get(key) for key in ('student_ids', 'class_id', 'class_name',
+                        'class_ids', 'include_student_ids', 'exclude_student_ids'))
+            and all(scope.get(key) is None for key in ('score_rate_min', 'score_rate_max'))):
+        return population
+    resolved = EvidenceScopeResolver(service.db).resolve(scope=scope, exam_scope=exam_scope)
+    normalized = resolved.normalized_scope(scope)
+    if normalized == population['scope']:
+        return population
+    by_student = {s['student_id']: s for s in population['students']}
+    students = [by_student[str(s['id'])] for s in resolved.students]
+    selected = set(s['student_id'] for s in students)
+    mastery = {identity: value for identity, value in service.semester_mastery(
+        {'exam_scope': dict(exam_scope)}, include_unobserved=False).items() if identity[0] in selected}
+    no_evidence = '所选范围内没有已关联且带知识点标签的诊断证据。'
+    warnings = [w for w in population['warnings'] if w != no_evidence]
+    warnings.extend(resolved.warnings)
+    if not any(s['weak_points'] for s in students):
+        warnings.append(no_evidence)
+    return {**population, 'scope': normalized, 'students': students,
+            'warnings': list(dict.fromkeys(warnings)),
+            'group_weak_points': [{'knowledge_key': key, 'mastery': value.value,
+                                   'interval_low': value.interval_low, 'interval_high': value.interval_high,
+                                   'tier': value.tier}
+                                  for key, value in aggregate_current_mastery(mastery).items() if value.value is not None]}
+
+
 def overview_payload(
     service: Any,
     *,
@@ -451,26 +597,36 @@ def overview_payload(
             payload = pickle.loads(entry[0]).get('overview')
             if isinstance(payload, dict):
                 return payload
-        diagnosis = getattr(service, 'build_summary_profiles', service.build_profiles)(scope=scope, exam_scope=exam_scope)
         resolver = None
         try:
             resolver = CurrentKnowledgeResolver.from_active_database(service.question_bank_db_path)
         except (CurrentKnowledgeUnavailable, OSError, sqlite3.Error, TypeError, ValueError):
             pass
-        if resolver is not None and chapter_target_kind(resolver, volume_id) == "type":
-            # Type nodes carry no knowledge-skill associations; skip loading
-            # question facets entirely in type mode.
-            associations = []
-        elif resolver is not None:
+        diagnosis = None
+        from integration.diagnosis_profile_service import DiagnosisProfileService
+        if resolver is not None and exam_scope.get('mode') == 'semester' and isinstance(service, DiagnosisProfileService):
             try:
-                associations = knowledge_skill_associations(load_question_facets(service.question_bank_db_path, resolver))
+                diagnosis = _semester_overview_input(service, scope, exam_scope, resolver)
+            except (CurrentKnowledgeUnavailable, OSError, sqlite3.Error, TypeError, ValueError):
+                pass  # Preserve the existing evidence-only fallback when mastery is unavailable.
+        if diagnosis is None:
+            diagnosis = getattr(service, 'build_summary_profiles', service.build_profiles)(scope=scope, exam_scope=exam_scope)
+        payload = build_mastery_overview(diagnosis, volume_id=volume_id, associations=[], resolver=resolver)
+        returned_keys = {node['knowledge_key'] for node in payload['nodes']}
+        skill_keys = [node['knowledge_key'] for node in payload['nodes'] if node['kind'] == 'skill']
+        associations = []
+        if resolver is not None and skill_keys and payload['target_kind'] != 'type':
+            try:
+                associations = knowledge_skill_associations(load_question_facets(
+                    service.question_bank_db_path, resolver,
+                    include_practice_observations=False, association_skill_keys=skill_keys))
             except (OSError, sqlite3.Error, TypeError, ValueError):
-                associations = []
-                diagnosis = {**diagnosis, 'warnings': [*(diagnosis.get('warnings') or []), '知识点与技能关联暂不可用']}
-        else:
-            associations = []
-            diagnosis = {**diagnosis, 'warnings': [*(diagnosis.get('warnings') or []), '知识点与技能关联暂不可用']}
-        return build_mastery_overview(diagnosis, volume_id=volume_id, associations=associations, resolver=resolver)
+                payload['warnings'].append('知识点与技能关联暂不可用')
+        elif resolver is None:
+            payload['warnings'].append('知识点与技能关联暂不可用')
+        payload['associations'] = [dict(link) for link in associations
+                                   if link['topic_key'] in returned_keys and link['skill_key'] in returned_keys]
+        return payload
     payload = _OVERVIEW_CACHE.get_or_compute(key, compute)
     if getattr(service, 'persist_snapshots', False):
         service._save_local_profile(local_key, (pickle.dumps({'overview': payload}, pickle.HIGHEST_PROTOCOL),

@@ -190,7 +190,6 @@ class TrainingSubmissionModule:
 
     def list_batches(self, paper_batch_id: str) -> list[dict[str, Any]]:
         clean_id = _identifier(paper_batch_id)
-        initialize_database(self.db_path)
         with connect(self.db_path) as connection:
             rows = connection.execute(
                 """
@@ -209,9 +208,6 @@ class TrainingSubmissionModule:
 
     def create_batch(self, command: CreateScanBatchCommand) -> dict[str, Any]:
         initialize_database(self.db_path)
-        fingerprint = hashlib.sha256(
-            command.operation_token.encode("utf-8")
-        ).hexdigest()
         instances = [self.paper_module.get(value) for value in command.paper_instance_ids]
         if any(item["status"] != "frozen" for item in instances):
             raise InvalidSubmissionUpload("all expected papers must be frozen")
@@ -238,7 +234,7 @@ class TrainingSubmissionModule:
                 (
                     batch_id,
                     command.operation_token,
-                    fingerprint,
+                    "0" * 64,  # Unused legacy column; no request fingerprint.
                     paper_batches.pop(),
                     command.actor_ref,
                     now,
@@ -275,7 +271,6 @@ class TrainingSubmissionModule:
                 connection,
                 batch_id=batch_id,
                 operation_token=command.operation_token,
-                fingerprint=fingerprint,
                 event_type="batch_created",
                 actor_ref=command.actor_ref,
                 expected_revision=0,
@@ -296,9 +291,6 @@ class TrainingSubmissionModule:
         digest = hashlib.sha256(content).hexdigest()
         if not _has_file_signature(content, command.media_type):
             raise InvalidSubmissionUpload("scan file signature is invalid")
-        fingerprint = hashlib.sha256(
-            command.operation_token.encode("utf-8")
-        ).hexdigest()
         with _batch_lock(clean_batch_id):
             batch = self._batch_row(clean_batch_id)
             self._require_revision(batch, command.expected_revision)
@@ -324,7 +316,6 @@ class TrainingSubmissionModule:
                         connection,
                         batch_id=clean_batch_id,
                         operation_token=command.operation_token,
-                        fingerprint=fingerprint,
                         event_type="upload_ingested",
                         actor_ref=command.actor_ref,
                         expected_revision=command.expected_revision,
@@ -391,7 +382,7 @@ class TrainingSubmissionModule:
                         upload_id,
                         clean_batch_id,
                         command.operation_token,
-                        fingerprint,
+                        "0" * 64,  # Unused legacy column; no request fingerprint.
                         command.filename,
                         command.media_type,
                         digest,
@@ -423,7 +414,6 @@ class TrainingSubmissionModule:
                     connection,
                     batch_id=clean_batch_id,
                     operation_token=command.operation_token,
-                    fingerprint=fingerprint,
                     event_type="upload_ingested",
                     actor_ref=command.actor_ref,
                     expected_revision=command.expected_revision,
@@ -443,9 +433,6 @@ class TrainingSubmissionModule:
     ) -> dict[str, Any]:
         clean_batch_id = _identifier(batch_id)
         initialize_database(self.db_path)
-        fingerprint = hashlib.sha256(
-            command.operation_token.encode("utf-8")
-        ).hexdigest()
         with _batch_lock(clean_batch_id), connect(self.db_path) as connection:
             batch = self._batch_row(clean_batch_id, connection=connection)
             self._require_revision(batch, command.expected_revision)
@@ -549,7 +536,6 @@ class TrainingSubmissionModule:
                 batch_id=clean_batch_id,
                 submission_id=submission_id,
                 operation_token=command.operation_token,
-                fingerprint=fingerprint,
                 event_type={
                     "match": "page_matched",
                     "replace": "page_replaced",
@@ -569,7 +555,6 @@ class TrainingSubmissionModule:
     def finalize_submission(self, submission_id: str) -> dict[str, Any]:
         """Return a P4-14-safe snapshot only when every page is unambiguous."""
         clean_id = _identifier(submission_id)
-        initialize_database(self.db_path)
         with connect(self.db_path) as connection:
             row = connection.execute(
                 "SELECT * FROM training_submissions WHERE submission_id = ?",
@@ -620,9 +605,6 @@ class TrainingSubmissionModule:
         if submission is None:
             raise SubmissionNotFound(clean_id)
         batch_id = str(submission["batch_id"])
-        fingerprint = hashlib.sha256(
-            command.operation_token.encode("utf-8")
-        ).hexdigest()
         with _batch_lock(batch_id), connect(self.db_path) as connection:
             batch = self._batch_row(batch_id, connection=connection)
             self._require_revision(batch, command.expected_revision)
@@ -656,7 +638,6 @@ class TrainingSubmissionModule:
                 batch_id=batch_id,
                 submission_id=clean_id,
                 operation_token=command.operation_token,
-                fingerprint=fingerprint,
                 event_type="submission_cancelled",
                 actor_ref=command.actor_ref,
                 expected_revision=command.expected_revision,
@@ -672,7 +653,6 @@ class TrainingSubmissionModule:
         duplicate_upload: bool = False,
     ) -> dict[str, Any]:
         clean_id = _identifier(batch_id)
-        initialize_database(self.db_path)
         with connect(self.db_path) as connection:
             batch = self._batch_row(clean_id, connection=connection)
             submissions = connection.execute(
@@ -1145,7 +1125,6 @@ class TrainingSubmissionModule:
         *,
         batch_id: str,
         operation_token: str,
-        fingerprint: str,
         event_type: str,
         actor_ref: str,
         expected_revision: int,
@@ -1165,7 +1144,7 @@ class TrainingSubmissionModule:
                 batch_id,
                 submission_id,
                 operation_token,
-                fingerprint,
+                "0" * 64,  # Unused legacy column; no request fingerprint.
                 event_type,
                 actor_ref,
                 expected_revision,

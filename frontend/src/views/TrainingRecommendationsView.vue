@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ExamReferencePanel from '../components/question-bank/ExamReferencePanel.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 
@@ -553,6 +554,7 @@ onBeforeUnmount(() => { studentsController?.abort(); paperSourceController?.abor
       <template v-if="!draftOpen" #navigation><KnowledgeTrainingTabs /></template>
       <template v-if="draftOpen && draftWorkspace" #actions><StepProgress :steps="draftWorkspace.steps" :current="draftWorkspace.current" aria-label="草稿步骤" @select="paperDraft?.selectWorkspaceStep($event)" /></template>
     </PageHeader>
+    <ExamReferencePanel v-if="!draftOpen" compact />
 
     <TrainingScopeBar v-if="referenceState !== 'error' && trainingMode !== 'paper'"
       :volume-label="curriculumScope.selectedVolume?.label ?? '未选择教学学期'"

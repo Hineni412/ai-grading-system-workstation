@@ -2299,6 +2299,7 @@ def _answer_only_training_draft(
     confidence: float,
     source_kind: Literal["combined_model", "confirmed_rubric_adapter"],
     question_type_group: str | None = None,
+    source_content_hash: str | None = None,
 ) -> TrainingCriteriaDraft:
     multiple = len(answer_units) > 1
     points = tuple(
@@ -2325,7 +2326,8 @@ def _answer_only_training_draft(
     return TrainingCriteriaDraft(
         schema_version="training-criteria-draft-v1",
         question_id=question.question_id,
-        source_content_hash=question.criterion_source_content_hash,
+        source_content_hash=(question.criterion_source_content_hash
+                             if source_content_hash is None else source_content_hash),
         question_type=question_type_group or question.question_type_group,
         points=points,
         auxiliary_rules=(),
@@ -2527,10 +2529,8 @@ def training_criteria_from_solution_evidence(
         raise ProjectionValidationError(
             "solution evidence belongs to another question"
         )
-    if evidence.source_content_hash != solution_evidence_source_content_hash(
-        question
-    ):
-        raise ProjectionValidationError("solution evidence source is stale")
+    # This is a projection of saved evidence. Its source identity is copied;
+    # publishers check the current question once at their write boundary.
     # 题型建议被采纳时用真实题组与作答形态投影，否则保持本地推导结果。
     response_shape = objective_response_shape or question.objective_response_shape
     type_group = question_type_group or question.question_type_group
@@ -2563,6 +2563,7 @@ def training_criteria_from_solution_evidence(
                 confidence=evidence.confidence,
                 source_kind="combined_model",
                 question_type_group=type_group,
+                source_content_hash=evidence.source_content_hash,
             ),
             evidence=evidence,
         )
@@ -2598,6 +2599,7 @@ def training_criteria_from_solution_evidence(
                 confidence=evidence.confidence,
                 source_kind="combined_model",
                 question_type_group=type_group,
+                source_content_hash=evidence.source_content_hash,
             ),
             evidence=evidence,
         )
@@ -2618,7 +2620,7 @@ def training_criteria_from_solution_evidence(
         training_criteria=TrainingCriteriaDraft(
             schema_version=LEGACY_CRITERIA_SCHEMA,
             question_id=question.question_id,
-            source_content_hash=question.criterion_source_content_hash,
+            source_content_hash=evidence.source_content_hash,
             question_type=type_group,
             points=points,
             auxiliary_rules=evidence.auxiliary_rules,

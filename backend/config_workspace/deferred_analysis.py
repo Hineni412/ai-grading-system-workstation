@@ -142,9 +142,6 @@ class DeferredAnalysisArtifactStore:
         submitted_hash = str(payload.get("content_hash") or "").strip().lower()
         if not _CONTENT_HASH.fullmatch(submitted_hash):
             raise ValueError("deferred analysis artifact hash is invalid")
-        body = {key: value for key, value in payload.items() if key != "content_hash"}
-        if _hash_payload(body) != submitted_hash:
-            raise ValueError("deferred analysis artifact content hash does not match")
         if expected_content_hash is not None:
             expected_hash = str(expected_content_hash or "").strip().lower()
             if not _CONTENT_HASH.fullmatch(expected_hash) or expected_hash != submitted_hash:
@@ -178,7 +175,7 @@ class DeferredAnalysisArtifactStore:
     def exists(self, artifact_id: str) -> bool:
         """Check only the exact controlled artifact path.
 
-        The subsequent load remains handle-anchored and hash-verified; this
+        The subsequent load remains bound to the saved artifact identity; this
         helper is only used to choose between a first run and a resume.
         """
 

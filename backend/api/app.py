@@ -366,6 +366,9 @@ def create_app(
     api.include_router(training_router)
     api.include_router(workbench_router)
 
+    # Materialize route validation metadata before serving the first page.
+    # This prepares the API schema only; it does not read or precompute data.
+    api.openapi()
     return api
 
 

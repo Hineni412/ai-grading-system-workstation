@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import shutil
 import sqlite3
 import tempfile
@@ -82,7 +81,8 @@ def _manifest_cache_key(files: tuple[Path, ...]) -> tuple[object, ...]:
             (
                 str(path.resolve()),
                 path.name,
-                hashlib.sha256(path.read_bytes()).hexdigest(),
+                path.stat().st_mtime_ns,
+                path.stat().st_size,
             )
             for path in files
         ),

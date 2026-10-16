@@ -2673,6 +2673,8 @@ details[open] > summary > .qb-caret, details[open] > summary > .qb-switcher-care
 .qb-todo-filters .qb-filter-chip { gap: 4px; padding: 5px 10px; }
 .qb-todo-list-status { margin-left: auto; color: var(--color-text-muted); font-size: var(--font-size-caption); }
 .qb-todo-filter-action { display: flex; justify-content: space-between; gap: 12px; padding: 0 16px 12px; color: var(--color-text-secondary); font-size: var(--font-size-caption); }
+.qb-todo-action-heading { border-top: 1px solid var(--color-border-subtle); }
+.qb-todo-action-heading h3 { margin: 0; font-size: var(--font-size-dense); font-weight: var(--font-weight-semibold); }
 .qb-todo-group article.qb-todo-question { align-items: flex-start; padding-block: 14px; }
 .qb-todo-question > strong { padding-top: 3px; min-width: 52px; }
 .qb-todo-question-copy { flex: 1; min-width: 0; display: grid; gap: 6px; }

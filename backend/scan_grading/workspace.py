@@ -2088,16 +2088,16 @@ class ScanGradingWorkspace:
 def _preflight_template_fingerprint_matches(current: Any, expected: str) -> bool:
     if current.template_fingerprint == expected:
         return True
-    # Preflights recorded before the fingerprint became a hash of the stored
-    # template paths contain a hash of the image contents instead.
+    # Only already-paid legacy preflights need their historical binding format.
     from backend.answer_regions.answer_region_draft_service import (
         legacy_template_content_hash,
+        legacy_template_path_hash,
     )
 
     try:
         return (
-            legacy_template_content_hash(current.front.path, current.back.path)
-            == expected
+            legacy_template_path_hash(current.template_fingerprint) == expected
+            or legacy_template_content_hash(current.front.path, current.back.path) == expected
         )
-    except OSError:
+    except (OSError, TypeError, ValueError):
         return False

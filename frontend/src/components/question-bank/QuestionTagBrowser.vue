@@ -43,7 +43,7 @@ const volumeLabel = computed(() => {
 })
 const chapters = computed(() => props.index?.chapters ?? [])
 const duplicateCount = computed(() => bank.questions.reduce((count, question) => count + (question.duplicate_members?.length ?? 0), 0))
-const sourcePapers = computed(() => bank.papers.filter(paper => paper.curriculum_volume_id === scope.selectedVolumeId))
+const sourcePapers = computed(() => bank.papers.filter(paper => paper.curriculum_volume_id === scope.selectedVolumeId || paper.is_entrance_exam))
 const filteredSourcePapers = computed(() => {
   const needle = sourceSearch.value.trim().toLowerCase()
   return sourcePapers.value.filter(paper => !needle || (paper.title ?? '').toLowerCase().includes(needle))

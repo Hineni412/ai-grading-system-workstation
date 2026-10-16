@@ -385,17 +385,32 @@ def _bank_materials(bank_path, bank_ids):
         conn.row_factory = sqlite3.Row
         difficulties = {row["id"]: row["difficulty"] for row in conn.execute("SELECT id, difficulty FROM questions")}
         materials = {}
-        for qid in set(bank_ids):
-            question = conn.execute("SELECT difficulty, question_text FROM questions WHERE id=?", (qid,)).fetchone()
-            if question is None:
-                continue
-            tags = conn.execute("SELECT tag_type, tag_value FROM question_tags WHERE question_id=?", (qid,)).fetchall()
-            scope = conn.execute("SELECT primary_section_id FROM question_scope_summary WHERE question_id=?", (qid,)).fetchone()
-            parts = dict(conn.execute("SELECT part_id, formula_difficulty FROM question_part_difficulty_features WHERE question_id=? AND is_active=1", (qid,)))
-            materials[qid] = {"difficulty": float(question["difficulty"]) if question["difficulty"] is not None else None, "stem": question["question_text"],
-                "section": scope[0] if scope else None, "parts": parts,
-                "primary": sorted({v for t, v in tags if t == "knowledge_point" and is_type_key(v)}),
-                "secondary": sorted({v for t, v in tags if t == "secondary_type"})}
+        ids = sorted(set(bank_ids))
+        for start in range(0, len(ids), 500):
+            batch = ids[start:start + 500]
+            marks = ','.join('?' for _ in batch)
+            for question in conn.execute(f'SELECT id,difficulty FROM questions WHERE id IN ({marks})', batch):
+                materials[int(question['id'])] = {
+                    'difficulty': float(question['difficulty']) if question['difficulty'] is not None else None,
+                    'section': None, 'parts': {}, 'primary': set(), 'secondary': set()}
+            for row in conn.execute(f'SELECT question_id,tag_type,tag_value FROM question_tags '
+                                    f"WHERE tag_type IN ('knowledge_point','secondary_type') AND question_id IN ({marks})", batch):
+                material = materials.get(int(row['question_id']))
+                if material is not None:
+                    if row['tag_type'] == 'secondary_type':
+                        material['secondary'].add(row['tag_value'])
+                    elif is_type_key(row['tag_value']):
+                        material['primary'].add(row['tag_value'])
+            for row in conn.execute(f'SELECT question_id,primary_section_id FROM question_scope_summary WHERE question_id IN ({marks})', batch):
+                if int(row[0]) in materials:
+                    materials[int(row[0])]['section'] = row[1]
+            for row in conn.execute(f'SELECT question_id,part_id,formula_difficulty FROM question_part_difficulty_features '
+                                    f'WHERE is_active=1 AND question_id IN ({marks})', batch):
+                if int(row[0]) in materials:
+                    materials[int(row[0])]['parts'][row[1]] = row[2]
+        for material in materials.values():
+            material['primary'] = sorted(material['primary'])
+            material['secondary'] = sorted(material['secondary'])
         return materials, difficulties
 
 
@@ -486,7 +501,8 @@ def _coverage_materials(items, materials, difficulties, read_service):
     sections = {}
     volumes = {section_volumes[s] for s in touched if s in section_volumes}
     for volume in sorted(volumes):
-        profile = read_service.chapter_exam_profile(volume)
+        profile = read_service.chapter_exam_profile(
+            volume, section_ids=[section for section in touched if section_volumes.get(section) == volume])
         for chapter in profile["chapters"]:
             for section in chapter["sections"]:
                 sections[section["id"]] = {**section, "chapter": chapter["label"]}
@@ -529,7 +545,9 @@ def _coverage_materials(items, materials, difficulties, read_service):
     return coverage, coverage_types, sum(section not in sections for section in touched)
 
 
-_CACHE: dict[int, tuple[tuple, dict]] = {}
+from integration.result_cache import ResultCache
+
+_CACHE = ResultCache(limit=8, max_bytes=32 * 1024 * 1024)
 
 
 def _stamp(path):
@@ -552,21 +570,23 @@ def _paper_review_signature(db, session_id, reports_dir):
     from backend.session_analysis import infer_data_root, question_bank_db_path
     from path_manager import resolve_stored_file_path
     from question_bank.solution_evidence.evidence_snapshot import snapshot_path
+    from integration.data_generation import data_version_token, database_change_stamp
 
     repositories = as_grading_repositories(db)
     db_path = repositories.db_path
     bank_path = question_bank_db_path(db_path)
     data_root = infer_data_root(db_path)
     session_row = repositories.sessions.get_grading_session(int(session_id)) or {}
-    paths = [db_path, Path(f"{db_path}-wal"), bank_path,
-             Path(f"{bank_path}-wal") if bank_path else None,
-             ClassAnalysisStateStore(reports_dir)._path(session_id)]
+    origins = (data_version_token(db_path, 'results') or database_change_stamp(db_path),
+               (data_version_token(bank_path, 'materials', 'training_records')
+                or database_change_stamp(bank_path)) if bank_path and bank_path.exists() else None)
+    paths = [ClassAnalysisStateStore(reports_dir)._path(session_id)]
     if session_row.get("rubric_path"):
         paths.append(resolve_stored_file_path(session_row["rubric_path"], data_root=data_root))
     if data_root is not None:
         paths.append(snapshot_path(data_root / "config" / "uploaded", session_id))
-    return tuple((str(path), _stamp(path)) if path is not None else None
-                 for path in paths) + _code_stamps()
+    return (int(session_id), origins, tuple((str(path), _stamp(path)) if path is not None else None
+                 for path in paths), _code_stamps())
 
 
 def _code_stamps():
@@ -597,33 +617,30 @@ def _disk_store(data_root):
 def build_paper_review(db, session_id, reports_dir):
     """先查进程内缓存，再查磁盘持久副本；输入或计算代码变化即重算。"""
     signature = _paper_review_signature(db, session_id, reports_dir)
-    cached = _CACHE.get(int(session_id))
-    if cached is not None and cached[0] == signature:
-        return cached[1]
     from backend.session_analysis import infer_data_root
     data_root = infer_data_root(db.db_path)
     store = _disk_store(data_root) if data_root is not None else None
     key = ("paper_review", int(session_id))
-    if store is not None:
-        saved = store.get(key, signature)
-        if saved is not None:
-            _CACHE[int(session_id)] = (signature, saved)
-            return saved
-    result = _build_paper_review(db, session_id, reports_dir)
-    _CACHE[int(session_id)] = (signature, result)
-    if store is not None:
-        store.put(key, signature, result)
-    return result
+    def compute():
+        if store is not None:
+            saved = store.get(key, signature)
+            if saved is not None:
+                return saved
+        result = _build_paper_review(db, session_id, reports_dir)
+        if store is not None and _paper_review_signature(db, session_id, reports_dir) == signature:
+            store.put(key, signature, result)
+        return result
+    return _CACHE.get_or_compute(signature, compute)
 
 
 def _build_paper_review(db, session_id, reports_dir):
     from collections import Counter
     from backend.class_analysis import (
         ClassAnalysisStateStore, assemble_cause_data, build_cause_inputs,
-        known_cause_patterns, apply_cause_results,
+        apply_cause_results,
     )
     from backend.error_patterns import session_bank_map
-    from backend.reporting.analysis_report_exporter import build_class_page_data, _personal_cell_status
+    from backend.reporting.analysis_report_exporter import _personal_cell_status
     from backend.repositories.access import as_grading_repositories
     from backend.session_analysis import parent_question_id, question_bank_db_path, infer_data_root
     from question_bank.services.question_read_service import QuestionBankReadService
@@ -644,8 +661,8 @@ def _build_paper_review(db, session_id, reports_dir):
     bank_map = session_bank_map(bank_path, session_id)
     from backend.score_import.context import is_import_session_data_root
     option_only = is_import_session_data_root(infer_data_root(db.db_path), session_id)
-    sources = build_cause_inputs(data, known_patterns=known_cause_patterns(store, bank_path, session_id))
-    page = build_class_page_data(data)
+    sources = build_cause_inputs(data)
+    page = {'questions': [{'question_id': question.question_id} for question in data.questions]}
     apply_cause_results(page, data, sources, state, session_id=session_id,
                         question_bank_path=bank_path, option_only=option_only)
     causes = {q["question_id"]: q.get("causes") or [] for q in page["questions"]}

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 import os
 import uuid
@@ -142,19 +141,17 @@ def _json_bytes(payload: dict[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
-def config_revision(session: dict[str, Any], payload: dict[str, Any]) -> str:
-    canonical = json.dumps(
-        {
-            "session_id": int(session["id"]),
-            "rubric": payload["rubric"],
-            "answer_key": payload["answer_key"],
-            "source_sha256": str(session.get("source_paper_sha256") or ""),
-        },
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+def config_revision(session: dict[str, Any], *, data_root: Path | None = None) -> str:
+    """Published files are replaced on save; metadata identifies their version."""
+    parts = [f"config:{int(session['id'])}"]
+    for field in ("rubric_path", "answer_key_path"):
+        if not session.get(field):
+            parts.append("missing")
+            continue
+        path = resolve_stored_file_path(session[field], data_root=data_root)
+        info = path.stat()
+        parts.append(f"{path.name}:{info.st_mtime_ns}:{info.st_size}")
+    return "|".join(parts)
 
 
 def load_editor_config(db: Any, session_id: int) -> LoadedEditorConfig:
@@ -170,7 +167,7 @@ def load_editor_config(db: Any, session_id: int) -> LoadedEditorConfig:
     return LoadedEditorConfig(
         session=session,
         payload=payload,
-        revision=config_revision(session, payload),
+        revision=config_revision(session, data_root=data_root),
         configured=configured,
         knowledge_normalization_pending=False,
     )

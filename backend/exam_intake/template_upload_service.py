@@ -172,7 +172,7 @@ class TemplateUploadService:
                 # final version directory, not the image contents.
                 front_path = version_path / front_temp.name
                 back_path = version_path / back_temp.name
-                fingerprint = AnswerRegionDraftService(session_dir).compute_template_fingerprint(
+                fingerprint = AnswerRegionDraftService(session_dir).template_revision(
                     front_path, back_path
                 )
                 _write_manifest(
@@ -253,7 +253,7 @@ class TemplateUploadService:
                 page: str(template.get(f"{page}_template_path") or "")
                 for page in ("front", "back")
             }
-            fingerprint = draft_service.compute_template_fingerprint(
+            fingerprint = draft_service.template_revision(
                 stored_paths["front"], stored_paths["back"]
             )
             manifest_path = paths["front"].parent / "template_upload_manifest.json"
@@ -340,10 +340,10 @@ class TemplateUploadService:
                 raise TemplatePageAssignmentUnsupportedError(
                     "current template does not support page reassignment"
                 )
-            current_fingerprint = draft_service.compute_template_fingerprint(
+            current_fingerprint = draft_service.template_revision(
                 stored_paths["front"], stored_paths["back"]
             )
-            reversed_fingerprint = draft_service.compute_template_fingerprint(
+            reversed_fingerprint = draft_service.template_revision(
                 stored_paths["back"], stored_paths["front"]
             )
             requested_is_current = first_page_role == orientation.first_page_role
@@ -485,7 +485,7 @@ def _generated_page_orientation(
     if role not in {"front", "back"}:
         return None
     manifest_fingerprint = str(manifest.get("template_fingerprint") or "")
-    fingerprint_matches = manifest_fingerprint == draft_service.compute_template_fingerprint(
+    fingerprint_matches = manifest_fingerprint == draft_service.template_revision(
         *original_order
     )
     if not fingerprint_matches:

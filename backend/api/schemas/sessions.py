@@ -78,9 +78,9 @@ class DeleteSessionRequest(BaseModel):
     @field_validator("expected_revision")
     @classmethod
     def _revision(cls, value: str) -> str:
-        clean = str(value or "").strip().casefold()
-        if re.fullmatch(r"[0-9a-f]{64}", clean) is None:
-            raise ValueError("must be a sha256 revision")
+        clean = str(value or "").strip()
+        if not clean or len(clean) > 256:
+            raise ValueError("must be a saved revision")
         return clean
 
     @field_validator("confirmation_name")
@@ -101,9 +101,9 @@ class PermanentDeleteSessionRequest(BaseModel):
     @field_validator("expected_revision")
     @classmethod
     def _revision(cls, value: str) -> str:
-        clean = str(value or "").strip().casefold()
-        if re.fullmatch(r"[0-9a-f]{64}", clean) is None:
-            raise ValueError("must be a sha256 revision")
+        clean = str(value or "").strip()
+        if not clean or len(clean) > 256:
+            raise ValueError("must be a saved revision")
         return clean
 
     @field_validator("confirmation_phrase")
@@ -126,9 +126,9 @@ class QuestionBankSyncRequest(BaseModel):
     @field_validator("config_revision")
     @classmethod
     def _revision(cls, value: str) -> str:
-        clean = str(value or "").strip().casefold()
-        if re.fullmatch(r"[0-9a-f]{64}", clean) is None:
-            raise ValueError("must be a sha256 revision")
+        clean = str(value or "").strip()
+        if not clean or len(clean) > 256:
+            raise ValueError("must be a saved revision")
         return clean
 
     @field_validator("client_request_token")
@@ -170,6 +170,7 @@ class SessionSummary(BaseModel):
     updated_at: str | None = None
     kind: SessionKind = "scan"
     exam_date: str | None = None
+    has_results: bool | None = None
 
 
 class SessionDetail(SessionSummary):
@@ -191,7 +192,7 @@ class SessionListResponse(BaseModel):
 
 class SessionDeletionImpactResponse(BaseModel):
     session: SessionSummary
-    revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    revision: str = Field(min_length=1, max_length=256)
     active_jobs: int = Field(ge=0)
     active_grading_runs: int = Field(ge=0)
     can_archive: bool

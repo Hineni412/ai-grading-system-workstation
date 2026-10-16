@@ -36,7 +36,7 @@ class TemplatePageResponse(BaseModel):
 class TemplateUploadResponse(BaseModel):
     session_id: int = Field(gt=0)
     template_id: int = Field(gt=0)
-    template_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    template_fingerprint: str = Field(min_length=1, max_length=4096)
     first_page_role: Literal["front", "back"]
     pages: dict[Literal["front", "back"], TemplatePageResponse]
     is_confirmed: bool
@@ -45,7 +45,7 @@ class TemplateUploadResponse(BaseModel):
 
 class TemplatePageAssignmentRequest(BaseModel):
     first_page_role: Literal["front", "back"]
-    expected_template_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_template_fingerprint: str = Field(min_length=1, max_length=4096)
 
 
 class TemplatePageAssignmentResponse(BaseModel):
@@ -88,7 +88,7 @@ class RegionDraftRequest(BaseModel):
     revision: int = Field(default=0, ge=0)
     regions: list[dict[str, Any]] = Field(default_factory=list)
     expected_template_fingerprint: str | None = Field(
-        default=None, pattern=r"^[0-9a-f]{64}$"
+        default=None, min_length=1, max_length=4096
     )
     expected_revision: int | None = Field(default=None, ge=0)
 
@@ -96,7 +96,7 @@ class RegionDraftRequest(BaseModel):
 class RegionAutoProposalResponse(BaseModel):
     regions: list[dict[str, Any]]
     missing_question_ids: list[str]
-    template_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    template_fingerprint: str = Field(min_length=1, max_length=4096)
 
 
 class RegionDraftResponse(BaseModel):
@@ -116,7 +116,7 @@ class RegionCommitRequest(BaseModel):
 
 
 class RegionSnapshotRetryRequest(BaseModel):
-    expected_template_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_template_fingerprint: str = Field(min_length=1, max_length=4096)
 
 
 class RegionIssueResponse(BaseModel):

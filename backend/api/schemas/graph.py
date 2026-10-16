@@ -61,10 +61,7 @@ class CurrentGraphMastery(_GraphModel):
     status: Literal["available", "missing", "unavailable"]
     value: float | None = Field(default=None, ge=0.0, le=1.0)
     evidence_count: int = Field(ge=0)
-    parameter_version: str | None = Field(
-        default=None,
-        pattern=r"^[0-9a-f]{64}$",
-    )
+    parameter_version: str | None = Field(default=None, min_length=1, max_length=256)
     reason: str | None = None
     contributing_student_count: int = Field(default=0, ge=0)
     effective_weight: float = Field(default=0.0, ge=0.0)
@@ -116,7 +113,7 @@ class CurrentGraphStandard(_GraphModel):
 
 class CurrentGraphResponse(_GraphModel):
     response_schema_version: Literal["knowledge-graph-current"]
-    response_version: str = Field(pattern=r"^[0-9a-f]{64}$")
+    response_version: str = Field(min_length=1, max_length=256)
     scope: TrainingNormalizedScope
     exam_scope: TrainingNormalizedExamScope
     coverage: TrainingCoverage
@@ -130,7 +127,7 @@ class CurrentGraphResponse(_GraphModel):
 
 class CurrentGraphEvidenceResponse(_GraphModel):
     response_schema_version: Literal["knowledge-graph-evidence-current"]
-    response_version: str = Field(pattern=r"^[0-9a-f]{64}$")
+    response_version: str = Field(min_length=1, max_length=256)
     scope: TrainingNormalizedScope
     exam_scope: TrainingNormalizedExamScope
     coverage: TrainingCoverage

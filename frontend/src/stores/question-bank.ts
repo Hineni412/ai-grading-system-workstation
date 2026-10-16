@@ -1,9 +1,10 @@
-import { computed, ref, toRaw } from 'vue'
+import { computed, onScopeDispose, ref, toRaw } from 'vue'
 import { defineStore } from 'pinia'
 
 import {
   questionBankApi,
   type ChapterExamProfile,
+  type ExamReferenceProfile,
   type QuestionSkillIndex,
   type QuestionBankDetail,
   type QuestionBankFilters,
@@ -141,6 +142,8 @@ function copyDetail(value: QuestionBankDetail): QuestionBankDetail {
 export const useQuestionBankStore = defineStore('question-bank', () => {
   const skillIndexes = ref(new Map<string, QuestionSkillIndex>())
   const chapterExamProfiles = ref(new Map<string, ChapterExamProfile>())
+  const examReferenceProfiles = ref(new Map<string, ExamReferenceProfile>())
+  const examReferenceRequests = new Map<string, Promise<ExamReferenceProfile>>()
   const readRevision = ref(0)
   const skillIndexRequests = new Map<string, Promise<QuestionSkillIndex>>()
   const chapterExamRequests = new Map<string, Promise<ChapterExamProfile>>()
@@ -148,14 +151,17 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
   // 服务端有更新时会先回上次结果再后台重算：每个作用域一份在途标记，
   // 值为所属请求链，让旧链路的中止清理不会误删新链路的标记。
   const refreshingReads = ref(new Map<string, Promise<unknown>>())
+  const freshReads = new Set<string>()
   const refreshMessage = ref('')
 
   function reportRefresh(key: string, owner: Promise<unknown>, refreshing: boolean, exhausted: boolean, stale: boolean): void {
     if (stale) return
     if (refreshing) {
+      freshReads.delete(key)
       refreshingReads.value.set(key, owner)
       if (exhausted) refreshMessage.value = REFRESH_EXHAUSTED_MESSAGE
     } else {
+      freshReads.add(key)
       if (refreshingReads.value.get(key) === owner) refreshingReads.value.delete(key)
       if (!refreshingReads.value.size) refreshMessage.value = ''
     }
@@ -165,15 +171,28 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
     readRevision.value += 1
     skillIndexes.value.clear()
     chapterExamProfiles.value.clear()
+    examReferenceProfiles.value.clear()
+    examReferenceRequests.clear()
     skillIndexRequests.clear()
     chapterExamRequests.clear()
+    papers.value = papers.value.map(paper => ({ ...paper, analysis_loaded: false }))
+    paperAnalysisRequests.clear()
     listSnapshots.clear()
     refreshingReads.value.clear()
+    freshReads.clear()
     refreshMessage.value = ''
+    invalidateRepairPreviews()
     cancelQuestionRead()
   }
+  function onDataWritten(event: Event): void {
+    if (String((event as CustomEvent<string>).detail).startsWith('/api/question-bank/')) invalidateReadSnapshots()
+  }
+  window.addEventListener('api-data-written', onDataWritten)
+  onScopeDispose(() => window.removeEventListener('api-data-written', onDataWritten))
 
   function loadSkillIndex(volumeId: string, signal?: AbortSignal): Promise<QuestionSkillIndex> {
+    const cached = skillIndexes.value.get(volumeId)
+    if (cached && freshReads.has(`skill-index:${volumeId}`)) return waitForRead(Promise.resolve(cached), signal)
     let request = skillIndexRequests.get(volumeId)
     if (!request) {
       const revision = readRevision.value
@@ -200,7 +219,27 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
     return waitForRead(request, signal)
   }
 
+  function loadExamReference(volumeId?: string, signal?: AbortSignal): Promise<ExamReferenceProfile> {
+    const key = volumeId ?? '*'
+    const cached = examReferenceProfiles.value.get(key)
+    if (cached) return waitForRead(Promise.resolve(cached), signal)
+    let pending = examReferenceRequests.get(key)
+    if (!pending) {
+      const revision = readRevision.value
+      const created = questionBankApi.examReference(volumeId, undefined).then(value => {
+        if (revision !== readRevision.value) throw new DOMException('Aborted', 'AbortError')
+        examReferenceProfiles.value.set(key, value)
+        return value
+      }).finally(() => { if (examReferenceRequests.get(key) === created) examReferenceRequests.delete(key) })
+      examReferenceRequests.set(key, created)
+      pending = created
+    }
+    return waitForRead(pending, signal)
+  }
+
   function loadChapterExamProfile(volumeId: string, signal?: AbortSignal): Promise<ChapterExamProfile> {
+    const cached = chapterExamProfiles.value.get(volumeId)
+    if (cached && freshReads.has(`chapter-exam:${volumeId}`)) return waitForRead(Promise.resolve(cached), signal)
     let request = chapterExamRequests.get(volumeId)
     if (!request) {
       const revision = readRevision.value
@@ -231,6 +270,8 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
   const filterDraft = ref<QuestionBankFilters>({})
   const papers = ref<QuestionBankPaper[]>([])
   const papersState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  const paperAnalysisRequests = new Map<string, Promise<void>>()
+  let papersRequest: Promise<void> | null = null
   const paperWriteState = ref<'idle' | 'saving' | 'conflict' | 'error'>('idle')
   const paperWriteMessage = ref('')
   const questions = ref<QuestionBankListItem[]>([])
@@ -277,6 +318,8 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
     signal?: AbortSignal,
   ): Promise<QuestionRepairPreview> {
     const key = repairPreviewKey(volumeId, kind)
+    const cached = repairPreviews.value.get(key)
+    if (cached && freshReads.has(`repair:${key}`)) return waitForRead(Promise.resolve(cached), signal)
     let request = repairPreviewRequests.get(key)
     if (!request) {
       // 发起方的中止信号直接传给请求；加入在途请求的中止只结束自己的等待。
@@ -327,6 +370,7 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
       repairPreviews.value.delete(key)
       repairPreviewRequests.delete(key)
       repairPreviewLoading.value.delete(key)
+      freshReads.delete(`repair:${key}`)
     }
   }
 
@@ -352,20 +396,51 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
   async function loadPapers(
     loader: (
       signal?: AbortSignal,
-    ) => Promise<QuestionBankPaperListResponse> = questionBankApi.listPapers,
+    ) => Promise<QuestionBankPaperListResponse> = () => questionBankApi.listPapers(undefined, false, false),
   ): Promise<void> {
+    if (papersRequest) return papersRequest
     // 已有数据时保持 ready 静默刷新，避免列表被 loading 占位整体卸载（全屏闪动）。
     if (papers.value.length === 0) {
       papersState.value = 'loading'
     }
-    try {
-      papers.value = (await loader()).items
-      papersState.value = 'ready'
-    } catch {
-      if (papers.value.length === 0) {
-        papersState.value = 'error'
+    papersRequest = (async () => {
+      try {
+        for (;;) {
+          const revision = readRevision.value
+          const result = await loader()
+          if (revision !== readRevision.value) continue
+          papers.value = result.items
+          papersState.value = 'ready'
+          break
+        }
+      } catch {
+        if (papers.value.length === 0) papersState.value = 'error'
+      } finally {
+        papersRequest = null
       }
-    }
+    })()
+    return papersRequest
+  }
+
+  function loadPaperAnalysis(paperIds: number[]): Promise<void> {
+    const ids = [...new Set(paperIds)].filter(id => papers.value.some(paper => paper.id === id && paper.analysis_loaded === false)).sort((a, b) => a - b)
+    if (!ids.length) return Promise.resolve()
+    const key = ids.join(',')
+    const pending = paperAnalysisRequests.get(key)
+    if (pending) return pending
+    const revision = readRevision.value
+    const created = questionBankApi.listPapers(undefined, false, true, ids).then(response => {
+      if (revision !== readRevision.value) return
+      const values = new Map(response.items.map(paper => [paper.id, paper]))
+      papers.value = papers.value.map(paper => {
+        const value = values.get(paper.id)
+        return value && value.updated_at === paper.updated_at ? value : paper
+      })
+    }).finally(() => {
+      if (paperAnalysisRequests.get(key) === created) paperAnalysisRequests.delete(key)
+    })
+    paperAnalysisRequests.set(key, created)
+    return created
   }
 
   function resetPaperWriteStatus(): void {
@@ -701,12 +776,15 @@ export const useQuestionBankStore = defineStore('question-bank', () => {
     refreshingReads,
     refreshMessage,
     loadSkillIndex,
+    loadExamReference,
+    examReferenceProfiles,
     loadChapterExamProfile,
     invalidateReadSnapshots,
     cancelQuestionRead,
     appliedFilters,
     filterDraft,
     papers,
+    loadPaperAnalysis,
     papersState,
     paperWriteState,
     paperWriteMessage,

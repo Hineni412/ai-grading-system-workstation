@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import sqlite3
 import threading
@@ -209,7 +208,6 @@ class TrainingAssessmentModule:
         submission_id: str,
         submission_revision: int,
     ) -> TrainingPaperOutcome | None:
-        initialize_database(self.db_path)
         return self._outcome_by_submission(
             _identifier(submission_id),
             _positive_revision(submission_revision),
@@ -325,7 +323,6 @@ class TrainingAssessmentModule:
 
         clean_id = _identifier(submission_id)
         clean_revision = _positive_revision(submission_revision)
-        initialize_database(self.db_path)
         return TrainingEvidencePublisher(
             db_path=self.db_path,
             data_root=self.data_root,
@@ -344,9 +341,6 @@ class TrainingAssessmentModule:
         clean_id = _identifier(submission_id)
         clean_revision = _positive_revision(submission_revision)
         initialize_database(self.db_path)
-        fingerprint = hashlib.sha256(
-            command.operation_token.encode("utf-8")
-        ).hexdigest()
         now = self._now()
         with connect(self.db_path) as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -425,7 +419,7 @@ class TrainingAssessmentModule:
                 connection,
                 run_id=str(run["run_id"]),
                 token=command.operation_token,
-                fingerprint=fingerprint,
+                fingerprint="0" * 64,  # Unused for local teacher review.
                 event_type="review_point",
                 actor_ref=command.actor_ref,
                 from_revision=current_review_revision,

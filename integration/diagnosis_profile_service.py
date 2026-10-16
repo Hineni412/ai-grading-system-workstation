@@ -24,7 +24,6 @@ from integration.data_generation import (
 )
 from integration.evidence_scope import EvidenceScopeResolver
 from integration.persistent_entries import persistent_entry_store
-from integration.result_cache import ResultCache, cache_values
 from integration.question_tag_projection_service import (
     QuestionTagProjection,
     QuestionTagProjectionService,
@@ -55,7 +54,6 @@ _LOCAL_PROFILE_MAX_ENTRIES = 240
 _LOCAL_PROFILE_MAX_BYTES = 512 * 1024 * 1024
 _SESSION_ERROR_MAX_ENTRIES = 64
 _SESSION_ERROR_MAX_BYTES = 256 * 1024 * 1024
-_MASTERY_INPUT_RESULTS = ResultCache(2)
 # Cached payloads are stored as pickle bytes: rebuilding a hit with
 # pickle.loads is far cheaper than deepcopy on large profiles, and bytes are
 # inherently isolated from caller mutation in both directions.
@@ -132,7 +130,7 @@ def _normalized_profile_scope(
 
 
 def _profile_semantics() -> tuple:
-    return ("exam-source-scores-v3", str(week_of(datetime.now(UTC))))
+    return ("exam-source-scores-v4", str(week_of(datetime.now(UTC))))
 
 
 class DiagnosisSnapshot(TypedDict, total=False):
@@ -224,13 +222,17 @@ class DiagnosisProfileService:
         *,
         scope: Mapping[str, Any],
         exam_scope: Mapping[str, Any],
+        live: bool = False,
     ) -> tuple[str, ...]:
         """Exact key under which build_tag_profiles caches this request."""
 
         scope = _normalized_profile_scope(scope, exam_scope)
-        source_identity = self.cache_identity or (
-            *_path_generation(self.grading_db_path),
-            *_path_generation(self.question_bank_db_path, _QB_VERSION_DOMAINS),
+        source_paths = (self.grading_db_path, self.question_bank_db_path)
+        if live and self.cache_identity and len(self.cache_identity) == 6:
+            source_paths = (Path(self.cache_identity[0]), Path(self.cache_identity[3]))
+        source_identity = (None if live else self.cache_identity) or (
+            *_path_generation(source_paths[0]),
+            *_path_generation(source_paths[1], _QB_VERSION_DOMAINS),
         )
         source_identity = (*source_identity,
             *self._cause_changes(exam_scope),
@@ -285,7 +287,7 @@ class DiagnosisProfileService:
         finally:
             _release_tag_profile_flight(key, error)
 
-    def semester_mastery(self, profile, *, exclude_training_evidence_ids=frozenset(), as_of=None, parameters=None, evidence_until=None):
+    def semester_mastery(self, profile, *, exclude_training_evidence_ids=frozenset(), as_of=None, parameters=None, evidence_until=None, include_unobserved=True):
         from datetime import UTC, datetime
         from question_bank.mastery.current import CURRENT_MASTERY_PARAMETERS
         from question_bank.mastery.model import week_of
@@ -297,6 +299,8 @@ class DiagnosisProfileService:
             tuple((item.name, getattr(parameters, item.name)) for item in fields(parameters)
                   if "version" not in item.name),
             evidence_until.isoformat() if evidence_until is not None else "")
+        if not include_unobserved:
+            key = (*key, "observed-nodes")
         cached = _claim_or_wait_tag_profile(key)
         if cached is not None:
             if getattr(self, "persist_snapshots", False) and not exclude_training_evidence_ids and evidence_until is None:
@@ -320,19 +324,14 @@ class DiagnosisProfileService:
             resolver = CurrentKnowledgeResolver.from_active_database(self.question_bank_db_path)
             calculation_profile = {"exam_scope": exam_scope, "_mastery_observations": observations,
                                    "_mastery_session_times": self.mastery_session_times(exam_scope=exam_scope)}
-            origins = self.cache_identity or (
-                *_path_generation(self.grading_db_path),
-                *_path_generation(self.question_bank_db_path, _QB_VERSION_DOMAINS),
-            )
-            input_key = (origins[0], origins[3], tuple(origins[3:6]), key[-4:],
-                         cache_values(calculation_profile))
-            values = _MASTERY_INPUT_RESULTS.get_or_compute(input_key, lambda:
-                CurrentMasteryCalculator(
-                    self.question_bank_db_path, resolver, parameters=parameters,
-                    clock=lambda: as_of, data_root=self.data_root,
-                ).calculate(calculation_profile,
-                            exclude_training_evidence_ids=exclude_training_evidence_ids,
-                            evidence_until=evidence_until))
+            # The surrounding cache already shares this computation and isolates
+            # its result. A second identical cache only serializes it twice.
+            values = CurrentMasteryCalculator(
+                self.question_bank_db_path, resolver, parameters=parameters,
+                clock=lambda: as_of, data_root=self.data_root,
+            ).calculate(calculation_profile,
+                        exclude_training_evidence_ids=exclude_training_evidence_ids,
+                        evidence_until=evidence_until, include_unobserved=include_unobserved)
             entry = (pickle.dumps(values, pickle.HIGHEST_PROTOCOL), pickle.dumps({}, pickle.HIGHEST_PROTOCOL))
             with _TAG_PROFILE_CACHE_LOCK:
                 _TAG_PROFILE_CACHE[key] = entry
@@ -888,7 +887,8 @@ class DiagnosisProfileService:
                 # Skill-knowledge edges only feed skill-rule chapters; type and
                 # knowledge volumes drop them through is_training_target anyway.
                 knowledge_associations = knowledge_skill_associations(
-                    load_question_facets(self.question_bank_db_path, resolver)
+                    load_question_facets(self.question_bank_db_path, resolver,
+                                         include_practice_observations=False)
                 )
         except (
             CurrentKnowledgeUnavailable,
@@ -1072,6 +1072,16 @@ class DiagnosisProfileService:
         for child, parent in parent_by_child.items():
             children_by_parent[parent].append(child)
         node_by_key = {node.stable_key: node for node in resolver.nodes}
+        layouts = {}
+        for stable_key, node in node_by_key.items():
+            parent = node_by_key.get(parent_by_child.get(stable_key))
+            layouts[stable_key] = (
+                node.display_name,
+                parent.stable_key if parent else None,
+                parent.display_name if parent else None,
+                'parent_summary' if stable_key in children_by_parent else 'child' if parent else 'root',
+                tuple(sorted(children_by_parent.get(stable_key, ()))),
+            )
         mastery_by_student = defaultdict(list)
         for (student_id, stable_key), current in mastery.items():
             mastery_by_student[student_id].append((stable_key, current))
@@ -1085,17 +1095,15 @@ class DiagnosisProfileService:
                 point.update(mastery=None, evidence_count=0, effective_weight=0.0,
                              direct_evidence_count=0, child_evidence_count=0)
             for stable_key, current in mastery_by_student.get(student_id, ()):
-                node = node_by_key.get(stable_key)
-                if node is None:
+                layout = layouts.get(stable_key)
+                if layout is None:
                     continue
-                parent_key = parent_by_child.get(stable_key)
-                parent = node_by_key.get(parent_key) if parent_key else None
-                is_parent_summary = stable_key in children_by_parent
+                name, parent_key, parent_name, hierarchy_kind, children = layout
                 point = points.get(stable_key)
                 if point is None:
                     point = {
                         "knowledge_key": stable_key,
-                        "knowledge_point": node.display_name,
+                        "knowledge_point": name,
                         "score_sum": 0.0,
                         "full_score_sum": 0.0,
                         "deduction_count": 0,
@@ -1104,22 +1112,28 @@ class DiagnosisProfileService:
                         "actionable_reasons": [],
                         "tag_context": {},
                         "error_counts": {"primary": {}, "secondary": {}},
-                        "parent_knowledge_key": parent.stable_key if parent else None,
-                        "parent_knowledge_point": parent.display_name if parent else None,
+                        "parent_knowledge_key": parent_key,
+                        "parent_knowledge_point": parent_name,
                     }
                     student["weak_points"].append(point)
                     points[stable_key] = point
-                metadata = current.to_dict()
-                point.update({field: metadata[field] for field in ("interval_low", "interval_high", "tier", "observation_count", "full_correct_count", "recent_trend", "parameter_version", "tier_counts", "logit_mean", "logit_sd", "difficulty_slope")})
                 point.update({
+                    "interval_low": current.interval_low,
+                    "interval_high": current.interval_high,
+                    "tier": current.tier,
+                    "observation_count": current.observation_count,
+                    "full_correct_count": current.full_correct_count,
+                    "recent_trend": current.recent_trend,
+                    "parameter_version": current.parameter_version,
+                    "tier_counts": dict(current.tier_counts),
+                    "logit_mean": current.logit_mean,
+                    "logit_sd": current.logit_sd,
+                    "difficulty_slope": current.difficulty_slope,
                     "mastery": float(current.value) if current.value is not None else None,
                     "evidence_count": int(current.evidence_count),
                     "effective_weight": float(current.effective_weight),
-                    "hierarchy_kind": (
-                        "parent_summary" if is_parent_summary
-                        else "child" if parent else "root"
-                    ),
-                    "child_knowledge_keys": sorted(children_by_parent.get(stable_key, [])),
+                    "hierarchy_kind": hierarchy_kind,
+                    "child_knowledge_keys": list(children),
                     "direct_evidence_count": int(current.direct_evidence_count),
                     "precise_training_evidence_count": int(current.precise_training_evidence_count),
                     "child_evidence_count": max(
@@ -1745,15 +1759,23 @@ class DiagnosisProfileService:
         student_ids: Iterable[str],
         session_ids: Iterable[int],
         projection_by_session: Mapping[int, QuestionTagProjection],
+        include_diagnostics: bool = True,
     ) -> list[dict[str, Any]]:
+        # The repository's empty filter means all exams. Here the resolved
+        # range is explicit, and training evidence is merged separately.
+        session_ids = tuple(session_ids)
+        if not session_ids:
+            return []
         projected_by_item = {
             (session_id, item.item_ref): item
             for session_id, projection in projection_by_session.items()
             for item in projection.items
         }
+        extra = {} if include_diagnostics else {"include_diagnostics": False}
         rows = self.db.results.get_active_assessment_evidence(
             student_ids=tuple(student_ids),
-            session_ids=tuple(session_ids),
+            session_ids=session_ids,
+            **extra,
         )
         from backend.scan_grading.grading_completeness import combined_scoring_groups
 
@@ -1767,7 +1789,7 @@ class DiagnosisProfileService:
             projected = projected_by_item.get(key)
             if projected is None or not projected.is_graph_eligible:
                 continue
-            enriched = dict(row)
+            enriched = dict(row) if include_diagnostics else row
             sid = int(row.get("session_id") or 0)
             members = combined_members.get(sid)
             if members is None:
@@ -1801,7 +1823,7 @@ class DiagnosisProfileService:
             if row.get("teacher_final_revision") is None or teacher_records is not None:
                 records = teacher_records if teacher_records is not None else (row.get("assessment_state") or {}).get("step_assessments")
                 observations = _step_point_observations(projected, records)
-                contributions = _step_target_contributions(projected, records)
+                contributions = _step_target_contributions(projected, records, observations=observations)
                 if observations is not None:
                     enriched["point_observations"] = observations
                     enriched["target_contributions"] = contributions
@@ -1837,7 +1859,7 @@ class DiagnosisProfileService:
             enriched["question_tags"] = {
                 tag_type: list(values)
                 for tag_type, values in projected.tags.items()
-            }
+            } if include_diagnostics else projected.tags
             result.append(enriched)
         return sorted(
             result,
@@ -2153,13 +2175,15 @@ def _step_point_observations(projected: Any, step_assessments: object) -> list[d
 def _step_target_contributions(
     projected: Any,
     step_assessments: object,
+    *, observations=...,
 ) -> dict[str, tuple[float, float]]:
     """Per-step achievement allocated to evidence-linked targets.
 
     Returns ``{stable_key: (score_sum, full_score_sum)}``; empty when the item
     has no step-level snapshot or no recorded step assessments.
     """
-    observations = _step_point_observations(projected, step_assessments)
+    if observations is ...:
+        observations = _step_point_observations(projected, step_assessments)
     if observations is not None:
         totals: dict[str, list[float]] = {}
         for item in observations:

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>题库待处理 · 交互原型</title>
+  <link rel="stylesheet" href="prototype.css">
+  <link rel="stylesheet" href="readability.css">
+  <script src="data.js" defer></script>
+  <script src="views.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <aside class="app-nav" aria-label="应用导航">
+    <div class="brand"><span class="brand-mark">阅</span><span>AI 阅卷系统<small>教学工作空间</small></span></div>
+    <div class="nav-section">教学</div>
+    <span class="nav-item"><span>▤</span>考试阅卷</span>
+    <span class="nav-item"><span>◷</span>学情分析</span>
+    <span class="nav-item active"><span>▦</span>题库</span>
+    <span class="nav-item"><span>▧</span>出训练</span>
+    <div class="nav-bottom"><span class="avatar">师</span>本机工作空间</div>
+  </aside>
+  <main class="app-main">
+    <div class="prototype-notice"><span><b>交互原型</b> 合成题目 · 所有操作仅演示</span><button class="link-button" data-action="reset">重置演示</button></div>
+    <header class="page-header"><div class="breadcrumb">教学资源 / 题库</div><div class="title-line"><h1>题库</h1><label class="scene-label">查看场景 <select id="scene" aria-label="查看场景"><option value="demo">完整流程示例</option><option value="current">当前 13 题的状态分布</option></select></label></div></header>
+    <nav class="page-tabs" aria-label="题库栏目"><span>全部题目</span><span>试卷</span><span>题型与标准</span><strong>待处理 <span id="tab-count">18</span></strong></nav>
+    <section class="workspace" aria-label="待处理工作区">
+      <div class="work-heading"><div><div class="eyebrow" id="volume"></div><h2 id="work-title">待处理题目</h2><p id="scene-description"></p></div><span class="completed-count" id="completed-count" hidden></span></div>
+      <div id="view"></div>
+      <p class="scope-note">本页展示拟议的交互方式。正式系统仍以现有实现为准；这里不会调用模型，也不会写入题库。</p>
+    </section>
+  </main>
+  <nav class="variant-switcher" aria-label="原型方案切换"><span class="switch-label">比较布局</span><button data-variant="A">A · 按动作</button><button data-variant="B">B · 看流程</button><button data-variant="C">C · 总表</button><span class="key-hint">← →</span></nav>
+  <dialog id="dialog"><div id="dialog-content"></div></dialog>
+  <div class="toast" id="toast" role="status" hidden></div>
+</body>
+</html>

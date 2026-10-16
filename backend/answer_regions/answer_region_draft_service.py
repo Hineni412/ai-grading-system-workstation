@@ -33,18 +33,12 @@ class AnswerRegionDraftService:
         self.temp_path = resolved_dir / "region_draft.json.tmp"
         self._lock = _lock_for(self.draft_path)
 
-    def compute_template_fingerprint(
+    def template_revision(
         self, front_path: str | Path, back_path: str | Path
     ) -> str:
-        digest = hashlib.sha256()
-        for page, value in (("front", front_path), ("back", back_path)):
-            encoded = str(value).encode("utf-8")
-            label = page.encode("ascii")
-            digest.update(len(label).to_bytes(1, "big"))
-            digest.update(label)
-            digest.update(len(encoded).to_bytes(8, "big"))
-            digest.update(encoded)
-        return digest.hexdigest()
+        # Version directories are immutable; the ordered stored paths identify
+        # the template and its page order without reading or hashing the images.
+        return json.dumps([str(front_path), str(back_path)], ensure_ascii=False, separators=(",", ":"))
 
     def save(
         self,
@@ -121,11 +115,25 @@ class AnswerRegionDraftService:
             self.temp_path.unlink(missing_ok=True)
 
 
+def legacy_template_path_hash(revision: str) -> str:
+    """Compatibility for already-paid preflights bound to the old path hash."""
+    front_path, back_path = json.loads(revision)
+    digest = hashlib.sha256()
+    for page, value in (("front", front_path), ("back", back_path)):
+        encoded = str(value).encode("utf-8")
+        label = page.encode("ascii")
+        digest.update(len(label).to_bytes(1, "big"))
+        digest.update(label)
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+    return digest.hexdigest()
+
+
 def legacy_template_content_hash(front_path: Path, back_path: Path) -> str:
     """The pre-upgrade fingerprint: a SHA-256 over the two image contents.
 
     Only used to recognise template bindings recorded before the fingerprint
-    became a hash of the stored template path strings.
+    became the ordered stored template paths.
     """
     digest = hashlib.sha256()
     for page, path in (("front", Path(front_path)), ("back", Path(back_path))):

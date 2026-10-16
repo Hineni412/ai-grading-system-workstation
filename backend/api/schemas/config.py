@@ -133,6 +133,7 @@ class ConfigSourceResponse(BaseModel):
     size_bytes: int = Field(gt=0, le=200 * 1024 * 1024)
     sha256_prefix: str = Field(pattern=r"^[0-9a-f]{12}$")
     parse_state: Literal["ready"]
+    answer_filename: str | None = Field(default=None, max_length=255)
     questions: list[ConfigQuestionPreviewResponse] = Field(max_length=500)
     ambiguous_assets: list[ConfigAmbiguousAssetResponse] = Field(
         default_factory=list,
@@ -436,7 +437,7 @@ ConfigEditorCommandRequest = (
 class ConfigEditorSaveRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    revision: str = Field(min_length=1, max_length=256)
     edits: list[ConfigEditorEditRequest] = Field(default_factory=list, max_length=1000)
     commands: list[ConfigEditorCommandRequest] = Field(default_factory=list, max_length=200)
 
@@ -490,7 +491,7 @@ class ConfigEditorResponse(BaseModel):
 
     session_id: int
     configured: bool
-    revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    revision: str = Field(min_length=1, max_length=256)
     rows: list[ConfigEditorRowResponse]
     total_score: float
     issues: list[ConfigEditorIssueResponse]

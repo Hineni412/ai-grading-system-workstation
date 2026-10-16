@@ -241,6 +241,10 @@ export function createApiClient(
             try {
               const decoded = options.decode(payload)
               if (pendingMutationKey) pendingMutationIds.delete(pendingMutationKey)
+              if (typeof window !== 'undefined' && method !== 'GET'
+                && !/^\/api\/(training\/(diagnosis|overview|key-step-type-stats)|graph\/query|question-assembly\/(candidates|exam-questions))\b/.test(path)) {
+                window.dispatchEvent(new CustomEvent('api-data-written', { detail: path.split('?')[0] }))
+              }
               return decoded
             } catch {
               throw contractError('invalid_success_contract', responseRequestId, response.status)

@@ -813,9 +813,11 @@ def resolve_assembly_questions(
         skills = {q['question_id']: [k for k in q['stable_keys'] if k in _candidate_training_keys(q)] for q in descriptors}
     except (ValueError, PersonalizedRecommendationError):
         skills = {}
+    references = service.exam_references()
     items = [
         {
             "id": row["id"],
+            "exam_reference": references.assess(int(row["id"])),
             "skill_keys": skills.get(row['id'], []),
             "revision": row["revision"],
             "question_number": row["question_number"],

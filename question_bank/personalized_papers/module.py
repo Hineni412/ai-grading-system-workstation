@@ -222,9 +222,6 @@ class PersonalizedPaperModule:
         """Create one review instance after the caller prepared the database."""
 
         clean_draft_id = _identifier(draft_id, "draft_id")
-        fingerprint = hashlib.sha256(
-            command.operation_token.encode("utf-8")
-        ).hexdigest()
         paper_instance_id = _hash_payload(
             {
                 "kind": "personalized-paper-instance",
@@ -246,7 +243,6 @@ class PersonalizedPaperModule:
                     existing,
                     snapshot=snapshot,
                     command=command,
-                    fingerprint=fingerprint,
                 )
 
             recommendation = PersonalizedRecommendationModule(
@@ -295,7 +291,6 @@ class PersonalizedPaperModule:
             series_version = self._reserve_instance(
                 paper_instance_id=paper_instance_id,
                 operation_token=command.operation_token,
-                operation_fingerprint=fingerprint,
                 draft=draft,
                 student=student,
                 paper_batch_id=paper_batch_id,
@@ -322,7 +317,6 @@ class PersonalizedPaperModule:
                 row,
                 snapshot=snapshot,
                 command=command,
-                fingerprint=fingerprint,
             )
 
     def freeze(
@@ -333,9 +327,6 @@ class PersonalizedPaperModule:
     ) -> dict[str, Any]:
         clean_id = _identifier(paper_instance_id, "paper_instance_id")
         initialize_database(self.db_path)
-        fingerprint = hashlib.sha256(
-            command.operation_token.encode("utf-8")
-        ).hexdigest()
         with _instance_lock(clean_id):
             row = self._instance_row(clean_id)
             current_revision = int(row["revision"])
@@ -392,7 +383,6 @@ class PersonalizedPaperModule:
                     reviewed_hash=received_hash,
                     publish_source=True,
                     command=command,
-                    fingerprint=fingerprint,
                 )
 
     def _freeze_rendered(
@@ -413,9 +403,6 @@ class PersonalizedPaperModule:
             filename="review.docx",
             actor_ref=command.actor_ref,
         )
-        fingerprint = hashlib.sha256(
-            freeze_command.operation_token.encode("utf-8")
-        ).hexdigest()
         with _instance_lock(paper_instance_id):
             row = self._instance_row(paper_instance_id)
             if str(row["status"]) == "frozen":
@@ -433,7 +420,6 @@ class PersonalizedPaperModule:
                 reviewed_hash=str(row["review_docx_sha256"]),
                 publish_source=False,
                 command=freeze_command,
-                fingerprint=fingerprint,
                 pdf_converter=pdf_converter,
                 identity_font_buffer=identity_font_buffer,
             )
@@ -447,7 +433,6 @@ class PersonalizedPaperModule:
         reviewed_hash: str,
         publish_source: bool,
         command: FreezePaperCommand,
-        fingerprint: str,
         pdf_converter: PdfConversionAdapter | None = None,
         identity_font_buffer: bytes | None = None,
     ) -> dict[str, Any]:
@@ -560,7 +545,6 @@ class PersonalizedPaperModule:
                 return self._commit_frozen(
                     row=row,
                     command=command,
-                    fingerprint=fingerprint,
                     budget=final_budget,
                     reviewed_relative=reviewed_relative,
                     reviewed_hash=reviewed_hash,
@@ -580,7 +564,6 @@ class PersonalizedPaperModule:
 
     def get(self, paper_instance_id: str) -> dict[str, Any]:
         clean_id = _identifier(paper_instance_id, "paper_instance_id")
-        initialize_database(self.db_path)
         return self._get_ready(clean_id)
 
     def _get_ready(self, paper_instance_id: str) -> dict[str, Any]:
@@ -589,7 +572,6 @@ class PersonalizedPaperModule:
 
     def list_for_draft(self, draft_id: str) -> tuple[dict[str, Any], ...]:
         clean_id = _identifier(draft_id, "draft_id")
-        initialize_database(self.db_path)
         with connect(self.db_path) as connection:
             rows = connection.execute(
                 """
@@ -645,9 +627,6 @@ class PersonalizedPaperModule:
         requested = tuple(dict.fromkeys(
             str(value or "").strip() for value in student_ids if str(value or "").strip()
         ))
-        fingerprint = hashlib.sha256(
-            clean_token.encode("utf-8")
-        ).hexdigest()
         recommendation = PersonalizedRecommendationModule(
             db_path=self.db_path,
             data_root=self.data_root,
@@ -686,7 +665,6 @@ class PersonalizedPaperModule:
         self._reserve_batch(
             batch_run_id=batch_run_id,
             operation_token=clean_token,
-            operation_fingerprint=fingerprint,
             draft_id=clean_draft_id,
             draft_revision=int(expected_draft_revision),
             paper_batch_id=paper_batch_id,
@@ -770,7 +748,6 @@ class PersonalizedPaperModule:
                                 row,
                                 snapshot=json.loads(str(row["snapshot_json"])),
                                 command=per_student_command,
-                                fingerprint=str(row["operation_fingerprint"]),
                                 record_event=False,
                             )
                     else:
@@ -894,7 +871,6 @@ class PersonalizedPaperModule:
 
     def get_batch(self, batch_run_id: str) -> dict[str, Any]:
         clean_id = _identifier(batch_run_id, "batch_run_id")
-        initialize_database(self.db_path)
         return self._public_batch(clean_id)
 
     def retry_batch(
@@ -1085,7 +1061,6 @@ class PersonalizedPaperModule:
         *,
         batch_run_id: str,
         operation_token: str,
-        operation_fingerprint: str,
         draft_id: str,
         draft_revision: int,
         paper_batch_id: str,
@@ -1115,7 +1090,7 @@ class PersonalizedPaperModule:
                 (
                     batch_run_id,
                     operation_token,
-                    operation_fingerprint,
+                    "0" * 64,  # Unused legacy column; no request fingerprint.
                     draft_id,
                     draft_revision,
                     paper_batch_id,
@@ -1549,7 +1524,6 @@ class PersonalizedPaperModule:
 
     def verify_page_identity(self, value: str) -> dict[str, Any]:
         decoded = decode_page_identity(value)
-        initialize_database(self.db_path)
         row = self._instance_row(decoded["paper_instance_id"])
         if (
             str(row["status"]) != "frozen"
@@ -1716,7 +1690,6 @@ class PersonalizedPaperModule:
         *,
         paper_instance_id: str,
         operation_token: str,
-        operation_fingerprint: str,
         draft: Mapping[str, Any],
         student: Mapping[str, Any],
         paper_batch_id: str,
@@ -1762,7 +1735,7 @@ class PersonalizedPaperModule:
                 (
                     paper_instance_id,
                     operation_token,
-                    operation_fingerprint,
+                    "0" * 64,  # Unused legacy column; no request fingerprint.
                     draft["draft_id"],
                     draft["revision"],
                     draft["draft_id"],
@@ -1954,7 +1927,6 @@ class PersonalizedPaperModule:
         *,
         snapshot: Mapping[str, Any],
         command: CreatePaperCommand,
-        fingerprint: str,
         record_event: bool = True,
     ) -> dict[str, Any]:
         paper_instance_id = str(row["paper_instance_id"])
@@ -2025,7 +1997,6 @@ class PersonalizedPaperModule:
                         connection,
                         paper_instance_id=paper_instance_id,
                         operation_token=command.operation_token,
-                        operation_fingerprint=fingerprint,
                         event_type="created",
                         actor_ref=command.actor_ref,
                         expected_revision=0,
@@ -2063,7 +2034,6 @@ class PersonalizedPaperModule:
         *,
         row,
         command: FreezePaperCommand,
-        fingerprint: str,
         budget: Mapping[str, Any],
         reviewed_relative: str,
         reviewed_hash: str,
@@ -2160,7 +2130,6 @@ class PersonalizedPaperModule:
                 connection,
                 paper_instance_id=paper_instance_id,
                 operation_token=command.operation_token,
-                operation_fingerprint=fingerprint,
                 event_type="frozen",
                 actor_ref=command.actor_ref,
                 expected_revision=command.expected_revision,
@@ -2325,7 +2294,6 @@ class PersonalizedPaperModule:
         *,
         paper_instance_id: str,
         operation_token: str,
-        operation_fingerprint: str,
         event_type: str,
         actor_ref: str,
         expected_revision: int,
@@ -2355,7 +2323,7 @@ class PersonalizedPaperModule:
             (
                 paper_instance_id,
                 operation_token,
-                operation_fingerprint,
+                "0" * 64,  # Unused legacy column; no request fingerprint.
                 event_type,
                 actor_ref,
                 expected_revision,

@@ -12,6 +12,8 @@ import type { JobResponse } from '../../../api/jobs'
 import { useConfigWorkspaceStore } from '../../../stores/config-workspace'
 import { useSessionStore } from '../../../stores/session'
 import SessionConfigView from '../../../views/SessionConfigView.vue'
+import ConfigSourceUpload from '../ConfigSourceUpload.vue'
+import type { ConfigSource } from '../../../api/config-workspace'
 
 function editor(answer = '旧答案', revision = 'a'): ConfigEditorResponse {
   return {
@@ -150,6 +152,80 @@ describe('ConfigSaveResult', () => {
       { row_id: 'row-q12-p1-s1', standard_answer: 'newer draft' },
     ])
     expect(mounted.workspace.editor?.rows[0]?.standard_answer).toBe('旧答案')
+    mounted.unmount()
+
+    // 同一考试配置流程：分文件模式下试卷和答案两个 PDF 都选好才能提交。
+    const uploader = vi.fn(
+      async (sessionId: number, file: File, answerFile?: File): Promise<ConfigSource> => ({
+        session_id: sessionId, source_id: 'a'.repeat(32), source_revision: 'b'.repeat(64),
+        safe_filename: file.name, suffix: '.pdf', size_bytes: file.size,
+        sha256_prefix: 'c'.repeat(12), parse_state: 'ready',
+        answer_filename: answerFile?.name ?? null, questions: [],
+      }),
+    )
+    const uploadHost = document.createElement('div')
+    document.body.append(uploadHost)
+    const uploadApp = createApp(ConfigSourceUpload, {
+      sessionId: 7, source: null, uploader,
+    })
+    uploadApp.mount(uploadHost)
+    await nextTick()
+    const modeButtons = uploadHost.querySelectorAll<HTMLButtonElement>('.config-source__mode button')
+    modeButtons[1]!.click()
+    await nextTick()
+    const submitButton = () => uploadHost.querySelector<HTMLButtonElement>('.config-source__submit')!
+    const inputs = uploadHost.querySelectorAll<HTMLInputElement>('input[type=file]')
+    const paper = new File([new Uint8Array([0x25, 0x50, 0x44, 0x46])], 'paper.pdf')
+    const answer = new File([new Uint8Array([0x25, 0x50, 0x44, 0x46])], 'answer.pdf')
+    Object.defineProperty(inputs[0]!, 'files', { value: [paper], configurable: true })
+    inputs[0]!.dispatchEvent(new Event('change'))
+    await nextTick()
+    expect(submitButton().disabled).toBe(true)
+    Object.defineProperty(inputs[1]!, 'files', { value: [answer], configurable: true })
+    inputs[1]!.dispatchEvent(new Event('change'))
+    await nextTick()
+    expect(submitButton().disabled).toBe(false)
+    uploadHost.querySelector<HTMLFormElement>('form')!
+      .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settle()
+    expect(uploader).toHaveBeenCalledExactlyOnceWith(7, paper, answer)
+
+    // 已知的拆题失败（details.reason 存在）直接展示服务端的中文提示。
+    uploader.mockRejectedValueOnce(new ApiError({
+      kind: 'validation', status: 422, code: 'config_source_invalid',
+      message: '答案文件里没有找到和试卷题号对应的答案，请确认上传的是这份试卷的答案。',
+      details: { reason: 'answer_unmatched' }, requestId: 'r1', retryable: false,
+    }))
+    const paper2 = new File([new Uint8Array([0x25, 0x50, 0x44, 0x46])], 'paper2.pdf')
+    const answer2 = new File([new Uint8Array([0x25, 0x50, 0x44, 0x46])], 'answer2.pdf')
+    Object.defineProperty(inputs[0]!, 'files', { value: [paper2], configurable: true })
+    inputs[0]!.dispatchEvent(new Event('change'))
+    Object.defineProperty(inputs[1]!, 'files', { value: [answer2], configurable: true })
+    inputs[1]!.dispatchEvent(new Event('change'))
+    await nextTick()
+    uploadHost.querySelector<HTMLFormElement>('form')!
+      .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settle()
+    const alert = uploadHost.querySelector<HTMLElement>('.config-source__error')
+    expect(alert?.textContent).toContain('答案文件里没有找到和试卷题号对应的答案')
+
+    // 非拆题原因的失败仍用通用文案，不泄露内部错误原文。
+    uploader.mockRejectedValueOnce(new ApiError({
+      kind: 'server', status: 500, code: 'internal_error',
+      message: 'private database failure', details: {}, requestId: 'r2', retryable: true,
+    }))
+    Object.defineProperty(inputs[0]!, 'files', { value: [paper2], configurable: true })
+    inputs[0]!.dispatchEvent(new Event('change'))
+    Object.defineProperty(inputs[1]!, 'files', { value: [answer2], configurable: true })
+    inputs[1]!.dispatchEvent(new Event('change'))
+    await nextTick()
+    uploadHost.querySelector<HTMLFormElement>('form')!
+      .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settle()
+    const alert2 = uploadHost.querySelector<HTMLElement>('.config-source__error')
+    expect(alert2?.textContent).toContain('文件未接收成功')
+    expect(alert2?.textContent).not.toContain('private database failure')
+    uploadApp.unmount()
   })
 
 })

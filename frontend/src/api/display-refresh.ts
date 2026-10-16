@@ -50,6 +50,7 @@ export async function requestWithRefresh<T>(
     const exhausted = attempt + 1 >= DISPLAY_REFRESH_MAX_TRIES
     report?.(true, exhausted)
     if (exhausted) return result
-    await delay(DISPLAY_REFRESH_INTERVAL_MS)
+    await delay(Math.min(DISPLAY_REFRESH_INTERVAL_MS, 50 * 2 ** attempt))
+    if (aborted?.()) return result
   }
 }

@@ -1,0 +1,41 @@
+/* Review pass: keep the existing app identity, increase reading sizes. */
+.brand small{font-size:11px;letter-spacing:0}
+.nav-bottom{color:#bed0d3}
+.prototype-notice,.breadcrumb,.eyebrow,.page-tabs strong span,.switch-label,
+.rail-label,.group-button p,.group-button .owner,.rail-note,.badge,
+.row-meta,.row-reason,.list-header span,.list-footer,.inspector-id,.source-line,
+.status-points,.reason-label,.detail-footnote,.progress-label,.subtle-note,
+.flow-step .step-num,.flow-step p,.flow-step .stage-count,.exception-route,
+.filter-chip,.selection-bar,.table-footer,.row-action,td .item-meta,th,
+.dialog-header p,.dialog-footer .subtle-note,.preview-outcomes{font-size:12px}
+.work-heading p,.btn,.link-button,.scene-label,select,.variant-switcher button,
+.group-button-head strong,.list-header strong,.next-block strong,
+.next-block p,.flow-caption,.dialog-body>p,.dialog-body li,.field-label,textarea,
+td,.table-toolbar .btn{font-size:13px}
+.question-row h4,td .item-title,.reason-block p,.question-preview{font-size:14px}
+.scope-note{font-size:12px}
+.group-button-head{gap:7px}
+.group-button-head strong{white-space:normal}
+.group-button .owner{margin-left:25px}
+.next-block{border-left:0;border-radius:6px;padding:16px}
+.flow-step{border-top-width:1px;border-radius:7px}
+.flow-step.selected{box-shadow:inset 0 0 0 1px #76a49e}
+.variant-switcher{box-shadow:0 7px 25px #0002}
+dialog{box-shadow:0 20px 70px #0003}
+.toast{box-shadow:0 8px 30px #0002}
+.dialog-inspector{padding:0}
+@media(max-width:1120px){.brand small{font-size:10px}.group-button-head strong{font-size:12px}}
+@media(max-width:760px){
+  .prototype-notice,.eyebrow,.switch-label,.page-tabs strong span{font-size:11px}
+  .scene-label select{font-size:12px;width:180px}
+  .group-button-head strong{font-size:12px}
+  .group-button-head{gap:4px}
+  .group-button{min-height:78px}
+  .variant-switcher button{font-size:12px;padding:10px}
+  .work-heading p,.scope-note,.flow-caption,.flow-step p,.exception-route{font-size:12px}
+  .flow-step p{padding-right:69px}
+  .flow-step .stage-count{font-size:11px;top:40px}
+  .flow-step .step-num{font-size:11px}
+  .filter-chip{font-size:12px;padding:7px}
+  .flow-step{padding-bottom:18px;min-height:108px}
+}

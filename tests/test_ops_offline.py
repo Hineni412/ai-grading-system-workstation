@@ -174,13 +174,12 @@ def _prepare_restore(
         operation_id=OPERATION_ID,
         archive_names=tuple(members),
     )
-    import hashlib
 
     manifest = OpsOperationManifest(
         operation_id=OPERATION_ID,
         operation="restore",
         parameters={"backup_filename": source.name},
-        resource_fingerprint=hashlib.sha256(source.read_bytes()).hexdigest(),
+        resource_fingerprint=f"file:{source.stat().st_mtime_ns}:{source.stat().st_size}",
         staging_root=str(staging),
         preparation_backup=str(preparation_backup),
         created_at="2026-07-12T12:00:00+08:00",

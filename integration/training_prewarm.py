@@ -352,6 +352,7 @@ class TrainingPrewarmWorker:
             return
         from backend.repositories.grading_database import open_grading_repositories
         from integration.diagnosis_profile_service import DiagnosisProfileService
+        from question_bank.recommendation.personalized import maintain_source_snapshots
 
         # Maintenance reads only versions, file metadata and session paths.
         # Use the existing database in place; no snapshot copies or fitting.
@@ -366,6 +367,12 @@ class TrainingPrewarmWorker:
             result = service.maintain_local_profiles(
                 can_continue=self._maintenance_idle,
             )
+        if result["completed"]:
+            pools = maintain_source_snapshots(self._paths.qb_db_path, self._paths.data_root,
+                                              can_continue=self._maintenance_idle)
+            for field in ("removed_files", "rewritten_files", "freed_bytes"):
+                result[field] += pools[field]
+            result["completed"] = pools["completed"]
         if result["completed"]:
             self._maintained_sources = sources
             self._next_cache_maintenance = time.monotonic() + 60 * 60

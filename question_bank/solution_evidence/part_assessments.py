@@ -136,12 +136,27 @@ def load_profiles(db_path: Path, ids: Sequence[int], *, connection: sqlite3.Conn
 
     with reading(db_path, connection) as conn:
         marks = ",".join("?" for _ in ids)
+        current_rows = ""
+        selected_rows = ""
+        parameters = list(ids)
+        if not verify_source:
+            # Ordinary reads always choose the newest preferred row. Select
+            # its identity before fetching the potentially large JSON body.
+            current_rows = f"""WITH preferred AS (
+                SELECT rowid AS chosen_rowid,
+                       ROW_NUMBER() OVER (PARTITION BY question_id ORDER BY
+                           status = 'approved' DESC, created_at DESC, rowid DESC) AS position
+                FROM question_solution_evidence_versions
+                WHERE status IN ('proposed', 'approved') AND question_id IN ({marks})
+            ) """
+            selected_rows = "AND v.rowid IN (SELECT chosen_rowid FROM preferred WHERE position=1)"
+            parameters = [*ids, *ids]
         # created_at has second precision; when two usable versions tie, the
         # most recently inserted row (max rowid) wins.
         rows = [
             row
             for row in conn.execute(
-                f"""SELECT v.question_id, v.evidence_version_id, v.evidence_json,
+                current_rows + f"""SELECT v.question_id, v.evidence_version_id, v.evidence_json,
                            v.source_content_hash AS evidence_source_hash,
                            v.status AS evidence_status, v.graph_release_id,
                            v.source_kind, v.source_reference, v.created_by,
@@ -151,7 +166,8 @@ def load_profiles(db_path: Path, ids: Sequence[int], *, connection: sqlite3.Conn
                     JOIN questions q ON q.id = v.question_id AND q.is_deleted = 0
                     WHERE v.status IN ('proposed', 'approved')
                       AND v.question_id IN ({marks})
-                    ORDER BY v.status = 'approved', v.created_at, v.rowid""", list(ids),
+                      {selected_rows}
+                    ORDER BY v.status = 'approved', v.created_at, v.rowid""", parameters,
             ).fetchall()
         ]
         seen: set[int] = set()

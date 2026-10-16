@@ -119,10 +119,12 @@ class CurrentKnowledgeResolver:
         self,
         release: KnowledgeGraphRelease,
         taxonomy_catalog: Mapping[str, Any],
+        *, validated: bool = False,
     ) -> None:
-        report = validate_release(release, taxonomy_catalog)
-        if not report.valid:
-            raise CurrentKnowledgeUnavailable("current_knowledge_invalid")
+        if not validated:
+            report = validate_release(release, taxonomy_catalog)
+            if not report.valid:
+                raise CurrentKnowledgeUnavailable("current_knowledge_invalid")
 
         self.release_id = release.release_id
         self.content_hash = release.content_hash
@@ -138,6 +140,7 @@ class CurrentKnowledgeResolver:
             if str(item.get("status") or "").strip() == "active"
         }
         self._nodes = active_nodes
+        self._ordered_nodes = tuple(active_nodes[key] for key in sorted(active_nodes))
         self._relations = tuple(
             _relation(item)
             for item in _objects(payload.get("relations"))
@@ -165,10 +168,18 @@ class CurrentKnowledgeResolver:
                 targets[term_id].append(stable_key)
 
         exact: dict[str, str] = {}
-        compatibility: dict[str, set[str]] = defaultdict(set)
+        compatibility: dict[str, str | None] = {}
         storage_values: dict[str, set[str]] = defaultdict(set)
         term_names: dict[str, str] = {}
         eligible_terms: set[str] = set()
+        normalized_values: dict[str, str] = {}
+
+        def normalize(value: str) -> str:
+            normalized = normalized_values.get(value)
+            if normalized is None:
+                normalized = normalized_values[value] = normalize_knowledge_alias(value)
+            return normalized
+
         for term_id, term in terms.items():
             disposition = str(
                 dispositions.get(term_id, {}).get("disposition") or ""
@@ -183,7 +194,7 @@ class CurrentKnowledgeResolver:
             eligible_terms.add(term_id)
             term_names[term_id] = name
             for value in (term_id, name):
-                normalized = normalize_knowledge_alias(value)
+                normalized = normalize(value)
                 previous = exact.get(normalized)
                 if previous is not None and previous != term_id:
                     raise CurrentKnowledgeUnavailable(
@@ -193,9 +204,13 @@ class CurrentKnowledgeResolver:
                 storage_values[term_id].add(str(value).strip())
             for field in ("aliases", "legacy_names", "legacy_ids"):
                 for value in _strings(term.get(field)):
-                    normalized = normalize_knowledge_alias(value)
+                    normalized = normalize(value)
                     if normalized:
-                        compatibility[normalized].add(term_id)
+                        # A compatibility input is either unique or ambiguous;
+                        # reads never need to enumerate its competing terms.
+                        previous = compatibility.setdefault(normalized, term_id)
+                        if previous != term_id:
+                            compatibility[normalized] = None
                         storage_values[term_id].add(value)
 
         self._term_names = term_names
@@ -203,9 +218,7 @@ class CurrentKnowledgeResolver:
             term_id: tuple(targets[term_id]) for term_id in eligible_terms
         }
         self._exact = exact
-        self._compatibility = {
-            key: tuple(sorted(values)) for key, values in compatibility.items()
-        }
+        self._compatibility = compatibility
         self._storage_values = {
             term_id: tuple(sorted(values))
             for term_id, values in storage_values.items()
@@ -222,11 +235,13 @@ class CurrentKnowledgeResolver:
         if not path.is_file():
             raise CurrentKnowledgeUnavailable("current_knowledge_database_missing")
         if taxonomy_catalog is None:
-            from integration.data_generation import data_version_token
-            token = data_version_token(path, "materials")
+            from integration.data_generation import data_version_token, data_versions
+            versions = data_versions(path)
+            domain = 'materials_global' if versions is not None and 'materials_global' in versions else 'materials'
+            token = data_version_token(path, domain)
             if token is not None:
                 # Repeated active-release reads share the resolver; a
-                # materials write bumps the version and reopens the database.
+                # shared-standard write bumps the version and reopens it.
                 key = ("active-knowledge", token)
                 with _ACTIVE_DB_CACHE_LOCK:
                     cached = _ACTIVE_DB_CACHE.get(key)
@@ -417,10 +432,13 @@ class CurrentKnowledgeResolver:
                 raise CurrentKnowledgeUnavailable(
                     "current_knowledge_release_corrupt"
                 )
-            catalog = dict(
-                taxonomy_catalog or load_taxonomy_catalog_for_release(release)
-            )
-            return cls(release, catalog)
+            # Resolver construction only reads this immutable release payload.
+            # Mutable vocabulary callers still use the loader's copied value.
+            catalog = (taxonomy_catalog or release.payload.get("taxonomy_catalog")
+                       or load_taxonomy_catalog_for_release(release))
+            # Database releases are validated when saved/activated. Reading
+            # their immutable identity must not repeat the entire graph audit.
+            return cls(release, catalog, validated=expected_identity is not None)
         except (
             json.JSONDecodeError,
             KnowledgeGraphReleaseError,
@@ -434,7 +452,7 @@ class CurrentKnowledgeResolver:
 
     @property
     def nodes(self) -> tuple[CurrentKnowledgeNode, ...]:
-        return tuple(self._nodes[key] for key in sorted(self._nodes))
+        return self._ordered_nodes
 
     @property
     def relations(self) -> tuple[CurrentKnowledgeRelation, ...]:
@@ -463,10 +481,9 @@ class CurrentKnowledgeResolver:
         normalized = normalize_knowledge_alias(text)
         term_id = self._exact.get(normalized)
         if term_id is None:
-            matches = self._compatibility.get(normalized, ())
-            if len(matches) != 1:
+            term_id = self._compatibility.get(normalized)
+            if term_id is None:
                 return ()
-            term_id = matches[0]
         return tuple(
             ResolvedKnowledge(
                 fine_term_id=term_id,
@@ -486,10 +503,9 @@ class CurrentKnowledgeResolver:
         normalized = normalize_knowledge_alias(text)
         term_id = self._exact.get(normalized)
         if term_id is None:
-            matches = self._compatibility.get(normalized, ())
-            if len(matches) != 1:
+            term_id = self._compatibility.get(normalized)
+            if term_id is None:
                 return None
-            term_id = matches[0]
         return term_id, self._term_names[term_id]
 
     def stored_values_for_term(self, value: object) -> tuple[str, ...]:
@@ -501,12 +517,7 @@ class CurrentKnowledgeResolver:
             stored
             for stored in self._storage_values[term_id]
             if self._exact.get(normalize_knowledge_alias(stored)) == term_id
-            or len(
-                self._compatibility.get(
-                    normalize_knowledge_alias(stored),
-                    (term_id,),
-                )
-            ) == 1
+            or self._compatibility.get(normalize_knowledge_alias(stored), term_id) is not None
         )
 
     def resolve_many(

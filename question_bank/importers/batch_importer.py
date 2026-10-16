@@ -52,7 +52,13 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 SUPPORTED_PAPER_SUFFIXES = {".pdf", ".docx"}
 _ANSWER_HEADING = re.compile(
-    r"(?mi)^[ \t]*(?:参考答案(?:[与和及]?(?:试题)?解析|及评分标准)?|答案[与和及]?解析|试题答案|试题解析|答案|解析|评分标准|answer(?: key|s)?|solutions?)[ \t]*[:：]?[ \t]*$"
+    r"(?mi)^[ \t]*(?:"
+    r"参考答案(?:[与和及]?(?:试题)?解析|及评分标准)?|答案[与和及]?解析|试题答案|试题解析|答案|解析|评分标准|answer(?: key|s)?|solutions?"
+    # 带标题前缀的答案区标题：行首允许一段不含空白和标点的短前缀
+    # （如“八年级数学”“深圳市2025年中考适应性考试数学”），
+    # 行尾仍以参考答案/答案与解析/评分标准收尾。裸“答案”“解析”不接受前缀。
+    r"|[^\s，。；：:,.!?？;、（）()【】\[\]<>《》]{1,30}(?:参考答案(?:[与和及]?(?:试题)?解析|及评分标准)?|答案[与和及]解析|评分标准)"
+    r")[ \t]*[:：]?[ \t]*$"
 )
 _NUMBERED_LINE_PREFIX = r"(?m)^[ \t]*(?P<leading_images>(?:\[\[IMAGE:[^\r\n]+?\]\][ \t]*)*)"
 _MAIN_QUESTION_MARKER = re.compile(_NUMBERED_LINE_PREFIX + r"(?P<number>\d{1,3})[ \t]*[.．、][ \t]*")
@@ -113,6 +119,22 @@ _DATA_URI_MIME_EXT = {
 def _embedded_text_usable(text: str) -> bool:
     """False 表示没有文字层，或文字层是乱码映射（需要走 OCR）。"""
     return embedded_text_usable(text)
+
+
+def _pdf_text_layer_covers_all_pages(path: Path) -> bool:
+    """每一页都有实质文字层才算全覆盖；扫描页/纯图页返回 0 字符。"""
+    try:
+        import fitz
+
+        document = fitz.open(path)
+        try:
+            return all(
+                len(str(page.get_text() or "").strip()) >= 10 for page in document
+            )
+        finally:
+            document.close()
+    except Exception:
+        return False
 
 
 def _materialize_markdown_images(
@@ -1223,6 +1245,7 @@ def _extract_paper(
     document_pipeline: QuestionDocumentPipeline | None = None,
     full_parser: Callable[[Path], str | None] | None = None,
     operation_id: str | None = None,
+    colored_layers: bool = True,
 ):
     if path.suffix.lower() == ".pdf":
         extracted = import_pdf(path)
@@ -1233,7 +1256,16 @@ def _extract_paper(
             image_dir = asset_root / f"{path.stem}_{digest}"
         markdown = None
         extracted_type_overrides: dict[str, str] = {}
-        if full_parser is None:
+        # 已带显式答案区标题、且每页都有文字层的文档不需要按颜色拆答案层——
+        # 普通黑字答案文件里的红字分数会被误读成彩色答案层。部分页缺文字层
+        # 时保持原路径，让彩色拆层或 MinerU/OCR 覆盖这些页面。
+        if (
+            colored_layers
+            and _ANSWER_HEADING.search(extracted.text or "")
+            and _pdf_text_layer_covers_all_pages(path)
+        ):
+            colored_layers = False
+        if colored_layers and full_parser is None:
             markdown, extracted_type_overrides = _extract_with_colored_layers(
                 path, image_dir=image_dir, layout_out=layout,
             )

@@ -1290,6 +1290,16 @@ def test_step_confirmation_roundtrip_partial_means_not_achieved_and_total_only_c
         student_ids=["1"], session_ids=[seed.session_id]
     )
     assert rows[0]["assessment_state"]["teacher_review"] == review
+    overview_rows = seed.db.results.get_active_assessment_evidence(
+        student_ids=["1"], session_ids=[seed.session_id], include_diagnostics=False,
+    )
+    from integration.diagnosis_profile_service import _teacher_step_records
+    from types import SimpleNamespace
+    projected = SimpleNamespace(steps=[
+        {"part_id": "Q1", "step_id": "S1", "step_score": 4, "evidence_point_ids": ["p1"]},
+        {"part_id": "Q1", "step_id": "S2", "step_score": 3, "evidence_point_ids": ["p2"]},
+    ])
+    assert _teacher_step_records(projected, overview_rows[0]) == review["steps"]
     with pytest.raises(ReviewRevisionConflictError):
         service.confirm(
             seed.session_id,

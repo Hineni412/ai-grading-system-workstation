@@ -1,7 +1,7 @@
 """Per-entry durable store for derived results that outlive the process.
 
 One small ``*.entry`` file per key under a controlled directory; the file
-name is ``sha256(pickle(key))[:40]``. The envelope holds ``key``,
+name is a versioned hash of the request values. The envelope holds ``key``,
 ``change_stamp`` and either ``payload`` or a losslessly packed
 ``payload_zlib``. Compaction is opt-in; input metadata stays directly
 readable for idle maintenance. A stored entry is used
@@ -12,6 +12,7 @@ failure is silent and falls back to recomputation.
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import pickle
 import tempfile
@@ -22,9 +23,21 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from integration.result_cache import cache_values
+
 _SNAPSHOT_LIMIT = 512
 _SNAPSHOT_MAX_BYTES = 32 * 1024 * 1024
 _SAVED_LIMIT = 2048
+
+
+def _key_values(value: Any) -> Any:
+    if isinstance(value, tuple):
+        return tuple(_key_values(item) for item in value)
+    if isinstance(value, (bool, int)):
+        return ("number", int(value), 1)
+    if isinstance(value, float) and math.isfinite(value):
+        return ("number", *value.as_integer_ratio())
+    return value
 
 
 def _file_state(path: Path) -> tuple:
@@ -58,12 +71,52 @@ class PersistentEntryStore:
         # rewriting identical bytes without loading the file back.
         self._saved: OrderedDict[str, tuple] = OrderedDict()
         self._saved_bytes = 0
+        self._legacy_lock = threading.Lock()
+        self._legacy_state: tuple | None = None
+        self._legacy_paths: dict[Path, list[Path]] = {}
 
     def entry_path(self, key: Any) -> Path:
+        # Request keys contain scalar values and containers. Pickle memoizes
+        # shared objects, so equal keys can produce different pickle bytes.
+        # The normalized value representation has no object-identity markers.
         digest = hashlib.sha256(
-            pickle.dumps(key, pickle.HIGHEST_PROTOCOL)
+            repr(_key_values(cache_values(key))).encode("utf-8")
         ).hexdigest()[:40]
-        return self._dir / f"{digest}.entry"
+        return self._dir / f"v2-{digest}.entry"
+
+    def _read_paths(self, key: Any):
+        """Prefer direct paths; index legacy names only on a lookup miss.
+
+        Compatibility reads never rename or rewrite old files. New writes
+        use the stable path, so they no longer need this fallback.
+        """
+        path = self.entry_path(key)
+        yield path
+        legacy = self._dir / (hashlib.sha256(
+            pickle.dumps(key, pickle.HIGHEST_PROTOCOL)).hexdigest()[:40] + ".entry")
+        yield legacy
+        if not self._dir.exists():
+            return
+        with self._legacy_lock:
+            state = _file_state(self._dir)
+            if state != self._legacy_state:
+                indexed: dict[Path, list[Path]] = {}
+                entries = sorted((p for p in self._dir.glob("*.entry")
+                                  if not p.name.startswith("v2-")),
+                                 key=lambda p: p.stat().st_mtime_ns, reverse=True)
+                for candidate in entries:
+                    try:
+                        with candidate.open("rb") as saved:
+                            snapshot = pickle.load(saved)
+                        if isinstance(snapshot, dict) and "key" in snapshot:
+                            indexed.setdefault(self.entry_path(snapshot["key"]), []).append(candidate)
+                    except (OSError, pickle.PickleError, EOFError, ValueError,
+                            TypeError, AttributeError, ImportError):
+                        continue
+                self._legacy_paths = indexed
+                self._legacy_state = state
+            candidates = tuple(self._legacy_paths.get(path, ()))
+        yield from (candidate for candidate in candidates if candidate != legacy)
 
     def _snapshot(self, path: Path) -> Any:
         file_state = _file_state(path)
@@ -107,24 +160,29 @@ class PersistentEntryStore:
     def get(self, key: Any, signature: Any | Callable[[Any], Any]) -> Any:
         """Return the stored payload, or ``None`` on any mismatch or error."""
         try:
-            path = self.entry_path(key)
-            snapshot = self._snapshot(path)
-            if (snapshot is None or not isinstance(snapshot, dict)
-                    or snapshot.get("key") != key):
-                return None
-            stored_signature = snapshot.get("change_stamp", snapshot.get("signature"))
-            expected = (signature(stored_signature)
-                        if callable(signature) else signature)
-            if expected is None or stored_signature != expected:
-                return None
-            return snapshot.get("payload")
+            for path in self._read_paths(key):
+                try:
+                    snapshot = self._snapshot(path)
+                except (OSError, pickle.PickleError, EOFError, KeyError, TypeError,
+                        ValueError, AttributeError, ImportError, zlib.error):
+                    continue
+                if (snapshot is None or not isinstance(snapshot, dict)
+                        or snapshot.get("key") != key):
+                    continue
+                stored_signature = snapshot.get("change_stamp", snapshot.get("signature"))
+                expected = (signature(stored_signature)
+                            if callable(signature) else signature)
+                if expected is not None and stored_signature == expected:
+                    return snapshot.get("payload")
+            return None
         except (OSError, pickle.PickleError, EOFError, KeyError, TypeError,
                 ValueError, AttributeError, ImportError, zlib.error):
             return None
 
     def put(self, key: Any, signature: Any, payload: Any,
-            *, _expected_state: tuple | None = None) -> None:
-        path = self.entry_path(key)
+            *, _expected_state: tuple | None = None,
+            _expected_path: Path | None = None) -> None:
+        path = _expected_path if _expected_path is not None else self.entry_path(key)
         temporary: Path | None = None
         try:
             envelope = {"key": key, "change_stamp": signature, "payload": payload}
@@ -228,9 +286,8 @@ class PersistentEntryStore:
                     result["freed_bytes"] += state[3]
                 elif (current is True and self._compact and not dry_run
                       and "payload" in snapshot and snapshot.get("storage_version") != 1):
-                    if self.entry_path(key) != path:
-                        continue
-                    self.put(key, signature, snapshot["payload"], _expected_state=state)
+                    self.put(key, signature, snapshot["payload"],
+                             _expected_state=state, _expected_path=path)
                     after = path.stat().st_size
                     if after < state[3]:
                         result["rewritten_files"] += 1

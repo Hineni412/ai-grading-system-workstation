@@ -1111,6 +1111,7 @@ def _selection_draft(
         release, load_taxonomy_catalog_for_release(release)
     )
     monkeypatch.setattr(module, "_source_practice_metadata", lambda _: {})
+    monkeypatch.setattr(module, "_exam_reference_candidates", lambda items: tuple(items))
     diagnosis = deepcopy(diagnosis or _direct_diagnosis())
     mastery = {}
     for student in diagnosis["students"]:

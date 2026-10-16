@@ -266,6 +266,7 @@ def _session_summary(
         updated_at=row.get("updated_at"),
         kind=kind,
         exam_date=exam_date,
+        has_results=bool(row['has_results']) if 'has_results' in row else None,
     )
 
 

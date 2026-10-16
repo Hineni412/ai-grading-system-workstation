@@ -1,7 +1,6 @@
 from __future__ import annotations
 import json
 import copy
-import re
 from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
@@ -227,7 +226,7 @@ def editor_env(tmp_path: Path):
 def _assert_safe_editor(body: dict, tmp_path: Path) -> None:
     assert not any("path" in str(key).casefold() for key in body)
     assert str(tmp_path) not in json.dumps(body, ensure_ascii=False)
-    assert re.fullmatch(r"[0-9a-f]{64}", body["revision"])
+    assert body["revision"]
 
 
 def test_put_saves_once_preserves_source_and_rejects_stale_revision(editor_env) -> None:
@@ -290,6 +289,134 @@ def test_put_saves_once_preserves_source_and_rejects_stale_revision(editor_env) 
     )
     assert stale.status_code == 409
     assert stale.json()["error"]["code"] == "config_revision_conflict"
+
+    # 同一考试配置流程：试卷和答案分两个 PDF 上传时，请求正文按
+    # x-answer-size 拆成试卷与答案两段，来源元数据只计试卷部分。
+    import hashlib
+
+    import fitz
+
+    def _pdf_bytes(rows: list[tuple[tuple[float, float], str]]) -> bytes:
+        document = fitz.open()
+        page = document.new_page()
+        page.insert_font(fontname="china-s")
+        for point, text in rows:
+            page.insert_text(point, text, fontname="china-s", fontsize=11)
+        output = document.tobytes()
+        document.close()
+        return output
+
+    paper_bytes = _pdf_bytes([
+        ((72, 72), "1. What is 1+1? A.1 B.2"),
+        ((72, 100), "2. What is 2+2? A.3 B.4"),
+        ((72, 128), "3. Compute 3+3."),
+        ((72, 156), "4. Prove that x=x."),
+    ])
+    answer_bytes = _pdf_bytes([
+        ((72, 60), "八年级数学参考答案及评分标准"),
+        ((72, 100), "题号"), ((132, 100), "1"), ((172, 100), "2"), ((212, 100), "3"),
+        ((72, 130), "答案"), ((132, 130), "A"), ((172, 130), "B"), ((212, 130), "6"),
+        ((72, 180), "4. 解：由题意得。"),
+    ])
+
+    # 旧版清单没有答案文件名，单文件上传保持原有加载行为。
+    paper_only = client.post(
+        f"/api/sessions/{session_id}/config/sources",
+        content=paper_bytes,
+        headers={"x-upload-filename": "paper.pdf"},
+    )
+    assert paper_only.status_code == 201
+    assert paper_only.json()["answer_filename"] is None
+    single_dir = (
+        tmp_path / "uploaded" / "config_sources" / f"session-{session_id}"
+        / paper_only.json()["source_id"]
+    )
+    old_manifest = json.loads((single_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert "answer_safe_filename" not in old_manifest
+    service = ConfigSourceService(tmp_path / "uploaded")
+    assert service.load_active_public(session_id=session_id)["source_revision"] == (
+        paper_only.json()["source_revision"]
+    )
+
+    uploaded = client.post(
+        f"/api/sessions/{session_id}/config/sources",
+        content=paper_bytes + answer_bytes,
+        headers={
+            "x-upload-filename": "paper.pdf",
+            "x-answer-filename": "answer.pdf",
+            "x-answer-size": str(len(answer_bytes)),
+        },
+    )
+    assert uploaded.status_code == 201
+    body = uploaded.json()
+    assert body["answer_filename"] == "answer.pdf"
+    assert body["size_bytes"] == len(paper_bytes)
+    assert body["sha256_prefix"] == hashlib.sha256(paper_bytes).hexdigest()[:12]
+    assert {item["question_id"] for item in body["questions"]} == {
+        "Q1", "Q2", "Q3", "Q4",
+    }
+    assert all(item["has_answer_asset"] for item in body["questions"])
+
+    source_dir = (
+        tmp_path / "uploaded" / "config_sources" / f"session-{session_id}"
+        / body["source_id"]
+    )
+    manifest = json.loads((source_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["answer_safe_filename"] == "answer.pdf"
+    assert all(item["answer"] for item in manifest["asset_files"].values())
+    # 表格题号（1-3）共用同一张答案表裁图。
+    table_crops = {
+        qid: (source_dir / entry["answer"]).read_bytes()
+        for qid, entry in manifest["asset_files"].items()
+    }
+    assert table_crops["Q1"] == table_crops["Q2"] == table_crops["Q3"]
+
+    # 清单重读保持修订号不变，快照仍带答案文件名。
+    reloaded = service.load_active_public(session_id=session_id)
+    assert reloaded["source_revision"] == body["source_revision"]
+    assert reloaded["answer_filename"] == "answer.pdf"
+
+    unmatched_answer = _pdf_bytes([
+        ((72, 60), "参考答案"),
+        ((72, 100), "9. A"),
+        ((72, 130), "10. B"),
+    ])
+    rejected = client.post(
+        f"/api/sessions/{session_id}/config/sources",
+        content=paper_bytes + unmatched_answer,
+        headers={
+            "x-upload-filename": "paper.pdf",
+            "x-answer-filename": "other.pdf",
+            "x-answer-size": str(len(unmatched_answer)),
+        },
+    )
+    assert rejected.status_code == 422
+    assert "答案" in rejected.json()["error"]["message"]
+    assert rejected.json()["error"]["details"]["reason"] == "answer_unmatched"
+    assert service.load_active_public(session_id=session_id)["source_revision"] == (
+        body["source_revision"]
+    )
+
+    # 试卷自带的空白答题表（题号/答案两栏、无答案区标题）不能被当成答案裁图。
+    blank_grid_paper = _pdf_bytes([
+        ((72, 60), "1. What is 1+1? A.1 B.2"),
+        ((72, 90), "2. What is 2+2? A.3 B.4"),
+        ((72, 120), "3. Compute 3+3."),
+        ((72, 200), "题号"), ((132, 200), "1"), ((172, 200), "2"), ((212, 200), "3"),
+        ((72, 230), "答案"),
+    ])
+    grid_only = client.post(
+        f"/api/sessions/{session_id}/config/sources",
+        content=blank_grid_paper,
+        headers={"x-upload-filename": "grid.pdf"},
+    )
+    assert grid_only.status_code == 201
+    assert {item["question_id"] for item in grid_only.json()["questions"]} == {
+        "Q1", "Q2", "Q3",
+    }
+    assert all(
+        not item["has_answer_asset"] for item in grid_only.json()["questions"]
+    )
 
 
 def test_database_failure_cleans_both_new_files_and_keeps_binding(

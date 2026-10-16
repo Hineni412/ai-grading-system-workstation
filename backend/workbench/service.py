@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-import hashlib
-import json
 from pathlib import Path
 import sqlite3
 from typing import Any
@@ -110,7 +108,7 @@ class WorkbenchService:
         key = (str(self.db.db_path), session_id,
                data_version_token(self.db.db_path, "results") or commit_generation(self.db.db_path),
                _session_error_file_state(rubric_path),
-               hashlib.sha256(json.dumps(manual_context, sort_keys=True, separators=(",", ":")).encode()).digest())
+               (manual_context.get("scan_batch_id"), manual_context.get("revision")) if manual_context else None)
 
         def compute():
             questions = self.review_service.list_questions(session_id, session, manual_context=manual_context)

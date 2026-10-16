@@ -11,6 +11,7 @@ export interface SessionSummary {
   updated_at: string | null
   kind: SessionKind
   exam_date: string | null
+  has_results?: boolean | null
 }
 
 export interface SessionDraftOptions {
@@ -87,7 +88,7 @@ export class SessionReadError extends Error {
 export function isSessionSummary(value: unknown): value is SessionSummary {
   if (!isRecord(value)) return false
 
-  if (!hasExactKeys(value, [
+  if (!hasExactKeys(Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'has_results')), [
     'id', 'name', 'status', 'curriculum_volume_id', 'is_deleted', 'deleted_at',
     'created_at', 'updated_at', 'kind', 'exam_date',
   ])) return false
@@ -95,6 +96,7 @@ export function isSessionSummary(value: unknown): value is SessionSummary {
   return (
     Number.isSafeInteger(value.id) &&
     Number(value.id) > 0 &&
+    (value.has_results === undefined || value.has_results === null || typeof value.has_results === 'boolean') &&
     typeof value.name === 'string' &&
     typeof value.status === 'string' &&
     isNullableString(value.curriculum_volume_id) &&
@@ -128,8 +130,9 @@ const legacySessionDetailKeys = [
 function projectRenameResponse(value: unknown): SessionSummary {
   if (!isRecord(value)) throw new Error('invalid session rename response')
 
-  const hasSupportedShape = hasExactKeys(value, sessionSummaryKeys)
-    || hasExactKeys(value, legacySessionDetailKeys)
+  const shape = Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'has_results'))
+  const hasSupportedShape = hasExactKeys(shape, sessionSummaryKeys)
+    || hasExactKeys(shape, legacySessionDetailKeys)
   if (!hasSupportedShape) throw new Error('invalid session rename response')
 
   const summary = {

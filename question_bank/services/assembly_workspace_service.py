@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
 import tempfile
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
@@ -69,6 +68,7 @@ class AssemblyDraft:
     def to_payload(self) -> dict[str, object]:
         return {
             "schema_version": 2,
+            "revision": self.revision,
             "basket_ids": list(self.basket_ids),
             "order_ids": list(self.order_ids),
             "sections": [section.to_payload() for section in self.sections],
@@ -160,7 +160,10 @@ class AssemblyWorkspaceService:
         self.exports_root = self.workspace_root / "assembly_exports"
 
     def load_draft(self) -> AssemblyDraft:
-        return _normalize_draft(self._read_draft_payload())
+        payload = self._read_draft_payload()
+        if "revision" not in payload and self.draft_path.exists():
+            payload = {**payload, "revision": str(self.draft_path.stat().st_mtime_ns)}
+        return _normalize_draft(payload)
 
     def normalize_draft(self, draft: Mapping[str, object]) -> AssemblyDraft:
         return _normalize_draft(draft)
@@ -175,8 +178,11 @@ class AssemblyWorkspaceService:
         self.workspace_root.mkdir(parents=True, exist_ok=True)
         with _exclusive_file_lock(self.lock_path):
             current = self.load_draft()
+            if {**normalized.to_payload(), "revision": current.revision} == current.to_payload():
+                return current
             if str(expected_revision) != current.revision:
                 raise AssemblyDraftConflict(current.revision)
+            normalized = replace(normalized, revision=str(int(current.revision) + 1))
             _atomic_write_json(self.draft_path, normalized.to_payload())
         return normalized
 
@@ -190,6 +196,8 @@ class AssemblyWorkspaceService:
         self.workspace_root.mkdir(parents=True, exist_ok=True)
         with _exclusive_file_lock(self.lock_path):
             current = self.load_draft()
+            if set(additions).issubset(current.basket_ids):
+                return current
             if str(expected_revision) != current.revision:
                 raise AssemblyDraftConflict(current.revision)
             basket = list(current.basket_ids)
@@ -203,6 +211,7 @@ class AssemblyWorkspaceService:
             next_payload = current.to_payload()
             next_payload["basket_ids"] = basket
             next_payload["order_ids"] = [*current.order_ids, *additions]
+            next_payload["revision"] = str(int(current.revision) + 1)
             normalized = _normalize_draft(next_payload)
             _atomic_write_json(self.draft_path, normalized.to_payload())
         return normalized
@@ -213,7 +222,8 @@ class AssemblyWorkspaceService:
             current = self.load_draft()
             if current.revision != str(expected_revision):
                 return False
-            _atomic_write_json(self.draft_path, _normalize_draft({}).to_payload())
+            cleared = _normalize_draft({"revision": str(int(current.revision) + 1)})
+            _atomic_write_json(self.draft_path, cleared.to_payload())
         return True
 
     def create_record(self, create: AssemblyRecordCreate) -> AssemblyRecord:
@@ -421,14 +431,6 @@ def _normalize_draft(payload: Mapping[str, object]) -> AssemblyDraft:
             ('purpose', 'question_count', 'difficulty_max', 'max_questions_per_skill', 'max_written_questions', 'recent_activity_count')}
     if isinstance(payload.get("assembly_context"), Mapping):
         normalized_payload["assembly_context"] = dict(payload["assembly_context"])
-    revision_payload = dict(normalized_payload)
-    if payload.get('practice_rules') is True:
-        # Keep pending export receipts valid until this legacy draft is saved
-        # with the new object. Completed exports are never rewritten.
-        revision_payload.pop('practice_rules', None)
-        if basket:
-            revision_payload['practice_rules'] = True
-    revision = _payload_revision(revision_payload)
     return AssemblyDraft(
         basket_ids=tuple(basket),
         order_ids=tuple(ordered),
@@ -438,7 +440,7 @@ def _normalize_draft(payload: Mapping[str, object]) -> AssemblyDraft:
         include_answer=bool(normalized_payload["include_answer"]),
         layout_mode=layout_mode,
         preview_mode=preview_mode,
-        revision=revision,
+        revision=str(payload.get("revision") or "0"),
         practice_rules=normalized_payload.get("practice_rules"),
         assembly_context=normalized_payload.get("assembly_context"),
     )
@@ -527,16 +529,6 @@ def _clean_summary(value: Mapping[str, int] | None) -> dict[str, int]:
         if key and count > 0:
             summary[key] = count
     return summary
-
-
-def _payload_revision(payload: Mapping[str, object]) -> str:
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
 
 
 def _atomic_write_json(path: Path, payload: Mapping[str, object]) -> None:

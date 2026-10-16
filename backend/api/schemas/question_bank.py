@@ -13,6 +13,11 @@ class _QuestionBankModel(BaseModel):
 
 class QuestionPaperListItem(_QuestionBankModel):
     id: int
+    analysis_loaded: bool = True
+    is_exam_reference: bool = False
+    can_be_exam_reference: bool = False
+    is_entrance_exam: bool = False
+    exam_year: dict[str, Any] | None = None
     title: str | None = None
     source_type: Literal["docx", "pdf", "other"]
     year: str | None = None
@@ -78,6 +83,10 @@ class QuestionPaperMetadataWriteResponse(QuestionPaperMetadataInput):
 
 class QuestionPaperStateChangeRequest(_QuestionBankModel):
     expected_updated_at: str = Field(min_length=1, max_length=64)
+
+
+class ExamReferenceChangeRequest(QuestionPaperStateChangeRequest):
+    starred: bool
 
 
 class QuestionPaperStateWriteResponse(_QuestionBankModel):
@@ -328,6 +337,7 @@ class QuestionExamFrequency(_QuestionBankModel):
 
 class QuestionListItem(_QuestionBankModel):
     id: int
+    exam_reference: dict[str, Any] | None = None
     duplicate_of_question_id: int | None = None
     duplicate_labels_reused: bool = False
     revision: str
@@ -367,7 +377,7 @@ class QuestionListItem(_QuestionBankModel):
     @model_serializer(mode="wrap")
     def serialize_optional_skills(self, handler):
         result = handler(self)
-        for key in ("labels", "skills", "skill_hits", "evidence_point_count", "duplicate_members", "exam_frequency"):
+        for key in ("labels", "skills", "skill_hits", "evidence_point_count", "duplicate_members", "exam_frequency", "exam_reference"):
             if result.get(key) is None:
                 result.pop(key, None)
         return result
@@ -501,7 +511,7 @@ class SimilarQuestionListResponse(_QuestionBankModel):
 
 
 class QuestionTagWriteRequest(_QuestionBankModel):
-    expected_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_revision: str = Field(min_length=1, max_length=256)
     tags: list[QuestionTagWriteItem] = Field(max_length=100)
 
 
@@ -511,13 +521,13 @@ class QuestionTagWriteItem(QuestionTagResponse):
 
 
 class QuestionTypeWriteRequest(_QuestionBankModel):
-    expected_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_revision: str = Field(min_length=1, max_length=256)
     primary_type_key: str = Field(min_length=1, max_length=160)
     secondary_type_keys: list[str] = Field(default_factory=list, max_length=2)
 
 
 class QuestionStateChangeRequest(_QuestionBankModel):
-    expected_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_revision: str = Field(min_length=1, max_length=256)
 
 
 class QuestionWriteResponse(_QuestionBankModel):

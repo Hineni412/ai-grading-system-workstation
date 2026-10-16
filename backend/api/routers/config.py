@@ -119,7 +119,12 @@ CONFIG_SOURCE_ERROR_RESPONSES = {
 
 def _source_api_error(exc: ConfigSourceError) -> ApiError:
     if isinstance(exc, ConfigSourceParseError):
-        return ApiError(422, "config_source_invalid", str(exc))
+        return ApiError(
+            422,
+            "config_source_invalid",
+            str(exc),
+            details={"reason": exc.reason},
+        )
     if isinstance(exc, ConfigSourceTooLargeError):
         return ApiError(413, "config_source_too_large", "Config source is too large")
     if isinstance(exc, ConfigSourceTypeUnsupportedError):
@@ -166,6 +171,16 @@ async def upload_config_source(
         ):
             raise ConfigSourceTooLargeError()
         filename = decode_upload_filename(request.headers.get("x-upload-filename"))
+        answer_filename = None
+        answer_size = None
+        if request.headers.get("x-answer-filename") is not None:
+            answer_filename = decode_upload_filename(
+                request.headers.get("x-answer-filename")
+            )
+            raw_answer_size = request.headers.get("x-answer-size")
+            answer_size = (
+                int(str(raw_answer_size)) if raw_answer_size is not None else None
+            )
     except (TypeError, ValueError):
         raise _source_api_error(ConfigSourceInvalidError()) from None
     except ConfigSourceError as exc:
@@ -182,6 +197,8 @@ async def upload_config_source(
             session_id=session_id,
             filename=filename,
             chunks=request.stream(),
+            answer_filename=answer_filename,
+            answer_size=answer_size,
             activation_guard=lambda: _source_activation_guard(manager, session_id),
         )
         return record.public_snapshot()

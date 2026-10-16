@@ -26,6 +26,7 @@ export type QuestionBankTagType = (typeof QUESTION_BANK_TAG_TYPES)[number]
 
 export type QuestionRepairKind = 'skills' | 'analysis' | 'all'
 export type QuestionRepairPart = 'tags' | 'evidence' | 'criteria' | 'skills' | 'types' | 'knowledge_points'
+export type QuestionRepairBlock = '' | 'source' | 'review' | 'standard' | 'type_pending'
 export interface QuestionRepairPreview {
   curriculum_volume_id: string
   kind: QuestionRepairKind
@@ -36,7 +37,7 @@ export interface QuestionRepairPreview {
   model_calls: number
   skills_required: boolean
   counts: Record<QuestionRepairPart, number>
-  items: { id: number; question_number: string; paper_title: string; missing: QuestionRepairPart[]; blocked_reason: string; type_pending_reason?: string; revision: string }[]
+  items: { id: number; question_number: string; paper_title: string; missing: QuestionRepairPart[]; blocked_reason: string; blocked_kind?: QuestionRepairBlock; type_pending_reason?: string; revision: string }[]
 }
 
 function decodeRepairPreview(value: unknown): QuestionRepairPreview {
@@ -48,6 +49,7 @@ function decodeRepairPreview(value: unknown): QuestionRepairPreview {
       || !value.items.every(item => isRecord(item) && Number.isSafeInteger(item.id) && Number(item.id) > 0
         && typeof item.question_number === 'string' && typeof item.paper_title === 'string' && typeof item.blocked_reason === 'string'
         && (item.type_pending_reason === undefined || typeof item.type_pending_reason === 'string')
+        && (item.blocked_kind === undefined || ['', 'source', 'review', 'standard', 'type_pending'].includes(String(item.blocked_kind)))
         && Array.isArray(item.missing) && item.missing.every(part => ['tags', 'evidence', 'criteria', 'skills', 'types', 'knowledge_points'].includes(String(part))))) {
     throw new Error('Invalid repair preview')
   }
@@ -89,6 +91,7 @@ export function questionTypeWithSubtype(
 }
 
 export interface QuestionBankListItem {
+  exam_reference?: ExamAssessment
   id: number
   duplicate_of_question_id?: number | null
   duplicate_labels_reused?: boolean
@@ -155,6 +158,11 @@ export interface QuestionBankQuestionRefListResponse {
 
 export interface QuestionBankPaper {
   id: number
+  analysis_loaded?: boolean
+  is_exam_reference?: boolean
+  can_be_exam_reference?: boolean
+  is_entrance_exam?: boolean
+  exam_year?: { year: number | null; status: string; reason: string } | null
   title: string | null
   year: string | null
   province: string | null
@@ -676,7 +684,7 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
 
 function hasExactQuestionKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const base = Object.fromEntries(Object.entries(value).filter(([key]) =>
-    !['duplicate_of_question_id', 'duplicate_labels_reused', 'labels', 'skills', 'skill_hits', 'evidence_point_count', 'duplicate_members', 'exam_frequency'].includes(key)))
+    !['duplicate_of_question_id', 'duplicate_labels_reused', 'labels', 'skills', 'skill_hits', 'evidence_point_count', 'duplicate_members', 'exam_frequency', 'exam_reference'].includes(key)))
   return hasExactKeys(base, keys)
 }
 
@@ -697,7 +705,7 @@ function isFiniteNumber(value: unknown): value is number {
 }
 
 function isRevision(value: unknown): value is string {
-  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
+  return typeof value === 'string' && value.length > 0 && value.length <= 256
 }
 
 function isHex(value: unknown, length: number): value is string {
@@ -751,6 +759,7 @@ function isQuestionLabelSummary(value: unknown): boolean {
 
 function hasQuestionBankListFields(value: Record<string, unknown>): boolean {
   return (
+    (value.exam_reference === undefined || isExamAssessment(value.exam_reference)) &&
     (value.labels === undefined || isQuestionLabelSummary(value.labels)) &&
     (value.evidence_point_count === undefined || isNonnegativeInteger(value.evidence_point_count)) &&
     (value.duplicate_members === undefined || (Array.isArray(value.duplicate_members) && value.duplicate_members.every(member => isRecord(member) && hasExactKeys(member, ['id', 'paper_id', 'question_number', 'paper_title']) && isPositiveInteger(member.id) && isNullableInteger(member.paper_id) && typeof member.question_number === 'string' && isNullableString(member.paper_title)))) &&
@@ -983,7 +992,7 @@ export function decodeQuestionListResponse(value: unknown): QuestionBankListResp
 function isQuestionBankPaper(value: unknown): value is QuestionBankPaper {
   return (
     isRecord(value) &&
-    hasExactKeys(Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'skill_unlinked_question_count')), [
+    hasExactKeys(Object.fromEntries(Object.entries(value).filter(([key]) => !['analysis_loaded', 'skill_unlinked_question_count', 'is_exam_reference', 'can_be_exam_reference', 'is_entrance_exam', 'exam_year'].includes(key))), [
       'id',
       'title',
       'year',
@@ -1009,6 +1018,7 @@ function isQuestionBankPaper(value: unknown): value is QuestionBankPaper {
       'source_type',
     ]) &&
     isPositiveInteger(value.id) &&
+    (value.analysis_loaded === undefined || typeof value.analysis_loaded === 'boolean') &&
     isNullableString(value.title) &&
     isNullableString(value.year) &&
     isNullableString(value.province) &&
@@ -2494,7 +2504,58 @@ export function chapterTypeCostNote(plan: ChapterTypePlan): string {
   return plan.planned_requests ? `本次分析后将整理${plan.chapters.filter(chapter => chapter.planned_requests).map(chapter => chapter.label).join('、')}的题型，预计增加 ${plan.planned_requests} 次模型请求。` : ''
 }
 
+export interface ExamReferenceSource {
+  paper_id: number; year: number | null; question_id: number; question_number: string; part_id?: string
+}
+export interface ExamAssessment {
+  status: 'ordinary' | 'matched' | 'reference' | 'unmatched' | 'pending' | 'unconfigured'
+  reason: string; reference_count: number; matched_paper_count: number; recent_weight: number
+  matches: (ExamReferenceSource & { paper_title: string; reason: string; weight: number | null })[]
+}
+export interface ExamReferenceRow {
+  key?: string; name: string; type_name?: string; paper_count: number; recent_weight: number; sources: ExamReferenceSource[]
+}
+export interface ExamReferenceProfile {
+  active: boolean; paper_count: number; pending_year_count: number; rule_version: string; year_decay: number
+  papers: { id: number; title: string; paper_ids: number[]; year: number | null; year_status: string; year_reason: string; weight: number | null }[]
+  curriculum_volume_id?: string; topics?: ExamReferenceRow[]; types?: ExamReferenceRow[]; tasks?: ExamReferenceRow[]
+  pending_question_count?: number; total_reference_questions?: number
+}
+export function isExamAssessment(value: unknown): value is ExamAssessment {
+  return isRecord(value) && ['ordinary', 'matched', 'reference', 'unmatched', 'pending', 'unconfigured'].includes(String(value.status))
+    && typeof value.reason === 'string' && isNonnegativeInteger(value.reference_count) && isNonnegativeInteger(value.matched_paper_count)
+    && typeof value.recent_weight === 'number' && Array.isArray(value.matches) && value.matches.every(m =>
+      isRecord(m) && isPositiveInteger(m.paper_id) && isPositiveInteger(m.question_id) && typeof m.question_number === 'string'
+      && typeof m.paper_title === 'string' && typeof m.reason === 'string' && (m.year === null || isPositiveInteger(m.year)))
+}
+function decodeExamReference(value: unknown): ExamReferenceProfile {
+  if (!isRecord(value) || typeof value.active !== 'boolean' || !isNonnegativeInteger(value.paper_count)
+    || !isNonnegativeInteger(value.pending_year_count) || typeof value.rule_version !== 'string' || typeof value.year_decay !== 'number'
+    || !Array.isArray(value.papers) || !value.papers.every(p => isRecord(p) && isPositiveInteger(p.id) && typeof p.title === 'string'
+      && Array.isArray(p.paper_ids) && p.paper_ids.every(isPositiveInteger) && (p.year === null || isPositiveInteger(p.year))
+      && typeof p.year_status === 'string' && typeof p.year_reason === 'string' && (p.weight === null || typeof p.weight === 'number'))
+    || !['topics', 'types', 'tasks'].every(k => value[k] === undefined || (Array.isArray(value[k]) && value[k].every(r =>
+      isRecord(r) && typeof r.name === 'string' && isNonnegativeInteger(r.paper_count) && typeof r.recent_weight === 'number'
+      && Array.isArray(r.sources) && r.sources.every(s => isRecord(s) && isPositiveInteger(s.paper_id)
+        && isPositiveInteger(s.question_id) && typeof s.question_number === 'string' && (s.year === null || isPositiveInteger(s.year))))))) {
+    throw new Error('中考参照数据格式不正确')
+  }
+  return value as unknown as ExamReferenceProfile
+}
+
 export const questionBankApi = {
+  examReference(volumeId?: string, signal?: AbortSignal): Promise<ExamReferenceProfile> {
+    const query = volumeId ? `?${new URLSearchParams({ curriculum_volume_id: volumeId })}` : ''
+    return apiClient.request(`/api/question-bank/exam-reference${query}`, { decode: decodeExamReference, signal, timeoutMs: 60_000 })
+  },
+  setExamReference(paper: QuestionBankPaper, starred: boolean): Promise<unknown> {
+    return apiClient.request(`/api/question-bank/papers/${paper.id}/exam-reference`, {
+      method: 'PATCH', body: { expected_updated_at: paper.updated_at, starred }, decode: value => {
+        if (!isRecord(value) || value.id !== paper.id || typeof value.is_exam_reference !== 'boolean' || typeof value.updated_at !== 'string') throw new Error('试卷星标保存结果不正确')
+        return value
+      },
+    })
+  },
   previewTagging(questionIds: readonly number[], curriculumVolumeId: string, signal?: AbortSignal, scopeQuestionIds?: readonly number[]): Promise<ChapterTypePlan> {
     const ids = normalizedQuestionIds(questionIds)
     const scopeIds = scopeQuestionIds === undefined ? undefined : [...new Set(scopeQuestionIds)]
@@ -2587,8 +2648,12 @@ export const questionBankApi = {
     })
   },
 
-  listPapers(signal?: AbortSignal, deleted = false): Promise<QuestionBankPaperListResponse> {
-    return apiClient.request(`/api/question-bank/papers${deleted ? '?deleted=true' : ''}`, {
+  listPapers(signal?: AbortSignal, deleted = false, includeAnalysis = true, paperIds?: number[]): Promise<QuestionBankPaperListResponse> {
+    const params = new URLSearchParams()
+    if (deleted) params.set('deleted', 'true')
+    if (!includeAnalysis) params.set('include_analysis', 'false')
+    if (paperIds) params.set('paper_ids', paperIds.join(','))
+    return apiClient.request(`/api/question-bank/papers${params.size ? `?${params}` : ''}`, {
       decode: decodeQuestionPaperListResponse,
       signal,
     })

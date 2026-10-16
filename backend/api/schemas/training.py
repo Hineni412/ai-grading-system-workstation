@@ -211,7 +211,7 @@ class PersonalizedRecommendationEditRequest(_TrainingModel):
 
 class TrainingFromAssemblyRequest(_TrainingModel):
     class_ids: list[str] = Field(min_length=1, max_length=100)
-    draft_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    draft_revision: str = Field(min_length=1, max_length=256)
     rules: RecommendationRulesRequest
 
 
@@ -532,7 +532,7 @@ class TrainingNormalizedScope(_TrainingModel):
     exclude_student_ids: list[str] = Field(default_factory=list)
     use_historical_fallback: bool = True
     matched_student_count: int = Field(default=0, ge=0)
-    scope_revision: str = Field(default="", pattern=r"^$|^[0-9a-f]{64}$")
+    scope_revision: str = Field(default="", max_length=256)
     student_score_profiles: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 

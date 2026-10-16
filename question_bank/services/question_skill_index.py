@@ -87,8 +87,10 @@ def load_skill_inventory(conn: sqlite3.Connection) -> dict[str, Any]:
     members: dict[int, set[int]] = defaultdict(set)
     volumes: dict[str, set[int]] = defaultdict(set)
     paper_volumes: dict[int, str | None] = {}
+    entrance_ids: set[int] = set()
+    from question_bank.services.exam_reference import is_entrance_paper
     for row in conn.execute(
-        "SELECT DISTINCT p.id,p.grade,p.semester,p.textbook_version,q.id AS question_id FROM papers p "
+        "SELECT DISTINCT p.id,p.grade,p.semester,p.textbook_version,p.title,p.exam_type,q.id AS question_id FROM papers p "
         "JOIN (SELECT id,paper_id FROM questions UNION SELECT question_id,paper_id FROM paper_question_occurrences) m "
         "ON m.paper_id=p.id JOIN questions q ON q.id=m.id "
         "WHERE q.is_deleted=0 AND COALESCE(p.import_status,'')<>'deleted'"):
@@ -97,6 +99,8 @@ def load_skill_inventory(conn: sqlite3.Connection) -> dict[str, Any]:
             continue
         paper_id = int(row["id"])
         members[paper_id].add(qid)
+        if is_entrance_paper(dict(row)):
+            entrance_ids.add(qid)
         if paper_id not in paper_volumes:
             volume = curriculum_volume(grade=row["grade"], semester=row["semester"], textbook_version=row["textbook_version"])
             paper_volumes[paper_id] = volume["id"] if volume else None
@@ -104,7 +108,7 @@ def load_skill_inventory(conn: sqlite3.Connection) -> dict[str, Any]:
         if volume_id:
             volumes[volume_id].add(qid)
     return {"release": release, "nodes": nodes, "questions": questions,
-            "members": dict(members), "volumes": dict(volumes)}
+            "members": dict(members), "volumes": dict(volumes), "entrance_ids": entrance_ids}
 
 
 def build_skill_snapshot(
@@ -274,6 +278,11 @@ def _assemble_skill_snapshot(
             knowledge_coverage_by_question[qid] = part["coverage"]
         for skill_key in part["skills"]:
             by_skill[skill_key].add(qid)
+    for qid in inventory.get("entrance_ids", ()):
+        for key in knowledge_by_question.get(qid, ()):
+            node = curriculum_knowledge_node(key)
+            if node:
+                volumes.setdefault(node["volume_id"], set()).add(qid)
     release, nodes = inventory["release"], inventory["nodes"]
     return {"release": release, "nodes": nodes, "questions": questions, "members": dict(members),
             "volumes": dict(volumes), "by_skill": dict(by_skill), "by_question": by_question,
@@ -439,6 +448,8 @@ def skill_index(snapshot: dict[str, Any], volume_id: str, review_ids: set[int]) 
                 "definition": {name: node[name] for name in ("observable_evidence", "include_scope", "exclude_scope")}})
     topic_rows: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for value, question_ids in snapshot["topics"].items():
+        if not question_ids.intersection(ids):
+            continue
         # Preserve the actual stored filter value; public names are only presentation.
         node = snapshot['nodes'].get(snapshot['topic_keys'].get(value, ''))
         anchors = [_anchor_key(anchor, volume) for anchor in json.loads(node["curriculum_anchors_json"])] if node else []

@@ -16,10 +16,17 @@ function scoreInput(page: Page) {
 async function openAnswer(page: Page) {
   await page.goto('/results?tab=details')
   await page.getByRole('button', { name: /Synthetic Student A，Q1，/ }).click()
-  // The synthetic AI result has a total but no step assessment; current review
-  // asks the teacher to supply the step instead of inventing its evidence.
-  await expect(scoreInput(page)).toHaveValue('')
-  await expect(page.getByText('保存后记录：等待逐步给分', { exact: true })).toBeVisible()
+  // With one rubric step, the existing total prefills the teacher's draft.
+  // Opening the draft must not save teacher steps or invent AI step evidence.
+  await expect(scoreInput(page)).toHaveValue('12')
+  const response = await page.request.get('/api/sessions/1/review/questions/Q1/items?scope=all')
+  expect(response.ok()).toBe(true)
+  const item = (await response.json()).items.find(
+    (entry: { student_code: string }) => entry.student_code === 'SYN-001',
+  )
+  expect(item).toMatchObject({ score_awarded: 12 })
+  expect(item.metadata.teacher_review).toBeUndefined()
+  expect(item.metadata.step_assessments ?? []).toEqual([])
   const crop = page.getByRole('region', { name: '答卷证据查看器' }).getByRole('img')
   await expect.poll(() => crop.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0)
 }

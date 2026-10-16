@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator, field_validator
 from backend.api.schemas.training import RecommendationRulesRequest
@@ -42,27 +42,28 @@ class AssemblyDraftPayload(_AssemblyModel):
 
 
 class AssemblyDraftResponse(AssemblyDraftPayload):
-    revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    revision: str = Field(min_length=1, max_length=256)
     rule_violations: list[dict] = Field(default_factory=list)
 
 
 class AssemblyDraftWriteRequest(_AssemblyModel):
-    expected_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_revision: str = Field(min_length=1, max_length=256)
     draft: AssemblyDraftPayload
 
 
 class AssemblyExportSubmitRequest(_AssemblyModel):
-    draft_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    draft_revision: str = Field(min_length=1, max_length=256)
     format: Literal["docx", "pdf"] = "docx"
     source: Literal["ai"] | None = None
 
 
 class AssemblyRecordRestoreRequest(_AssemblyModel):
-    expected_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_revision: str = Field(min_length=1, max_length=256)
 
 
 class AssemblyQuestionItem(_AssemblyModel):
     id: int
+    exam_reference: dict[str, Any] | None = None
     skill_keys: list[str] = Field(default_factory=list)
     revision: str
     question_number: str

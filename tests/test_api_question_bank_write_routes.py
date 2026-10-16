@@ -86,7 +86,7 @@ def test_replace_tags_conflicts_instead_of_overwriting_newer_state(
             tags=[ConfirmedQuestionTag("knowledge_point", "二次函数", 1.0)],
         )
 
-    assert len(caught.value.current_revision) == 64
+    assert caught.value.current_revision != revision
     assert _load_tags(service.db_path, question_id)[0]["tag_value"] == "一次函数"
 
 
@@ -138,6 +138,54 @@ def test_teacher_type_edit_updates_all_current_point_copies_and_keeps_other_link
         conn.execute('UPDATE papers SET grade=?,semester=?,textbook_version=? WHERE id=1', (volume['grade'], volume['semester'], volume['textbook_version']))
     question = QuestionAnalysisInputLoader(db_path=service.db_path, data_root=service.data_root).load([qid])[0]
     source_hash = solution_evidence_source_content_hash(question)
+    # A successful no-match survives reopening and unrelated standard releases.
+    # It is reconsidered only when the question or offered type definitions change.
+    from dataclasses import replace
+    from types import SimpleNamespace
+    from backend.jobs.question_bank_repair import _with_type_contracts, _current_type_review, repair_preview
+    from question_bank.taxonomy.governance import TaxonomyGovernance
+    from question_bank.training_criteria.adapters import ExistingTagProjectionWriter
+    governance = TaxonomyGovernance(knowledge_graph_db_path=service.db_path)
+    scoped_question = replace(question, tagging_context=replace(question.tagging_context, curriculum_volume_id=volume['id']))
+    typed_question = _with_type_contracts([scoped_question], service.db_path, governance)[0]
+    tag_writer = ExistingTagProjectionWriter(write_service=service, tagging_service=SimpleNamespace())
+    no_match = {'primary_type_id': '', 'secondary_type_ids': [],
+                'proposed_type_name': '', 'reason': 'TEST-当前候选不覆盖本题核心任务'}
+    tag_writer.write_question_type_labels(typed_question, no_match, model_name='TEST-model', operation_id='TEST-no-match')
+    with connect(service.db_path) as conn:
+        saved = json.loads(conn.execute("SELECT tag_value FROM question_tags WHERE question_id=? AND tag_type='tag_status'", (qid,)).fetchone()[0])
+        assert saved['reason'] == no_match['reason']
+        assert saved['review_source'] == 'model_result'
+        assert saved['operation_id'] == 'TEST-no-match'
+        saved['release_id'] = 'TEST-previous-release-with-same-types'
+        conn.execute("UPDATE question_tags SET tag_value=? WHERE question_id=? AND tag_type='tag_status'", (json.dumps(saved), qid))
+    reopened = QuestionAnalysisInputLoader(db_path=service.db_path, data_root=service.data_root).load([qid], curriculum_volume_id=volume['id'])[0]
+    reopened = _with_type_contracts([reopened], service.db_path, governance)[0]
+    assert _current_type_review(json.dumps(saved), reopened)
+    # An old unclassified marker is not evidence of a model no-match decision.
+    legacy = {key: value for key, value in saved.items() if key not in {'reason', 'review_source', 'operation_id'}}
+    assert not _current_type_review(json.dumps(legacy), reopened)
+    assert not _current_type_review(json.dumps({**legacy, 'reason': 'TEST-未归类备注'}), reopened)
+    assert not _current_type_review(json.dumps({**saved, 'reason': '  '}), reopened)
+    with connect(service.db_path) as conn:
+        conn.execute("UPDATE question_tags SET tag_value=? WHERE question_id=? AND tag_type='tag_status'", (json.dumps(legacy), qid))
+    legacy_preview = repair_preview(QuestionBankReadService(service.db_path, data_root=service.data_root), volume['id'], 'all', [qid])
+    assert legacy_preview['repairable_count'] == 1
+    assert legacy_preview['items'][0]['type_pending_reason'] == ''
+    assert legacy_preview['items'][0]['blocked_reason'] == ''
+    with connect(service.db_path) as conn:
+        conn.execute("UPDATE question_tags SET tag_value=? WHERE question_id=? AND tag_type='tag_status'", (json.dumps(saved), qid))
+    preview = repair_preview(QuestionBankReadService(service.db_path, data_root=service.data_root), volume['id'], 'all')
+    assert '暂无合适题型' in preview['items'][0]['type_pending_reason']
+    # Missing analysis remains eligible while the type keeps its manual-review reason.
+    assert preview['repairable_count'] == 1
+    assert not preview['items'][0]['blocked_reason']
+    changed_question = replace(reopened, tagging_context=replace(reopened.tagging_context, question_text='TEST-新的核心任务'))
+    assert not _current_type_review(json.dumps(saved), changed_question)
+    changed_contract = reopened.taxonomy_snapshot.to_dict()
+    changed_type = next(row for row in changed_contract['candidates']['knowledge'] if is_type_key(row['id']))
+    changed_type['definition'] += ' TEST-扩展适用范围'
+    assert not _current_type_review(json.dumps(saved), replace(reopened, taxonomy_contract=changed_contract))
     evidence = {'parts': [{'part_id': 'part-1', 'evidence_points': [
         {'evidence_point_id': 'p1', 'target': '原判定点一'}, {'evidence_point_id': 'p2', 'target': '原判定点二'}]}]}
     with connect(service.db_path) as conn:
@@ -152,6 +200,7 @@ def test_teacher_type_edit_updates_all_current_point_copies_and_keeps_other_link
     assert response.status_code == 200
     assert response.json()['revision'] != revision
     with connect(service.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM question_tags WHERE question_id=? AND tag_type='tag_status'", (qid,)).fetchone()[0] == 0
         links = load_point_links(service.db_path, ['a' * 64], release_id, connection=conn)['a' * 64]
         assert all({link.stable_key for link in point_links} == {'sk_TEST', types[0]} for point_links in links.values())
         assert all(next(link.weight for link in point_links if link.stable_key == 'sk_TEST') == pytest.approx(0.75 / 1.75) for point_links in links.values())
@@ -810,7 +859,7 @@ def test_paper_delete_rehomes_canonical_question_to_surviving_paper(
                 """
                 INSERT INTO papers (
                     title, source_file, import_status, updated_at
-                ) VALUES ('留存卷', 'other-source.docx', 'completed', ?)
+                ) VALUES ('2025深圳中考留存卷', 'other-source.docx', 'completed', ?)
                 """,
                 ("2026-07-30 12:00:00.000000",),
             ).lastrowid
@@ -823,6 +872,17 @@ def test_paper_delete_rehomes_canonical_question_to_surviving_paper(
             """,
             (surviving_paper_id, canonical_id),
         )
+
+    starred = writer.set_exam_reference(surviving_paper_id,
+        expected_updated_at="2026-07-30 12:00:00.000000", starred=True)
+    assert writer.set_exam_reference(surviving_paper_id,
+        expected_updated_at="2026-07-30 12:00:00.000000", starred=True) == starred
+    # Reopening the library retains the star, inferred year and paper occurrence.
+    reopened = QuestionBankReadService(writer.db_path, data_root=writer.data_root)
+    reference = reopened.entrance_exam_profile()
+    assert reference["paper_count"] == 1
+    assert reference["papers"][0]["year"] == 2025
+    assert reopened.exam_references().assess(canonical_id)["status"] == "reference"
 
     trashed = writer.set_paper_deleted(
         paper_id,

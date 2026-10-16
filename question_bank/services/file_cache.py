@@ -148,8 +148,13 @@ _BATCH_FILE_READS: ContextVar[_BatchFileReads | None] = ContextVar(
 
 @contextmanager
 def batch_file_reads(root: Path):
-    """Reuse fresh scan metadata within a batch; never retain it across calls."""
-    token = _BATCH_FILE_READS.set(_BatchFileReads(memoized_resolve(root)))
+    """Share directory metadata across nested batches in one operation."""
+    resolved = memoized_resolve(root)
+    current = _BATCH_FILE_READS.get()
+    if current is not None and current.root == resolved:
+        yield
+        return
+    token = _BATCH_FILE_READS.set(_BatchFileReads(resolved))
     try:
         yield
     finally:
@@ -487,6 +492,33 @@ class PersistentDigestMap:
             self._dirty += 1
             if (self._dirty >= _DIGEST_MAP_FLUSH_ENTRIES
                     or time.monotonic() - self._last_flush >= _DIGEST_MAP_FLUSH_SECONDS):
+                self._flush_locked()
+
+    def get_many(self, keys) -> dict:
+        """Read one batch under a single file-state lookup."""
+        with self._lock:
+            entries = self._entries_now()
+            found = {}
+            for key in keys:
+                if key in entries:
+                    found[key] = entries[key]
+                    entries.move_to_end(key)
+            return found
+
+    def put_many(self, values: dict) -> None:
+        """Save the completed source identities without flushing per question."""
+        if not values:
+            return
+        with self._lock:
+            entries = self._entries_now()
+            for key, value in values.items():
+                if entries.get(key, _DIGEST_MAP_MISSING) != value:
+                    entries[key] = value
+                    self._dirty += 1
+                entries.move_to_end(key)
+            while len(entries) > _DIGEST_MAP_LIMIT:
+                entries.popitem(last=False)
+            if self._dirty:
                 self._flush_locked()
 
     def flush(self) -> None:

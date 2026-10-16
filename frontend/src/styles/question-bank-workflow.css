@@ -1,0 +1,94 @@
+/* 题库流程沿用组卷的列表／详情分栏与全局设计变量。 */
+.qb-workflow-heading { display: flex; flex: none; align-items: center; justify-content: space-between; gap: var(--space-4); padding: 6px 0 18px; }
+.qb-workflow-heading h2 { display: flex; align-items: baseline; flex-wrap: wrap; gap: 12px; margin: 0 0 8px; font-size: var(--font-size-h3); font-weight: var(--font-weight-semibold); }
+.qb-workflow-heading h2 > span { font-size: var(--font-size-caption); font-weight: var(--font-weight-regular); color: var(--color-text-secondary); }
+.qb-workflow-heading p { margin: 0; color: var(--color-text-secondary); font-size: var(--font-size-dense); line-height: 1.7; }
+.qb-workflow-heading > .app-button { flex: none; }
+.qb-workflow .qb-todo-list { gap: 14px; }
+.qb-workflow-stages { display: grid; grid-template-columns: minmax(0, 1fr) 18px minmax(0, 1.08fr) 18px minmax(0, 1.08fr); gap: 10px; align-items: stretch; }
+.qb-workflow-stage { display: grid; grid-template-columns: 22px minmax(0, 1fr); align-content: start; column-gap: 10px; row-gap: 10px; padding: 16px; border: 1px solid var(--color-border-default); border-radius: var(--radius-panel); background: var(--card); color: var(--color-text-primary); text-align: left; cursor: pointer; font: inherit; }
+.qb-workflow-stage:hover { border-color: var(--color-border-strong); background: var(--color-bg-subtle); }
+.qb-workflow-stage.is-active { border-color: var(--color-accent); background: var(--color-accent-subtle); }
+.qb-workflow-stage.is-organize.is-active { border-color: var(--color-warning); background: var(--color-warning-subtle); }
+.qb-workflow-stage-number { width: 22px; height: 22px; border: 1px solid var(--color-border-strong); border-radius: var(--radius-circle); display: grid; place-items: center; font-size: var(--font-size-caption); color: var(--color-text-secondary); font-variant-numeric: tabular-nums; }
+.qb-workflow-stage.is-active .qb-workflow-stage-number { color: var(--color-accent); border-color: var(--color-accent); }
+.qb-workflow-stage-copy { display: grid; gap: 6px; min-width: 0; }
+.qb-workflow-stage-copy strong { font-size: var(--font-size-dense); font-weight: var(--font-weight-semibold); line-height: 1.5; }
+.qb-workflow-stage-copy > span { font-size: var(--font-size-caption); color: var(--color-text-secondary); line-height: 1.6; text-wrap: pretty; }
+.qb-workflow-stage-count { grid-column: 2; font-size: var(--font-size-caption); color: var(--color-text-secondary); font-variant-numeric: tabular-nums; }
+.qb-workflow-stage-count b { margin-right: 3px; font-size: var(--font-size-h3); color: var(--color-text-primary); font-weight: var(--font-weight-semibold); }
+.qb-workflow-arrow { align-self: center; width: 18px; height: 18px; color: var(--color-text-muted); }
+.qb-workflow-context { display: flex; align-items: center; gap: 20px; justify-content: space-between; }
+.qb-workflow-context > p { display: flex; gap: 7px; align-items: flex-start; margin: 0; max-width: 74ch; font-size: var(--font-size-caption); color: var(--color-text-secondary); line-height: 1.7; }
+.qb-workflow-context > p svg { flex: none; margin-top: 3px; }
+.qb-workflow-review { display: inline-flex; align-items: center; gap: 8px; flex: none; padding: 9px 12px; border: 1px solid var(--color-border-default); border-radius: var(--radius-control); background: var(--card); font: inherit; font-size: var(--font-size-caption); color: var(--color-text-secondary); cursor: pointer; }
+.qb-workflow-review strong { font-weight: var(--font-weight-semibold); }
+.qb-workflow-review:hover,.qb-workflow-review.is-active { color: var(--color-warning); border-color: var(--color-warning); background: var(--color-warning-subtle); }
+.qb-workflow-detail { border: 1px solid var(--color-border-default); border-radius: var(--radius-panel); background: var(--card); min-width: 0; overflow: hidden; }
+.qb-workflow-detail-heading { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 17px 20px; border-bottom: 1px solid var(--color-border-subtle); }
+.qb-workflow-detail-heading h3 { display: flex; align-items: baseline; gap: 12px; margin: 0 0 6px; font-size: var(--font-size-dense); font-weight: var(--font-weight-semibold); }
+.qb-workflow-detail-heading h3 > span { font-size: var(--font-size-caption); color: var(--color-text-secondary); font-weight: var(--font-weight-regular); }
+.qb-workflow-detail-heading p { margin: 0; font-size: var(--font-size-caption); line-height: 1.7; color: var(--color-text-secondary); max-width: 78ch; }
+.qb-workflow-detail-heading > .app-button { flex: none; }
+.qb-workflow-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; padding: 11px 16px; border-bottom: 1px solid var(--color-border-subtle); }
+.qb-workflow-filters .qb-filter-chip { padding: 4px 9px; }
+.qb-workflow-filters > span { margin-left: auto; color: var(--color-text-muted); font-size: var(--font-size-caption); }
+.qb-workflow-columns { display: grid; grid-template-columns: minmax(220px, .85fr) minmax(310px, 1.3fr); align-items: start; min-width: 0; }
+.qb-workflow-question-list { align-self: stretch; border-right: 1px solid var(--color-border-subtle); max-height: 580px; overflow-y: auto; min-width: 0; }
+.qb-workflow-question { width: 100%; display: grid; gap: 6px; padding: 14px 18px; border: 0; border-bottom: 1px solid var(--color-border-subtle); border-radius: 0; text-align: left; background: var(--card); color: var(--color-text-primary); font: inherit; cursor: pointer; }
+.qb-workflow-question:hover { background: var(--color-bg-subtle); }
+.qb-workflow-question.is-selected { background: var(--color-accent-subtle); box-shadow: inset 0 0 0 1px var(--color-accent); }
+.qb-workflow-question > span:first-child { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.qb-workflow-question strong { font-size: var(--font-size-dense); font-weight: var(--font-weight-semibold); }
+.qb-workflow-question small { font-size: var(--font-size-caption); color: var(--color-text-muted); }
+.qb-workflow-paper { font-size: var(--font-size-caption); line-height: 1.7; overflow-wrap: anywhere; }
+.qb-workflow-question-next { font-size: var(--font-size-caption); line-height: 1.6; color: var(--color-text-secondary); }
+.qb-workflow-list-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 18px; color: var(--color-text-muted); font-size: var(--font-size-caption); }
+.qb-workflow-inspector { min-width: 0; padding: 20px 24px 24px; }
+.qb-workflow-inspector > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.qb-workflow-inspector h4 { margin: 0; font-size: var(--font-size-h3); font-weight: var(--font-weight-semibold); }
+.qb-workflow-inspector-source { margin: 8px 0 20px; font-size: var(--font-size-caption); line-height: 1.7; color: var(--color-text-secondary); overflow-wrap: anywhere; }
+.qb-workflow-parts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px 10px; padding: 0 0 20px; margin: 0 0 20px; border-bottom: 1px solid var(--color-border-subtle); }
+.qb-workflow-parts dt { margin: 0 0 6px; color: var(--color-text-secondary); font-size: var(--font-size-caption); line-height: 1.5; }
+.qb-workflow-parts dd { display: flex; align-items: center; gap: 5px; margin: 0; color: var(--color-success); font-size: var(--font-size-caption); }
+.qb-workflow-parts .is-pending dd { color: var(--color-warning); }
+.qb-workflow-reason h5,.qb-workflow-next h5 { margin: 0 0 8px; font-size: var(--font-size-caption); color: var(--color-text-secondary); font-weight: var(--font-weight-medium); }
+.qb-workflow-reason p { margin: 0; font-size: var(--font-size-dense); line-height: 1.8; }
+.qb-workflow-next { margin-top: 20px; padding: 16px; background: var(--color-accent-subtle); border-radius: var(--radius-control); }
+.qb-workflow-next > strong { font-size: var(--font-size-dense); font-weight: var(--font-weight-semibold); line-height: 1.7; }
+.qb-workflow-next > p { margin: 8px 0 0; font-size: var(--font-size-caption); line-height: 1.8; color: var(--color-text-secondary); }
+.qb-workflow-next.is-organize,.qb-workflow-next.is-review { background: var(--color-warning-subtle); }
+.qb-workflow-organize-note { display: flex; align-items: flex-start; gap: 10px; margin: 0; padding: 14px 20px; border-bottom: 1px solid var(--color-border-subtle); background: var(--color-bg-subtle); color: var(--color-text-secondary); }
+.qb-workflow-organize-note > svg { flex: none; margin-top: 3px; color: var(--color-warning); }
+.qb-workflow-organize-note > p { margin: 0; font-size: var(--font-size-caption); line-height: 1.8; max-width: 90ch; }
+.qb-workflow-count-note { margin: 0; font-size: var(--font-size-caption); line-height: 1.7; color: var(--color-text-secondary); }
+.qb-workflow-read-error { display: flex; align-items: center; gap: 10px; margin: 0; font-size: var(--font-size-caption); color: var(--color-warning); }
+.qb-workflow-stage:focus-visible,.qb-workflow-question:focus-visible,.qb-workflow-review:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+@media (max-width: 1050px) {
+  .qb-workflow-heading { flex-wrap: wrap; }
+  .qb-workflow-stages { gap: 6px; grid-template-columns: minmax(0, 1fr) 15px minmax(0, 1fr) 15px minmax(0, 1fr); }
+  .qb-workflow-stage { padding: 13px 11px; column-gap: 7px; }
+  .qb-workflow-context { align-items: flex-start; }
+  .qb-workflow-columns { grid-template-columns: minmax(200px, .8fr) minmax(270px, 1.2fr); }
+  .qb-workflow-inspector { padding: 18px; }
+  .qb-workflow-parts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  .qb-workflow-heading { padding-bottom: 14px; gap: 12px; }
+  .qb-workflow-heading p { font-size: var(--font-size-caption); }
+  .qb-workflow-stages { grid-template-columns: minmax(0, 1fr); gap: 5px; }
+  .qb-workflow-stage { grid-template-columns: 22px minmax(0, 1fr) auto; padding: 12px 14px; align-items: center; }
+  .qb-workflow-stage-copy { gap: 4px; }
+  .qb-workflow-stage-count { grid-column: 3; display: grid; justify-items: end; gap: 2px; white-space: nowrap; }
+  .qb-workflow-stage-count b { display: inline-block; font-size: var(--font-size-h3); margin: 0; }
+  .qb-workflow-arrow { justify-self: center; transform: rotate(90deg); height: 14px; }
+  .qb-workflow-context { flex-wrap: wrap; gap: 10px; }
+  .qb-workflow-review { margin-left: auto; }
+  .qb-workflow-detail-heading { padding: 14px; align-items: flex-start; flex-wrap: wrap; gap: 10px; }
+  .qb-workflow-columns { grid-template-columns: minmax(0, 1fr); }
+  .qb-workflow-question-list { max-height: 235px; border-right: 0; border-bottom: 1px solid var(--color-border-default); }
+  .qb-workflow-inspector { padding: 18px 16px; }
+  .qb-workflow-filters { padding: 10px 12px; }
+  .qb-workflow-filters > span { width: 100%; margin: 2px 0 0; }
+  .qb-workflow-organize-note { padding: 13px 14px; }
+}

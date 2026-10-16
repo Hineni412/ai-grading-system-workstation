@@ -78,6 +78,8 @@ class SimilarityPart:
     topics: frozenset[str]
     mode: str
     operations: frozenset[str]
+    outputs: frozenset[str] = frozenset()
+    difficulty: float | None = None
 
 
 @dataclass(frozen=True)
@@ -220,13 +222,17 @@ def build_index(rows, public_tags, resolver, *, db_path, connection, data_root) 
         parts = []
         if profile.get("available"):
             evidence = profile["evidence"]
+            part_difficulty = {p["part_id"]: p.get("difficulty") for p in profile.get("parts", [])}
             facets = part_facets(evidence, links.get(profile["evidence_version_id"], {}), resolver, index, list(tags["topic"]))
             for part, facet in zip(evidence.get("parts", []), facets):
                 description = "；".join(str(point.get(name) or "") for point in part.get("evidence_points", [])
                                        for name in ("target", "observable_evidence", "justification"))
                 parts.append(SimilarityPart(frozenset(facet["skill_keys"]), frozenset(facet["topic_keys"]),
                                             str(part.get("response_mode") or ""),
-                                            frozenset(k for k, pattern in OPERATIONS.items() if re.search(pattern, description))))
+                                            frozenset(k for k, pattern in OPERATIONS.items() if re.search(pattern, description)),
+                                            frozenset(k for k in ("长度", "面积", "体积", "角度", "取值范围", "最值", "概率", "函数表达式")
+                                                      if any(k in str(p.get("target") or "") for p in part.get("evidence_points", []))),
+                                            part_difficulty.get(part.get("part_id"))))
         try:
             difficulty = float(row["difficulty"])
             if not math.isfinite(difficulty):

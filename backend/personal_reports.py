@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import copy
-import sqlite3
 import threading
 from collections import OrderedDict
 from datetime import datetime
@@ -287,31 +286,8 @@ def render_personal_report(repositories, session_id: int, student_id: int, repor
         shots = capture_lost_question_shots(repositories, group, student, **kwargs)
     error_map = student_error_map(context["error_state"], student, context["error_sources"], context["data"])
     error_history = context["error_histories"].get(student_id)
-    from backend.session_analysis import question_bank_db_path
-    bank_path = question_bank_db_path(Path(repositories.db_path))
-    key_step_repeats = None
-    if bank_path is not None:
-        try:
-            from backend.step_diagnosis import build_session_step_diagnosis, collect_student_key_step_repeats
-            report_sessions = {
-                int(entry["session_id"])
-                for entry in context["histories"].get(student_id, [])
-                if entry.get("score") is not None and int(entry.get("session_id") or 0) > 0
-            }
-            diagnoses = [
-                build_session_step_diagnosis(
-                    repositories, report_session_id, student_ids=[int(student_id)],
-                    question_bank_path=bank_path,
-                )
-                for report_session_id in sorted(report_sessions)
-            ]
-            key_step_repeats = collect_student_key_step_repeats(
-                diagnoses, int(student_id))["repeated"]
-        except (OSError, sqlite3.Error):
-            key_step_repeats = None
     return _render_personal_html(group, student, narrative if narrative_mode == "auto" else None, shots,
         history=context["histories"].get(student_id, []), error_map=error_map, error_history=error_history,
         online=online, review_links=review_links, originals_released=released,
         step_diagnoses=context["step_diagnoses"].get(student_id),
-        key_step_repeats=key_step_repeats,
         narrative_saved_at=saved.get("generated_at") if isinstance(saved, dict) else None)

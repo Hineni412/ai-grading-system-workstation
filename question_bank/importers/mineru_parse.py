@@ -182,6 +182,10 @@ def _copy_layout(result: object, target: dict) -> None:
 
 
 def _collect_records(result: object) -> list[_Record]:
+    from question_bank.importers.batch_importer import (
+        _looks_like_answer_section_heading,
+    )
+
     records: list[_Record] = []
     order = 0
     for page in getattr(result, "pages", []) or []:
@@ -190,7 +194,29 @@ def _collect_records(result: object) -> list[_Record]:
             block_type = _block_type(block)
             bbox = _bbox(block)
             if block_type in _DROP_BLOCK_TYPES:
+                # MinerU 有时把“八年级数学参考答案及评分标准”这类带前缀的
+                # 答案标题判成 doc_title；它是答案区的边界与裁图锚点，不能丢。
+                if block_type == "doc_title":
+                    title_text = _span_text(block).strip()
+                    if title_text and _looks_like_answer_section_heading(title_text):
+                        records.append(
+                            _Record(page_idx, order, "title", bbox, text=title_text)
+                        )
+                        order += 1
+                else:
+                    LOGGER.debug(
+                        "MinerU block dropped: type=%s page=%s text=%.80s",
+                        block_type, page_idx, _span_text(block),
+                    )
                 continue
+            if block_type not in (
+                "text", "equation", "ref_text", "list",
+                "paragraph_title", "table", "footer",
+            ) and block_type not in _VISUAL_TYPES:
+                LOGGER.debug(
+                    "MinerU block unhandled: type=%s page=%s text=%.80s",
+                    block_type, page_idx, _span_text(block),
+                )
             if block_type == "footer":
                 text = re.sub(r"\s+", "", _span_text(block))
                 if text and _FOOTER_CAPTION.match(text):

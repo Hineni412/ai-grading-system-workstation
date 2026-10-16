@@ -11,6 +11,7 @@ import {
   isFiniteNumber,
   isInteger,
   isRecord,
+  isRevision,
   isStringArray,
 } from './validation'
 
@@ -191,7 +192,7 @@ function isScope(value: unknown): value is GraphScope {
     && (value.exclude_student_ids === undefined || isStringArray(value.exclude_student_ids))
     && (value.use_historical_fallback === undefined || typeof value.use_historical_fallback === 'boolean')
     && (value.matched_student_count === undefined || isInteger(value.matched_student_count))
-    && (value.scope_revision === undefined || isSha256(value.scope_revision))
+    && (value.scope_revision === undefined || typeof value.scope_revision === 'string')
     && (value.student_score_profiles === undefined || isRecord(value.student_score_profiles))
 }
 
@@ -234,10 +235,10 @@ function isMastery(value: unknown): value is GraphMastery {
     || (value.effective_weight !== undefined && (!isFiniteNumber(value.effective_weight) || value.effective_weight < 0))
     || (value.exam_evidence_count !== undefined && !isInteger(value.exam_evidence_count))
     || (value.training_evidence_count !== undefined && !isInteger(value.training_evidence_count))
-    || (value.parameter_version !== null && !isSha256(value.parameter_version))
+    || (value.parameter_version !== null && !isRevision(value.parameter_version))
     || (value.reason !== null && typeof value.reason !== 'string')) return false
   if (value.status === 'available') {
-    return isRate(value.value) && value.evidence_count > 0 && isSha256(value.parameter_version)
+    return isRate(value.value) && value.evidence_count > 0 && isRevision(value.parameter_version)
   }
   return value.value === null
 }
@@ -345,7 +346,7 @@ export function decodeGraphResponse(value: unknown, expected?: GraphQueryInput):
       'current_standard', 'nodes', 'edges', 'missing', 'warnings', 'counts',
     ])
     || value.response_schema_version !== 'knowledge-graph-current'
-    || !isSha256(value.response_version)
+    || !isRevision(value.response_version)
     || !isScope(value.scope)
     || !isExamScope(value.exam_scope)
     || !isCoverage(value.coverage)
@@ -407,7 +408,7 @@ export function decodeGraphEvidenceResponse(
       'page_size', 'total_pages',
     ])
     || value.response_schema_version !== 'knowledge-graph-evidence-current'
-    || !isSha256(value.response_version)
+    || !isRevision(value.response_version)
     || !isScope(value.scope)
     || !isExamScope(value.exam_scope)
     || !isCoverage(value.coverage)

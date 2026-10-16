@@ -91,34 +91,59 @@ def _load_point_links(
 ) -> dict[str, dict[str, tuple[KnowledgeLink, ...]]]:
     marks = ",".join("?" for _ in ids)
     with reading(Path(db_path), connection) as conn:
-        rows = _rows_as_dicts(
-            conn.execute(
-                f"""
-                SELECT evidence_version_id, evidence_point_id, graph_release_id,
-                       role, term_id, stable_key, resolution_status, weight,
-                       source_kind, created_at
+        active_release = _active_release_id(conn)
+        wanted = str(graph_release_id or active_release or "").strip()
+        # Select one release before materializing link objects. Old releases
+        # remain available for fallback without loading all of their rows.
+        rows = _rows_as_dicts(conn.execute(
+            f"""WITH releases AS (
+                SELECT evidence_version_id, graph_release_id,
+                       MAX(created_at) AS newest, COUNT(*) AS link_count,
+                       MIN(evidence_point_id) AS first_point
                 FROM evidence_point_knowledge_links
                 WHERE evidence_version_id IN ({marks})
-                """,
-                ids,
+                GROUP BY evidence_version_id, graph_release_id
+            ), preferred AS (
+                SELECT evidence_version_id, graph_release_id,
+                       ROW_NUMBER() OVER (PARTITION BY evidence_version_id ORDER BY
+                           graph_release_id=? DESC, newest DESC, link_count DESC,
+                           first_point, graph_release_id) AS position
+                FROM releases
             )
-        )
+            SELECT l.evidence_version_id,l.evidence_point_id,l.graph_release_id,
+                   l.role,l.term_id,l.stable_key,l.resolution_status,l.weight,
+                   l.source_kind,l.created_at
+            FROM preferred p JOIN evidence_point_knowledge_links l
+              ON l.evidence_version_id=p.evidence_version_id
+             AND l.graph_release_id=p.graph_release_id
+            WHERE p.position=1
+            ORDER BY l.evidence_version_id,l.evidence_point_id,l.graph_release_id,l.role,l.term_id""",
+            [*ids, wanted]))
         linked_ids = {str(row["evidence_version_id"]) for row in rows}
         missing_ids = [identifier for identifier in ids if identifier not in linked_ids]
-        active_release = _active_release_id(conn)
         if missing_ids:
             missing_marks = ",".join("?" for _ in missing_ids)
-            evidence_rows = _rows_as_dicts(conn.execute(
-                f"""SELECT evidence_version_id,question_id,evidence_json,status,graph_release_id
-                    FROM question_solution_evidence_versions WHERE question_id IN (
-                        SELECT question_id FROM question_solution_evidence_versions
-                        WHERE evidence_version_id IN ({missing_marks}))""", missing_ids))
             metadata_rows = _rows_as_dicts(conn.execute(
                 f"""SELECT l.evidence_version_id,l.evidence_point_id,l.graph_release_id,l.role,l.term_id,
                            l.stable_key,l.resolution_status,l.weight,l.source_kind,l.created_at,l.rowid AS link_order
                     FROM evidence_point_knowledge_links l WHERE question_id IN (
                         SELECT question_id FROM question_solution_evidence_versions
                         WHERE evidence_version_id IN ({missing_marks}))""", missing_ids))
+            # Adoption compares only the requested versions and versions that
+            # actually own links. Other historical bodies cannot contribute.
+            evidence_ids = list(dict.fromkeys([*missing_ids,
+                *(str(row["evidence_version_id"]) for row in metadata_rows)]))
+            evidence_rows = []
+            for start in range(0, len(evidence_ids), 500):
+                batch = evidence_ids[start:start + 500]
+                selected_marks = ",".join("?" for _ in batch)
+                evidence_rows.extend(_rows_as_dicts(conn.execute(
+                    f"""SELECT evidence_version_id,question_id,evidence_json,status,graph_release_id
+                        FROM question_solution_evidence_versions
+                        WHERE evidence_version_id IN ({selected_marks}) AND question_id IN (
+                            SELECT question_id FROM question_solution_evidence_versions
+                            WHERE evidence_version_id IN ({missing_marks}))""",
+                    [*batch, *missing_ids])))
             wanted = str(graph_release_id or active_release or "").strip()
             rows.extend(_adopted_point_metadata(missing_ids, evidence_rows, metadata_rows, wanted))
     by_version: dict[str, dict[str, list[sqlite3.Row]]] = {}

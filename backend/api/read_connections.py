@@ -20,7 +20,6 @@ from integration.diagnosis_profile_service import (
 from question_bank.services.question_read_service import (
     QuestionBankSnapshotBusy,
     QuestionBankSnapshotUnavailable,
-    captured_sqlite_read_connection,
 )
 
 _GRADING_REQUIRED_TABLES = frozenset(
@@ -77,15 +76,14 @@ def request_read_context(paths: _ReadPaths) -> Iterator[RequestReadContext]:
                 *_path_generation(Path(paths.qb_db_path), _QB_VERSION_DOMAINS),
             )
             grading_connection = stack.enter_context(
-                captured_sqlite_read_connection(
+                _direct_read_connection(
                     Path(paths.db_path),
                     required_tables=_GRADING_REQUIRED_TABLES,
-                    check_same_thread=False,
                 )
             )
             grading_candidate = _main_candidate_path(grading_connection)
             question_bank_connection = stack.enter_context(
-                _direct_question_bank_read(
+                _direct_read_connection(
                     Path(paths.qb_db_path),
                     required_tables=_QUESTION_BANK_REQUIRED_TABLES,
                 )
@@ -131,12 +129,12 @@ def request_read_context(paths: _ReadPaths) -> Iterator[RequestReadContext]:
 
 
 @contextmanager
-def _direct_question_bank_read(
+def _direct_read_connection(
     db_path: Path,
     *,
     required_tables: frozenset[str],
 ) -> Iterator[sqlite3.Connection]:
-    """Open the question bank directly in read-only mode.
+    """Pin a database snapshot in a read-only transaction, without a file copy.
 
     Mirrors ``question_read_service._open_direct_read_connection`` (mode=ro,
     query_only, one deferred transaction) plus instrumentation, a
@@ -168,16 +166,16 @@ def _direct_question_bank_read(
             tuple(sorted(required_tables)),
         ).fetchall()
         if not required_tables.issubset({str(row[0]) for row in rows}):
-            raise sqlite3.DatabaseError("Question bank schema is unavailable")
+            raise sqlite3.DatabaseError("Read database schema is unavailable")
         yield connection
     except (OSError, sqlite3.Error) as exc:
         text = str(exc).casefold()
         if "locked" in text or "busy" in text:
             raise QuestionBankSnapshotBusy(
-                "Question bank is busy; retry shortly"
+                "Read database is busy; retry shortly"
             ) from exc
         raise QuestionBankSnapshotUnavailable(
-            "Question bank is unavailable"
+            "Read database is unavailable"
         ) from exc
     finally:
         if connection is not None:

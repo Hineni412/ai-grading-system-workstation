@@ -81,6 +81,8 @@ export interface ConfigSource {
   size_bytes: number
   sha256_prefix: string
   parse_state: 'ready'
+  /** Set when the source was uploaded as separate paper + answer PDFs. */
+  answer_filename?: string | null
   questions: ConfigQuestionPreview[]
   ambiguous_assets?: ConfigAmbiguousAsset[]
   assets?: ConfigSourceAsset[]
@@ -349,7 +351,7 @@ function decodeConfigSource(value: unknown): ConfigSource {
     'sha256_prefix', 'parse_state', 'questions',
   ]
   if (!isRecord(value)
-    || Object.keys(value).some((key) => ![...baseKeys, 'ambiguous_assets', 'assets'].includes(key))
+    || Object.keys(value).some((key) => ![...baseKeys, 'ambiguous_assets', 'assets', 'answer_filename'].includes(key))
     || baseKeys.some((key) => !(key in value))
     || !isPositiveInteger(value.session_id) || typeof value.source_id !== 'string'
     || !/^[0-9a-f]{32}$/.test(value.source_id) || typeof value.source_revision !== 'string'
@@ -357,6 +359,8 @@ function decodeConfigSource(value: unknown): ConfigSource {
     || (value.suffix !== '.docx' && value.suffix !== '.pdf') || !isPositiveInteger(value.size_bytes)
     || typeof value.sha256_prefix !== 'string' || !/^[0-9a-f]{12}$/.test(value.sha256_prefix)
     || value.parse_state !== 'ready' || !Array.isArray(value.questions)
+    || (value.answer_filename !== undefined && value.answer_filename !== null
+      && !isSafeBasename(value.answer_filename))
     || !value.questions.every(isQuestionPreview)
     || (value.ambiguous_assets !== undefined && (
       !Array.isArray(value.ambiguous_assets) || !value.ambiguous_assets.every(isAmbiguousAsset)
@@ -406,7 +410,7 @@ function decodeEditor(value: unknown): ConfigEditorResponse {
   if (!isRecord(value) || !hasExactKeys(value, [
     'session_id', 'configured', 'revision', 'rows', 'total_score', 'issues', 'source',
   ]) || !isPositiveInteger(value.session_id) || typeof value.configured !== 'boolean'
-    || typeof value.revision !== 'string' || !/^[0-9a-f]{64}$/.test(value.revision)
+    || typeof value.revision !== 'string' || !value.revision || value.revision.length > 256
     || !Array.isArray(value.rows) || !value.rows.every(isEditorRow)
     || !isFiniteNumber(value.total_score) || !Array.isArray(value.issues)
     || !value.issues.every(isEditorIssue) || (value.source !== null && !isEditorSource(value.source))) {
@@ -445,16 +449,27 @@ export function createClientRequestToken(): string {
 }
 
 export async function uploadConfigSource(
-  sessionId: number, file: File,
+  sessionId: number, file: File, answerFile?: File,
 ): Promise<ConfigSource> {
   const id = requireSessionId(sessionId)
   if (!(file instanceof File) || !file.name.trim()) throw new Error('Invalid source file')
+  if (answerFile !== undefined && (!(answerFile instanceof File) || !answerFile.name.trim())) {
+    throw new Error('Invalid answer file')
+  }
+  // Two-file mode: the request body is the paper bytes followed by the answer
+  // bytes; the answer file name/size go in headers so the backend can split.
+  const rawBody = answerFile === undefined ? file : new Blob([file, answerFile])
+  const headers: Record<string, string> = {
+    'content-type': 'application/octet-stream',
+    'x-upload-filename': encodeURIComponent(file.name),
+  }
+  if (answerFile !== undefined) {
+    headers['x-answer-filename'] = encodeURIComponent(answerFile.name)
+    headers['x-answer-size'] = String(answerFile.size)
+  }
   return apiClient.request(`/api/sessions/${id}/config/sources`, {
-    method: 'POST', rawBody: file,
-    headers: {
-      'content-type': 'application/octet-stream',
-      'x-upload-filename': encodeURIComponent(file.name),
-    },
+    method: 'POST', rawBody,
+    headers,
     timeoutMs: 10 * 60 * 1_000,
     decode: decodeConfigSource,
   })

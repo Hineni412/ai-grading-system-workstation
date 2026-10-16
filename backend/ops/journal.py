@@ -308,8 +308,8 @@ class OpsOperationJournal:
             "transfer_import",
         }:
             raise OpsJournalInvalid("operation type is invalid")
-        if len(str(manifest.resource_fingerprint)) != 64:
-            raise OpsJournalInvalid("operation fingerprint is invalid")
+        if not str(manifest.resource_fingerprint).strip():
+            raise OpsJournalInvalid("operation source version is invalid")
         self._controlled_staging(manifest)
         if not Path(manifest.preparation_backup).name.lower().endswith(".zip"):
             raise OpsJournalInvalid("preparation backup is invalid")

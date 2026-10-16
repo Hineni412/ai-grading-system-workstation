@@ -195,6 +195,12 @@ export const useJobStore = defineStore('jobs', () => {
     jobs.value[job.id] = job
     if (wasActive && TERMINAL_JOB_STATUSES.has(job.status)) {
       completions.value.push({ id: job.id, live: !restoring && previous !== undefined })
+      if (typeof window !== 'undefined') {
+        const path = /question|tag|taxonomy|skill|chapter_type/.test(job.job_type) ? '/api/question-bank/background'
+          : /training_assessment|training_evidence/.test(job.job_type) ? '/api/training/submissions/background'
+            : /grading|class_analysis/.test(job.job_type) ? '/api/sessions/background' : ''
+        if (path) window.dispatchEvent(new CustomEvent('api-data-written', { detail: path }))
+      }
     }
   }
 

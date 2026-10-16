@@ -1,4 +1,4 @@
-import { computed, ref, shallowRef } from 'vue'
+import { computed, onScopeDispose, ref, shallowRef } from 'vue'
 import { defineStore } from 'pinia'
 
 import {
@@ -85,6 +85,16 @@ export const useTrainingStore = defineStore('training', () => {
   let generation = 0
   let diagnosisController: AbortController | null = null
   const diagnosisScopeKey = ref('')
+  const diagnosisResults = new Map<string, TrainingReadDiagnosis>()
+  let analysisRequest: { key: string; generation: number; promise: Promise<TrainingReadDiagnosis | null> } | null = null
+  function onDataWritten(event: Event) {
+    const path = String((event as CustomEvent<string>).detail)
+    if (/^\/api\/(question-bank|students|sessions|review|training\/(evidence|assessments|submissions))\b/.test(path)) {
+      diagnosisResults.clear(); groupDiagnosisCache.clear(); invalidateScopeResults()
+    }
+  }
+  window.addEventListener('api-data-written', onDataWritten)
+  onScopeDispose(() => window.removeEventListener('api-data-written', onDataWritten))
   // Browsing a chapter or returning from its editor reuses the last result.
   // Adoption still makes a fresh request; these previews never authorize a write.
   const groupDiagnosisCache = new Map<string, {
@@ -218,9 +228,30 @@ export const useTrainingStore = defineStore('training', () => {
     invalidateScopeResults()
   }
 
-  async function analyze(
+  function analyze(
     api: TrainingWorkflowApi = trainingApi,
     initialGroupBody?: TrainingDiagnosisRequest,
+  ): Promise<TrainingReadDiagnosis | null> {
+    const key = JSON.stringify({ ...requestBody(), grouping: initialGroupBody?.grouping })
+    if (analysisRequest?.key === key && analysisRequest.generation === generation && !diagnosisController?.signal.aborted) return analysisRequest.promise
+    const cached = diagnosisResults.get(key)
+    if (cached) {
+      diagnosisController?.abort()
+      diagnosis.value = cached; diagnosisScopeKey.value = scopeKey()
+      analysisState.value = cached.students.some(student => student.weak_points.length > 0) ? 'ready' : 'empty'
+      errorMessage.value = ''; refreshing.value = false; refreshMessage.value = ''
+      return Promise.resolve(cached)
+    }
+    const promise = performAnalyze(api, initialGroupBody, key)
+      .finally(() => { if (analysisRequest?.promise === promise) analysisRequest = null })
+    analysisRequest = { key, generation, promise }
+    return promise
+  }
+
+  async function performAnalyze(
+    api: TrainingWorkflowApi = trainingApi,
+    initialGroupBody?: TrainingDiagnosisRequest,
+    cacheKey = '',
   ): Promise<TrainingReadDiagnosis | null> {
     const body = requestBody()
     if (initialGroupBody?.grouping) {
@@ -268,6 +299,10 @@ export const useTrainingStore = defineStore('training', () => {
       analysisState.value = next.students.some(
         (student) => student.weak_points.length > 0,
       ) ? 'ready' : 'empty'
+      if (!refreshing.value) {
+        diagnosisResults.delete(cacheKey); diagnosisResults.set(cacheKey, next)
+        while (diagnosisResults.size > 8) diagnosisResults.delete(diagnosisResults.keys().next().value!)
+      }
       return next
     } catch (error) {
       if (
@@ -287,6 +322,7 @@ export const useTrainingStore = defineStore('training', () => {
   }
 
   function reset(): void {
+    diagnosisResults.clear()
     invalidateScopeResults()
     studentScope.value = {
       mode: 'all',

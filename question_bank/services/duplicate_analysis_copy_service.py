@@ -11,9 +11,6 @@ import hashlib
 import json
 import logging
 import re
-import sqlite3
-import threading
-from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -26,9 +23,7 @@ from question_bank.models.question import (
     normalize_identity_text,
 )
 from question_bank.services.file_cache import (
-    cached_parsed_file,
     cached_processed_image_digest,
-    memoized_resolve,
 )
 from question_bank.solution_evidence.contracts import QuestionSolutionEvidence
 from question_bank.solution_evidence.repository import (
@@ -392,96 +387,6 @@ def _exact_resized_figure(picture):
     return Image.fromarray(pixels[::scale, ::scale].copy()) if scale > 1 else picture
 
 
-_REVISION_CACHE: OrderedDict = OrderedDict()
-_REVISION_LOCK = threading.Lock()
-_REVISION_CACHE_LIMIT = 32768
-_REVISION_CACHE_BUDGET = 64 * 1024 * 1024
-_REVISION_CACHE_BYTES = 0
-
-
-def _file_stamps(paths: Sequence[Path]) -> tuple:
-    stamps = []
-    for path in paths:
-        try:
-            stat = path.stat()
-            stamps.append((str(path), stat.st_size, stat.st_mtime_ns))
-        except OSError:
-            stamps.append((str(path), None, None))
-    return tuple(stamps)
-
-
-def _content_revision(question: Mapping[str, Any], data_root: Path) -> str:
-    """Cheap change detection; stat assets without decoding their pixels."""
-    from question_bank.services.asset_path_service import (
-        resolve_question_bank_asset_path,
-    )
-    from question_bank.services.rich_content_service import rich_content_path
-    global _REVISION_CACHE_BYTES
-    data_root = memoized_resolve(data_root)
-    fields = {key: question.get(key) for key in ("question_text", "answer_text", "question_number", "image_paths", "has_images", "options")}
-    # Keep a copy of mutable input values. File stamps are still checked on
-    # every call, including external edits with no corresponding SQL write.
-    field_token = hashlib.sha256(json.dumps(fields, ensure_ascii=False, sort_keys=True).encode()).digest()
-    cache_key = (str(data_root), int(question["id"]))
-    with _REVISION_LOCK:
-        cached = _REVISION_CACHE.get(cache_key)
-    if cached is not None and cached[0] == field_token:
-        _, files, stamps, revision, _ = cached
-        if _file_stamps(files) == stamps:
-            with _REVISION_LOCK:
-                if cache_key in _REVISION_CACHE:
-                    _REVISION_CACHE.move_to_end(cache_key)
-            return revision
-    sidecar = rich_content_path(int(question["id"]), data_root / "question_bank" / "rich_content")
-    paths = question.get("image_paths") or []
-    if isinstance(paths, str):
-        paths = json.loads(paths)
-    paths = set(str(path) for path in paths)
-    paths.update(re.findall(r"\[\[IMAGE:([^\]|]*?)(?:\|[^\]]*)?\]\]", str(question.get("question_text") or ""), re.I | re.S))
-    if sidecar.is_file():
-        rich = cached_parsed_file(
-            sidecar, lambda p: json.loads(p.read_text(encoding="utf-8"))
-        )
-        paths.update(str(path) for path in rich.get("source_page_assets", []))
-        for block in rich.get("question_blocks", []):
-            paths.update(str(path) for path in (block.get("image_relationships") or {}).values())
-    files = [sidecar]
-    direct_paths = True
-    for path in sorted(paths):
-        try:
-            resolved = resolve_question_bank_asset_path(path, data_root=data_root,
-                         search_subdirs=("question_bank/extracted_images", "question_bank/document_pages"))
-            files.append(resolved)
-            stored = Path(path)
-            # Legacy basename/remapped paths must continue through the normal
-            # resolver: adding a sibling can make a previously unique match
-            # ambiguous. Only canonical paths can skip that search.
-            direct_paths = direct_paths and (
-                bool(stored.parts) and stored.parts[0] == "question_bank"
-                and not any(part.lower() in {"..", "data", "user_data"} for part in stored.parts)
-                and data_root / stored == resolved
-            )
-        except (OSError, ValueError):
-            fields.setdefault("missing", []).append(path)
-            direct_paths = False
-    stamps = _file_stamps(files)
-    revision = hashlib.sha256(json.dumps([fields, stamps], ensure_ascii=False, sort_keys=True).encode()).hexdigest()
-    if direct_paths:
-        # Conservative allowance for Python strings, path objects and tuples;
-        # very long historical answers must not turn this into an unbounded
-        # full-bank text cache.
-        cost = 4 * len(field_token) + sum(8 * len(str(path)) + 512 for path in files) + 512
-        with _REVISION_LOCK:
-            previous = _REVISION_CACHE.pop(cache_key, None)
-            _REVISION_CACHE_BYTES += cost - (previous[-1] if previous else 0)
-            _REVISION_CACHE[cache_key] = (field_token, tuple(files), stamps, revision, cost)
-            _REVISION_CACHE.move_to_end(cache_key)
-            while len(_REVISION_CACHE) > _REVISION_CACHE_LIMIT or _REVISION_CACHE_BYTES > _REVISION_CACHE_BUDGET:
-                _, evicted = _REVISION_CACHE.popitem(last=False)
-                _REVISION_CACHE_BYTES -= evicted[-1]
-    return revision
-
-
 def _exam_printed_figure(picture):
     """Compare printed contours without requiring identical RGB encodings.
 
@@ -529,7 +434,7 @@ def exact_identity_map(conn: Any, *, data_root: Path,
     has_index = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='question_content_index'"
     ).fetchone() is not None
-    index_columns = ", idx.content_key AS indexed_key, idx.source_revision AS indexed_revision" if has_index else ""
+    index_columns = ", idx.content_key AS indexed_key" if has_index else ""
     index_join = " LEFT JOIN question_content_index idx ON idx.question_id=q.id" if has_index else ""
     rows = []
     for batch in ([None] if ids is None else [ids[i:i + 500] for i in range(0, len(ids), 500)]):
@@ -543,29 +448,15 @@ def exact_identity_map(conn: Any, *, data_root: Path,
     for row in rows:
         question = dict(row)
         indexed_key = str(question.pop("indexed_key", None) or "")
-        indexed_revision = str(question.pop("indexed_revision", None) or "")
-        if indexed_key.startswith(EXACT_QUESTION_KEY_PREFIX) and indexed_revision:
-            try:
-                # A matching stat-based revision means the indexed key is the
-                # identity exact_question_key would recompute; skip decoding.
-                if _content_revision(question, data_root) == indexed_revision:
-                    result[int(question["id"])] = indexed_key
-                    continue
-            except (OSError, ValueError, TypeError):
-                pass
+        # Imported questions and their owned assets are immutable. The writer
+        # removes the saved identity when content changes; ordinary reads reuse it.
+        if indexed_key.removeprefix("exam-original:").startswith(EXACT_QUESTION_KEY_PREFIX):
+            result[int(question["id"])] = indexed_key
+            continue
         key = exact_question_key(question, data_root=data_root, image_cache=cache)
         result[int(question["id"])] = key
-        try:
-            revision = _content_revision(question, data_root)
-        except (OSError, ValueError, TypeError):
-            continue
-        try:
-            # Self-heal: older or missing index rows get the current key format
-            # once, so later lookups skip decoding entirely.
-            if persist:
-                upsert_content_index(conn, question_id=int(question["id"]), key=key, source_revision=revision)
-        except sqlite3.OperationalError:
-            pass
+        if persist and has_index:
+            upsert_content_index(conn, question_id=int(question["id"]), key=key)
     return result
 
 
@@ -576,31 +467,10 @@ def ensure_content_index(conn: Any, *, data_root: Path) -> None:
     later lookups and imports only compute keys for new questions instead of
     decoding the whole bank's images on every batch.
     """
-    missing = conn.execute(
-        """SELECT q.*, idx.content_key AS indexed_key, idx.source_revision AS indexed_revision FROM questions q
-           LEFT JOIN papers p ON p.id = q.paper_id
-           LEFT JOIN question_content_index idx ON idx.question_id = q.id
-           WHERE COALESCE(q.is_deleted, 0) = 0
-             AND COALESCE(p.import_status, '') <> 'deleted'
-           ORDER BY q.id"""
-    ).fetchall()
-    if not missing:
-        return
-    cache: dict[str, str] = {}
-    for row in missing:
-        question = dict(row)
-        try:
-            revision = _content_revision(question, data_root)
-        except (OSError, ValueError, TypeError):
-            upsert_content_index(conn, question_id=int(row["id"]), key="")
-            continue
-        if row["indexed_revision"] == revision and str(row["indexed_key"] or "").startswith(EXACT_QUESTION_KEY_PREFIX):
-            continue
-        key = exact_question_key(question, data_root=data_root, image_cache=cache)
-        upsert_content_index(conn, question_id=int(row["id"]), key=key, source_revision=revision)
+    exact_identity_map(conn, data_root=data_root)
 
 
-def upsert_content_index(conn: Any, *, question_id: int, key: str, source_revision: str = "") -> None:
+def upsert_content_index(conn: Any, *, question_id: int, key: str) -> None:
     """Refresh one question's index row after its content is (re)written."""
     if not key:
         # A DELETE on an absent row still opens a write transaction and
@@ -615,20 +485,19 @@ def upsert_content_index(conn: Any, *, question_id: int, key: str, source_revisi
             )
         return
     existing = conn.execute(
-        "SELECT content_key, source_revision FROM question_content_index WHERE question_id = ?",
+        "SELECT content_key FROM question_content_index WHERE question_id = ?",
         (int(question_id),),
     ).fetchone()
     if (
         existing is not None
         and str(existing[0]) == str(key)
-        and str(existing[1] or "") == str(source_revision)
     ):
         return
     conn.execute(
         """INSERT OR REPLACE INTO question_content_index
            (question_id, content_key, source_revision, updated_at)
            VALUES (?, ?, ?, datetime('now','localtime'))""",
-        (int(question_id), str(key), source_revision),
+        (int(question_id), str(key), ""),
     )
 
 

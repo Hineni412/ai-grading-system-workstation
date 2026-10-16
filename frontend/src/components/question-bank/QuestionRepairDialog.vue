@@ -7,9 +7,10 @@ import { ApiError, isAmbiguousWriteError } from '../../api/errors'
 import { useJobStore } from '../../stores/jobs'
 import { useQuestionBankStore } from '../../stores/question-bank'
 import { TERMINAL_JOB_STATUSES } from '../../api/jobs'
+import { repairPartLabels as labels, repairStage } from './repair-workflow'
 
 const props = defineProps<{ open: boolean; volumeId: string; volumeLabel: string; kind: QuestionRepairKind }>()
-const emit = defineEmits<{ close: []; refreshed: [] }>()
+const emit = defineEmits<{ close: []; refreshed: []; openQuestion: [ref: { questionId: number; paperId: number | null }] }>()
 const jobs = useJobStore()
 const bank = useQuestionBankStore()
 const preview = ref<QuestionRepairPreview | null>(null)
@@ -20,7 +21,12 @@ const message = ref('')
 const activeJobId = ref<number | null>(null)
 const job = computed(() => activeJobId.value ? jobs.jobs[activeJobId.value] : undefined)
 const targetIds = computed(() => preview.value?.items.filter(item => !item.blocked_reason).slice(0, 500).map(item => item.id) ?? [])
-const labels: Record<QuestionRepairPart, string> = { tags: '题目标签', evidence: '解题证据', criteria: '判定点', skills: '关键步骤关联', types: '题型', knowledge_points: '知识点关联' }
+const organizeCount = computed(() => preview.value?.items.filter(item => repairStage(item) === 'organize').length ?? 0)
+const reviewCount = computed(() => preview.value?.items.filter(item => repairStage(item) === 'review').length ?? 0)
+const repairSteps = computed(() => (['tags', 'evidence', 'criteria', 'types', 'knowledge_points', 'skills'] as const)
+  .map(part => ({ part, count: preview.value?.items.filter(item => targetIds.value.includes(item.id)
+    && item.missing.includes(part) && (part !== 'types' || !item.type_pending_reason)).length ?? 0 }))
+  .filter(step => step.count > 0))
 const remaining = computed(() => (job.value?.result.remaining ?? []) as { id: number; question_number: string; missing: QuestionRepairPart[]; reason: string }[])
 let controller: AbortController | undefined
 let returnTarget: HTMLElement | null = null
@@ -144,7 +150,7 @@ onBeforeUnmount(() => controller?.abort())
 <template>
   <AppDialog
     :open="open"
-    title="只补缺失部分"
+    title="AI 补齐清单"
     :description="`${volumeLabel} · ${kind === 'skills' ? '未挂关键步骤题目' : kind === 'analysis' ? '分析未完成题目' : '有缺失的题目'}`"
     class="qb-repair-dialog"
     @update:open="(value: boolean) => { if (!value) emit('close') }"
@@ -162,18 +168,20 @@ onBeforeUnmount(() => controller?.abort())
         </template>
         <template v-else-if="preview">
           <p v-if="revalidating" class="qb-repair-check" role="status">正在核对最新状态…</p>
-          <p class="qb-repair-summary">发现 <strong>{{ preview.question_count }}</strong> 道缺失题；本次可处理 <strong>{{ targetIds.length }}</strong> 道。</p>
+          <p class="qb-repair-summary">待处理 <strong>{{ preview.question_count }}</strong> 题；可由 AI 补齐 <strong>{{ preview.repairable_count }}</strong> 题，待题型／标准整理 <strong>{{ organizeCount }}</strong> 题，需核对资料 <strong>{{ reviewCount }}</strong> 题。</p>
+          <p>先补基础分析，再检查缺失匹配。题型、知识点和关键步骤可能在同次分析中完成，也可能需要后续补充；本清单不启动章节题型整理。</p>
           <p v-if="preview.repairable_count > 500">每次最多处理 500 道，剩余题目可在本次结束后继续补齐。</p>
-          <div class="qb-repair-steps"><div v-for="part in (['tags', 'evidence', 'criteria', 'types', 'knowledge_points', 'skills'] as const)" :key="part"><strong>{{ labels[part] }} · {{ preview.counts[part] }} 题缺失</strong><span>{{ part === 'tags' ? '只为缺失或过期标签的题补标签' : part === 'evidence' || part === 'criteria' ? '进入判定点分析流程，保留已有可用结果' : part === 'types' ? '有本章题型时补主题型；尚未整理的章保留待归类' : '只补缺失关联，保留判定点正文' }}</span></div></div>
-          <details class="qb-repair-list" open><summary>查看逐题清单 · {{ preview.items.length }} 题</summary><table class="app-table app-table--sticky"><thead><tr><th>题目</th><th>缺失部分</th><th>本次处理</th></tr></thead><tbody><tr v-for="item in preview.items" :key="item.id"><td><strong>第 {{ item.question_number }} 题</strong><small>{{ item.paper_title }}</small></td><td>{{ item.missing.map(part => labels[part]).join('、') }}</td><td>{{ item.blocked_reason || (targetIds.includes(item.id) ? item.type_pending_reason ? `只补可处理部分；${item.type_pending_reason}` : '只补左侧所列部分' : '下一批处理') }}</td></tr></tbody></table></details>
-          <p class="qb-repair-cost">确认后将使用配置的 AI 模型，按服务商计费，金额取决于题目长度和模型。已有完整题不提交；失败或结果不确定时不自动追加请求。</p>
+          <div v-if="repairSteps.length" class="qb-repair-steps"><div v-for="{ part, count } in repairSteps" :key="part"><strong>{{ labels[part] }} · 本次补齐 {{ count }} 题</strong><span>{{ part === 'tags' ? '只为缺失或过期标签的题补标签' : part === 'evidence' || part === 'criteria' ? '进入判定点分析流程，保留已有可用结果' : part === 'types' ? '从当前候选中选择主题型；已确认无匹配的题型不单独重试' : '只补缺失关联，保留判定点正文' }}</span></div></div>
+          <details class="qb-repair-list" open><summary>查看逐题清单 · {{ preview.items.length }} 题</summary><table class="app-table app-table--sticky"><thead><tr><th>题目</th><th>缺失部分</th><th>处理方式</th></tr></thead><tbody><tr v-for="item in preview.items" :key="item.id"><td><strong>第 {{ item.question_number }} 题</strong><small>{{ item.paper_title }}</small></td><td>{{ item.missing.map(part => labels[part]).join('、') }}</td><td><template v-if="item.blocked_reason"><strong>{{ repairStage(item) === 'organize' ? '待题型／标准整理' : '需核对资料' }}</strong><small>{{ item.blocked_reason }}</small><AppButton variant="ghost" size="small" @click="emit('openQuestion', { questionId: item.id, paperId: null })">{{ repairStage(item) === 'organize' ? '查看题目' : '打开题目核对' }}</AppButton></template><template v-else>{{ targetIds.includes(item.id) ? item.type_pending_reason ? `AI 可补其他缺失；${item.type_pending_reason}` : 'AI 补齐所列缺失部分' : '下一批 AI 补齐' }}</template></td></tr></tbody></table></details>
+          <p v-if="targetIds.length" class="qb-repair-cost">确认后将使用配置的 AI 模型，按服务商计费，金额取决于题目长度和模型。待整理与需核对资料的题目不提交；失败或结果不确定时不自动追加请求。</p>
+          <p v-else>当前没有可由 AI 补齐的题目。请按具体原因整理题型或标准，或打开题目核对资料。</p>
         </template>
         <AppButton v-if="state === 'error' || refreshFailed" variant="secondary" @click="load">重新统计</AppButton>
         <template #footer>
           <AppButton v-if="state === 'running' && job && !TERMINAL_JOB_STATUSES.has(job.status)" variant="primary" @click="emit('close')">转到后台</AppButton>
           <template v-else-if="state === 'submitting' || state === 'ambiguous' || state === 'ready'">
-            <AppButton variant="secondary" @click="emit('close')">取消</AppButton>
-            <AppButton variant="primary" :disabled="revalidating || refreshFailed || !targetIds.length || state === 'submitting'" @click="start">{{ state === 'ambiguous' ? '找回本次任务' : state === 'submitting' ? '正在提交…' : `确认补齐 ${targetIds.length} 题` }}</AppButton>
+            <AppButton variant="secondary" @click="emit('close')">{{ targetIds.length ? '取消' : '关闭' }}</AppButton>
+            <AppButton v-if="targetIds.length" variant="primary" :disabled="revalidating || refreshFailed || state === 'submitting'" @click="start">{{ state === 'ambiguous' ? '找回本次任务' : state === 'submitting' ? '正在提交…' : `确认补齐 ${targetIds.length} 题` }}</AppButton>
           </template>
         </template>
   </AppDialog>

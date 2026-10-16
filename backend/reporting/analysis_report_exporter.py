@@ -12,7 +12,6 @@ import io
 import json
 import math
 import re
-import sqlite3
 import statistics
 import zipfile
 from collections.abc import Callable
@@ -46,7 +45,6 @@ from backend.repositories.access import (
 from backend.repositories.grading_database import open_grading_repositories
 from backend.review.service import REVIEW_CONFIRMED_REASON
 from backend.session_analysis import (
-    BAND_CUTOFFS,
     QuestionInfo,
     SessionAnalysisData,
     StudentQuestionRecord,
@@ -684,40 +682,32 @@ border:1px solid #ecd9b0;border-radius:999px;padding:1px 9px;margin-left:8px;ver
 padding:8px 12px;font-size:13px;margin-bottom:12px}
 .name{font-size:24px;font-weight:700;margin-top:6px}
 .score-line{display:flex;align-items:baseline;gap:4px;margin:8px 0 14px}
-.score-line .big{font-size:46px;font-weight:800;line-height:1}
+.score-line.has-heat{align-items:center;gap:16px}
+.score-line .big{font-size:44px;font-weight:800;line-height:1}
 .score-line .of{font-size:16px;color:var(--muted)}
-.stat3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px}
-.stat3 .cell{border:1px solid var(--line);border-radius:10px;padding:9px 10px;text-align:center;min-width:0}
-.stat3 .v{font-size:16px;font-weight:700;white-space:nowrap}
+.pheat{flex:1 1 auto;min-width:0;max-width:430px}
+.pheat-strip{position:relative;display:flex;gap:2px;height:30px;margin:18px 0 16px}
+.pheat-cell{position:relative;flex:1;border-radius:4px;display:flex;align-items:center;
+justify-content:center;font-size:11px;background:var(--gray-soft);color:var(--gray)}
+.pheat-cell.me{outline:2px solid var(--accent);outline-offset:-1px}
+.pheat-me{position:absolute;bottom:calc(100% + 4px);left:50%;transform:translateX(-50%);
+font-style:normal;font-size:11px;font-weight:700;color:var(--accent);white-space:nowrap}
+.pheat-me::after{content:'';position:absolute;top:100%;left:50%;transform:translateX(-50%);
+border:3px solid transparent;border-top-color:var(--accent)}
+.pheat-avg{position:absolute;top:-4px;bottom:-4px;width:0;z-index:1}
+.pheat-avg i{position:absolute;left:-1px;top:0;bottom:0;width:2px;background:var(--gray)}
+.pheat-avglb{position:absolute;top:calc(100% + 2px);transform:translateX(-50%);
+font-style:normal;font-size:10px;color:var(--gray);white-space:nowrap}
+.pheat-ends{display:flex;justify-content:space-between;font-size:10px;color:var(--gray)}
+.pheat-cap{font-size:11px;color:var(--gray);margin-top:3px}
+.stat3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:4px}
+.stat3 .cell{display:flex;flex-direction:column;justify-content:center;min-height:66px;
+border:1px solid var(--line);border-radius:10px;padding:8px 10px;text-align:center;min-width:0}
 .stat3 .l{font-size:11.5px;color:var(--muted);white-space:nowrap}
-.stat3 .change .l{white-space:normal}
-.stat3 .change .v{white-space:normal}
-.change .up{color:var(--good)} .change .down{color:var(--bad)}
-.change .rank-change{font-size:12px;margin-top:2px}
-.change .rank-context{font-size:10px;color:var(--muted);margin-top:2px}
-.bands{margin:6px 0 12px}
-.band{display:grid;grid-template-columns:96px 1fr 44px;align-items:center;gap:8px;
-font-size:12px;color:var(--muted);padding:2px 0}
-.band .track{height:12px;background:var(--gray-soft);border-radius:6px;overflow:hidden}
-.band .track i{display:block;height:100%;background:#b9c6d4;border-radius:6px}
-.band.me{color:var(--ink);font-weight:600}
-.band.me .track i{background:var(--accent)}
-.band .cnt{text-align:right}
-.me-tag{display:inline-block;font-size:11px;color:var(--accent);margin-left:6px}
-.concl{font-size:14.5px;margin-top:6px}
-.strength{color:var(--good);font-size:13.5px;margin-top:6px}
-/* B 历次成绩 */
-.hchart{position:relative;height:140px;margin:4px 0 2px}
-.hchart svg{position:absolute;inset:0;width:100%;height:100%}
-.hdot{position:absolute;width:9px;height:9px;border-radius:50%;background:var(--accent);
-border:2px solid #fff;transform:translate(-50%,-50%);box-shadow:0 0 0 1px var(--line)}
-.hdot.cur{width:11px;height:11px}
-.hval{position:absolute;transform:translate(-50%,-135%);font-size:12px;color:var(--ink);white-space:nowrap}
-.hval.cur{font-weight:700}
-.hcols{display:flex;margin-top:6px}
-.hcol{flex:1;min-width:0;text-align:center;font-size:12px;color:var(--muted);line-height:1.5}
-.hcol .hn{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.hcol.cur{color:var(--ink);font-weight:700}
+.stat3 .v{font-size:22px;font-weight:800;white-space:nowrap;line-height:1.3}
+.stat3 .v.up{color:var(--good)} .stat3 .v.down{color:var(--bad)}
+.stat3 .v.muted{font-size:15px;font-weight:600;color:var(--gray)}
+.stat3 .sub{font-size:11px;color:var(--muted);white-space:nowrap;margin-top:2px}
 /* C 答题一览 */
 .qgrid{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}
 @media(min-width:700px){.qgrid{grid-template-columns:repeat(10,1fr)}}
@@ -732,8 +722,40 @@ text-align:center;cursor:pointer;position:relative;font-family:inherit}
 .qcell.zero{border-color:#eec6c0;background:var(--bad-soft)} .qcell.zero .sym{color:var(--bad)}
 .qcell.blank{border-style:dashed;background:var(--gray-soft)} .qcell.blank .sym{color:var(--gray)}
 .qcell[aria-expanded="true"]{outline:2px solid var(--accent);outline-offset:1px}
-.legend{font-size:12px;color:var(--muted);margin-top:10px}
-#qpanel{margin-top:10px}
+.plegend{margin-top:10px;font-size:12px;color:var(--muted)}
+.psw{display:inline-flex;align-items:center;gap:6px;color:var(--ink)}
+.psw i{width:12px;height:12px;border-radius:4px;flex:none}
+.psw.g i{background:var(--good)} .psw.a i{background:var(--warn)}
+.psw.r i{background:var(--bad)} .psw.gr i{background:var(--gray-soft);border:1px dashed #aeb8c4}
+.plegend-hard{color:var(--muted);margin-top:4px}
+.pstrength{display:flex;align-items:baseline;gap:7px;margin-top:8px;
+font-size:14px;color:var(--ink);line-height:1.6}
+.pstrength-tag{flex:none;font-size:11px;font-weight:600;color:var(--good);
+background:var(--good-soft);border:1px solid #b7d9c7;border-radius:4px;padding:0 5px}
+.phint{color:var(--muted);margin-top:6px;font-size:12px}
+/* 共享题目详情抽屉：手机底部弹出，桌面右侧滑出 */
+html.psheet-lock,html.psheet-lock body{overflow:hidden}
+.psheet-backdrop{position:fixed;inset:0;background:rgba(20,28,36,.45);z-index:900}
+.psheet{position:fixed;z-index:901;background:#fff;display:flex;flex-direction:column}
+.psheet[hidden],.psheet-backdrop[hidden]{display:none!important}
+@media screen and (max-width:560px){
+.psheet{left:0;right:0;bottom:0;height:88vh;border-radius:14px 14px 0 0;
+box-shadow:0 -6px 28px rgba(0,0,0,.28)}
+.psheet-head{border-radius:14px 14px 0 0}}
+@media screen and (min-width:561px){
+.psheet{top:0;right:0;bottom:0;width:520px;box-shadow:-6px 0 28px rgba(0,0,0,.2)}}
+.psheet-head{display:flex;align-items:center;flex-wrap:wrap;gap:8px;flex:none;
+padding:10px 14px;border-bottom:1px solid var(--line);background:#fff}
+.psheet-title{flex:1 1 auto;font-size:16px;font-weight:700;min-width:0}
+.psheet-pos{font-size:14px;color:var(--muted);white-space:nowrap}
+.psheet-nav,.psheet-close{font:inherit;font-size:14px;min-height:36px;padding:4px 12px;
+border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);cursor:pointer}
+.psheet-nav[disabled]{opacity:.35;cursor:default}
+.psheet-close{color:var(--accent)}
+.psheet-body{flex:1 1 auto;overflow-y:auto;padding:14px 16px;min-height:0;
+-webkit-overflow-scrolling:touch}
+.psheet .qdetail-box{border:0;background:transparent;padding:0}
+.psheet .qmore-btn{display:none}
 .qdetail-box{border:1px solid var(--line);border-radius:10px;padding:14px 16px;background:#fcfdfe}
 .qdetail-box .qd-head{font-size:14px;font-weight:700}
 .qdetail-box .pt-tag{display:inline-block;background:var(--gray-soft);border-radius:6px;
@@ -792,53 +814,40 @@ padding:10px 12px;font-size:13px}
 .qm-error{color:#9a3412}
 .katex{font-size:1.04em}
 .stem,.kv dd,.compact-analysis p{overflow-x:auto;overflow-y:hidden;overflow-wrap:anywhere}
-/* D 跟进卡片 */
+/* D 问题卡片 */
 .dcard{border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:12px}
-.dcard .dhead{display:flex;align-items:center;gap:9px}
+.dcard .dhead{display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap}
 .dcard .no{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;
-border-radius:50%;background:var(--accent);color:#fff;font-size:12px;font-weight:700;flex:none}
-.dcard .ttl{font-size:14.5px;font-weight:700;min-width:0;overflow-wrap:anywhere}
-.dcard .meta2{font-size:12.5px;color:var(--muted);margin-top:5px}
-.dcard .qtag{display:inline-block;background:var(--gray-soft);border-radius:6px;padding:0 7px;
-margin-left:5px;font-size:11.5px;color:var(--ink);border:0;font-family:inherit;cursor:pointer}
-.dcard .qtag:hover,.dcard .qtag:focus-visible{outline:1px solid var(--accent)}
+border-radius:50%;background:var(--accent);color:#fff;font-size:12px;font-weight:700;flex:none;margin-top:2px}
+.dcard .ttl{flex:1 1 calc(100% - 40px);font-size:14.5px;font-weight:700;min-width:0;overflow-wrap:anywhere}
 .dcard .help{font-size:13.5px;margin-top:7px}
-.dcard .when{font-size:11.5px;font-weight:400;color:var(--accent);margin-left:auto;white-space:nowrap}
-.history-evidence{font-size:12.5px;color:var(--muted);margin-top:7px}
-.history-evidence ul{padding-left:18px}
-.recur{display:inline-block;font-size:11px;color:var(--warn);background:var(--warn-soft);
-border:1px solid #ecd9b0;border-radius:999px;padding:0 8px;margin-left:8px;vertical-align:1px}
-.dcard details{margin-top:9px;border-top:1px dashed var(--line);padding-top:8px}
-.dcard summary{cursor:pointer;font-size:12.5px;color:var(--accent)}
+.dhead-r{margin-left:auto;display:flex;align-items:center;gap:8px;flex:none}
+.dcard .when{font-size:11.5px;font-weight:400;color:var(--accent);white-space:nowrap}
+.plost{font-size:12px;font-weight:700;color:var(--bad);background:var(--bad-soft);
+border-radius:999px;padding:2px 8px;white-space:nowrap}
+.pmissed{display:inline-block;font-size:11px;color:var(--bad);font-weight:400;
+border:1px solid var(--bad);border-radius:999px;padding:0 7px;margin-left:8px;
+vertical-align:1px;white-space:nowrap}
+.dcard .pfind{font-size:14px;color:var(--muted);line-height:1.6;margin:6px 0 10px}
+.ptask{background:#eef4fb;border-radius:10px;padding:10px 12px;margin:2px 0 8px}
+.ptask-do{display:flex;gap:8px;align-items:flex-start;font-size:15px;font-weight:500;line-height:1.55}
+.ptask-sq{flex:none;width:13px;height:13px;border:1.6px solid var(--accent);border-radius:3px;margin-top:6px}
+.ptask-done{display:flex;gap:8px;align-items:flex-start;font-size:14px;line-height:1.55;margin-top:6px}
+.ptask-ok{flex:none;font-style:normal;margin-top:1px}
+.ptask-ok::before{content:'✓';color:var(--good);font-weight:700}
+.dcard .pparent{font-size:13.5px;color:var(--muted);line-height:1.6;margin:2px 0 8px}
+.dcard .pparent b{color:inherit;font-weight:600}
+.prel{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.prel .qtag{font:inherit;font-size:12.5px;min-height:32px;border-radius:999px;
+padding:4px 12px;border:0;background:var(--gray-soft);color:var(--ink);cursor:pointer}
+.prel .qtag:hover,.prel .qtag:focus-visible{outline:1px solid var(--accent)}
+.prel .qtag.qtag-full{background:var(--good-soft);color:var(--good)}
+.prel .qtag.qtag-part{background:var(--warn-soft);color:var(--warn)}
+.prel .qtag.qtag-zero{background:var(--bad-soft);color:var(--bad)}
+.prel .qtag.qtag-blank{background:var(--gray-soft);color:var(--gray);border:1px dashed #aeb8c4}
+.prel .qtag .qtag-s{margin-left:5px;font-weight:600;opacity:.85}
 .dgreen{background:var(--good-soft);border:1px solid #bfe3d2;border-radius:10px;
 padding:14px 16px;color:var(--good);font-size:14px}
-/* E 考查点 */
-.pt-counts{font-size:13.5px;margin-bottom:10px}
-.pt-counts b{margin-right:14px}
-.pt-counts .g{color:var(--good)} .pt-counts .m{color:var(--warn)} .pt-counts .b{color:var(--bad)}
-.pt-counts .u{color:var(--muted)}
-.pt-row{display:flex;align-items:flex-start;gap:8px;padding:7px 0;border-top:1px solid var(--line);
-font-size:13.5px;flex-wrap:wrap}
-.pt-row .nm{min-width:0}
-.pt-row .dots{display:inline-flex;gap:7px;margin-left:auto;flex-wrap:wrap}
-.dot{display:inline-flex;flex-direction:column;align-items:center;width:30px}
-.dot i{width:18px;height:18px;border-radius:50%;display:flex;align-items:center;justify-content:center;
-font-size:11px;font-style:normal;line-height:1}
-.dot s{text-decoration:none;font-size:9px;color:var(--muted);margin-top:1px}
-.dot i.full{background:var(--good-soft);color:var(--good);border:1px solid #bfe3d2}
-.dot i.part{background:var(--warn-soft);color:var(--warn);border:1px solid #f0d9ab}
-.dot i.zero{background:var(--bad-soft);color:var(--bad);border:1px solid #eec6c0}
-.dot i.unknown{background:var(--gray-soft);color:var(--muted);border:1px dashed #c2cbd6}
-.pt-row .unconfirmed{font-size:11.5px;color:var(--muted);display:block}
-.pt-good-head{color:var(--good);font-size:13.5px;font-weight:600;margin-top:10px}
-.pt-good-head small{color:var(--muted);font-size:12px;font-weight:400;margin-left:6px}
-details.pt-unknown{margin-top:8px}
-details.pt-unknown>summary{cursor:pointer;font-size:12.5px;color:var(--accent)}
-details.pt-unknown .note{margin:4px 0 6px}
-.tagcloud{margin-top:8px}
-.tagcloud .sec{font-size:12px;color:var(--muted);margin:6px 0 3px}
-.tagcloud .tg{display:inline-block;background:var(--good-soft);color:var(--good);border-radius:6px;
-padding:1px 9px;margin:2px 5px 2px 0;font-size:12.5px}
 /* F 附录 */
 details.appendix summary{cursor:pointer;font-size:13px;color:var(--accent)}
 .qcard{border:1px solid var(--line);border-left:4px solid var(--bad);border-radius:10px;
@@ -852,17 +861,13 @@ gap:6px;margin-bottom:8px}
 .qpart h3 span{color:var(--muted);font-weight:400}
 /* footer */
 footer{font-size:12px;color:var(--muted);padding:6px 4px;line-height:1.8}
-.point-details{margin-top:14px;border-top:1px solid var(--line);padding-top:12px}
-.point-details>summary{cursor:pointer;color:var(--accent);font-size:14px;font-weight:600;padding:4px 0}
-.point-details[open]>summary{margin-bottom:12px}
-.point-details>summary:focus-visible{outline:2px solid var(--accent);outline-offset:4px}
 @media screen and (max-width:560px){
  body{font-size:16px}
  .page{padding:10px 8px 28px}
  .card{padding:16px 14px}
- .dcard .help{font-size:16px;line-height:1.8}
+ .dcard .help,.dcard .pfind{font-size:16px;line-height:1.8}
  .dcard .ttl{font-size:16px;line-height:1.6}
- .dcard summary,.point-details>summary{font-size:14px;line-height:1.7}
+ .ptask-do,.ptask-done{font-size:16px}
  .qgrid{grid-template-columns:repeat(6,1fr)}
  .kv{grid-template-columns:70px minmax(0,1fr)}
 }
@@ -873,7 +878,7 @@ footer{font-size:12px;color:var(--muted);padding:6px 4px;line-height:1.8}
  .card{box-shadow:none;border:1px solid var(--line);border-radius:0;padding:16px 18px;margin-bottom:12px}
  details:not([open])>*:not(summary){display:block}
  details::details-content{content-visibility:visible}
- #qpanel{display:none!important}
+ #qpanel,.psheet,.psheet-backdrop,.phint{display:none!important}
  .report-print-only{display:block}
  .shot-viewer{display:none!important}
  .qcell{outline:none!important}
@@ -884,25 +889,23 @@ footer{font-size:12px;color:var(--muted);padding:6px 4px;line-height:1.8}
  .qcard.objective .qpart+.qpart{margin-top:8px;padding-top:8px}
  .qcard.objective .shot{padding:5px;margin-top:6px}
  .question-stem>summary{display:none}
- .qpart,.shot,.dcard .help,.dcard .qd-fb,.qgrid,.pt-row,footer{break-inside:avoid}
- .dcard{break-inside:auto}
+ .pheat,.pheat-cell,.pheat-avg i,.psw i{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+ .qpart,.shot,.dcard .help,.dcard .qd-fb,.qgrid,.pvchap,footer{break-inside:avoid}
+ .dcard{break-inside:avoid}
  .card h2,.dcard .dhead,.qcard .head,.qpart h3{break-after:avoid}
  p,dd,li{orphans:3;widows:3}
 }
 """
 
-# C 节方格 → 原位详情面板（<template> 片段克隆，不滚动、不跳转）。
+# 题号方格 / 问题卡题号 / 肖像题号 → 共享题目详情抽屉；作答截图大图盖在抽屉上。
 _PERSONAL_GRID_JS = """
 (function(){
-  var panel = document.getElementById('qpanel');
-  var openQ = null;
   function renderMath(root){
     root.querySelectorAll('.qm[data-latex]').forEach(function(el){
       try{ katex.render(el.dataset.latex, el, {throwOnError:true, output:'htmlAndMathml', displayMode:el.dataset.display === 'true'}); }
       catch(e){ el.classList.add('qm-error'); el.title='公式格式需核对，已保留原文'; }
     });
   }
-  if (!panel) return;
   function hydrateShots(root){
     if(!root) return;
     root.querySelectorAll('[data-shot-group]').forEach(function(slot){
@@ -913,45 +916,6 @@ _PERSONAL_GRID_JS = """
       slot.dataset.loaded = 'true';
     });
   }
-  function expandMore(){
-    var more = panel.querySelector('.qmore');
-    if(!more) return;
-    more.hidden = false; hydrateShots(more);
-    more.querySelectorAll('details').forEach(function(el){el.open=true;});
-    panel.querySelector('.qmore-btn').textContent='收起题目、作答和解法';
-  }
-  function showQuestion(q, toggle, openMore){
-    var cells = Array.from(document.querySelectorAll('.qcell'));
-    var btn = cells.find(function(b){return b.dataset.q === q;})
-      || cells.find(function(b){return b.dataset.q.indexOf(q + '(') === 0;});
-    if(!btn) return false;
-    q = btn.dataset.q;
-    if(toggle && openQ === q){
-      panel.hidden = true; panel.innerHTML=''; openQ = null;
-      btn.setAttribute('aria-expanded','false'); return false;
-    }
-    var tpl = Array.from(document.querySelectorAll('template[data-q]')).find(function(t){return t.dataset.q === q;});
-    if(!tpl) return false;
-    panel.innerHTML=''; panel.appendChild(tpl.content.cloneNode(true));
-    panel.hidden=false; openQ=q; renderMath(panel);
-    document.querySelectorAll('.qcell[aria-expanded="true"]').forEach(function(b){b.setAttribute('aria-expanded','false');});
-    btn.setAttribute('aria-expanded','true');
-    if(openMore) expandMore();
-    return true;
-  }
-  document.querySelectorAll('.qcell').forEach(function(btn){
-    btn.addEventListener('click', function(){
-      showQuestion(btn.dataset.q, true);
-    });
-  });
-  document.querySelectorAll('[data-open-q]').forEach(function(btn){
-    btn.addEventListener('click', function(){
-      if(showQuestion(btn.dataset.openQ, false, btn.hasAttribute('data-open-more'))){
-        panel.focus({preventScroll:true});
-        panel.scrollIntoView({block:'start',behavior:'smooth'});
-      }
-    });
-  });
   var viewer = document.getElementById('report-shot-viewer');
   document.addEventListener('click', function(e){
     var shot = e.target.closest('.shot-enlarge');
@@ -965,13 +929,116 @@ _PERSONAL_GRID_JS = """
     if(e.target.closest('[data-close-shot]') && viewer) viewer.close();
   });
   if(viewer) viewer.addEventListener('click',function(e){if(e.target===viewer) viewer.close();});
-  panel.addEventListener('click', function(e){
-    var t = e.target.closest('.qmore-btn');
-    if(!t) return;
-    var m = panel.querySelector('.qmore');
-    if(!m) return;
-    if(m.hidden) expandMore();
-    else {m.hidden=true;t.textContent='看题目、作答和解法';}
+  var panel = document.getElementById('qpanel');
+  if (!panel) return;
+  var $ = function(s, r){ return (r || document).querySelector(s); };
+  var $$ = function(s, r){ return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
+  function el(tag, cls, text){
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  }
+  var backdrop = el('div', 'psheet-backdrop'); backdrop.hidden = true;
+  var sheet = el('div', 'psheet'); sheet.hidden = true;
+  sheet.setAttribute('role', 'dialog');
+  var head = el('div', 'psheet-head');
+  var title = el('div', 'psheet-title');
+  var pos = el('div', 'psheet-pos');
+  var prev = el('button', 'psheet-nav', '‹ 上一题'); prev.type = 'button';
+  var next = el('button', 'psheet-nav', '下一题 ›'); next.type = 'button';
+  var close = el('button', 'psheet-close', '关闭'); close.type = 'button';
+  head.append(title, pos, prev, next, close);
+  var body = el('div', 'psheet-body');
+  body.appendChild(panel);
+  sheet.append(head, body);
+  document.body.append(backdrop, sheet);
+  var ctx = [], idx = 0, open = false, savedY = 0;
+  var cells = function(){ return $$('.qcell'); };
+  function cellFor(q){
+    return cells().filter(function(x){ return x.dataset.q === q; })[0]
+      || cells().filter(function(x){ return q && x.dataset.q.indexOf(q + '(') === 0; })[0];
+  }
+  function renderCur(){
+    var q = ctx[idx];
+    var btn = cellFor(q);
+    var qid = btn ? btn.dataset.q : q;
+    var tpl = $$('template[data-q]').filter(function(t){ return t.dataset.q === qid; })[0]
+      || $$('template[data-q]').filter(function(t){ return t.dataset.q === q; })[0];
+    panel.innerHTML = '';
+    if (tpl) panel.appendChild(tpl.content.cloneNode(true));
+    panel.hidden = false;
+    var more = panel.querySelector('.qmore');
+    if (more) {
+      more.hidden = false;
+      more.querySelectorAll('details').forEach(function(d){ d.open = true; });
+    }
+    renderMath(panel);
+    hydrateShots(panel);
+    cells().forEach(function(b){
+      b.setAttribute('aria-expanded', b === btn ? 'true' : 'false');
+    });
+    var qn = btn && btn.querySelector('.qn') ? btn.querySelector('.qn').textContent.trim() : q;
+    var qs = btn && btn.querySelector('.qs') ? btn.querySelector('.qs').textContent.trim() : '';
+    title.textContent = '第' + qn + '题' + (qs ? ' · ' + qs : '');
+    pos.textContent = (idx + 1) + ' / ' + ctx.length;
+    prev.disabled = idx <= 0;
+    next.disabled = idx >= ctx.length - 1;
+    body.scrollTop = 0;
+  }
+  function openSheet(q, ids){
+    ctx = ids && ids.length ? ids.slice() : [q];
+    var i = ctx.indexOf(q);
+    idx = i < 0 ? 0 : i;
+    if (!open) {
+      open = true;
+      savedY = window.scrollY;
+      backdrop.hidden = false;
+      sheet.hidden = false;
+      document.documentElement.classList.add('psheet-lock');
+    }
+    renderCur();
+  }
+  function closeSheet(){
+    if (!open) return;
+    open = false;
+    backdrop.hidden = true;
+    sheet.hidden = true;
+    document.documentElement.classList.remove('psheet-lock');
+    cells().forEach(function(b){ b.setAttribute('aria-expanded', 'false'); });
+    window.scrollTo(0, savedY);
+  }
+  document.addEventListener('click', function(e){
+    if (e.target.closest && e.target.closest('#report-shot-viewer')) return;
+    var cell = e.target.closest && e.target.closest('.qcell');
+    var openQ = e.target.closest && e.target.closest('[data-open-q]');
+    if (!cell && !openQ) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (cell) {
+      openSheet(cell.dataset.q, cells().map(function(b){ return b.dataset.q; }));
+    } else {
+      var q = openQ.dataset.openQ;
+      var ids = openQ.dataset.openCtx
+        ? openQ.dataset.openCtx.split(',').filter(Boolean) : null;
+      if (!ids || !ids.length) {
+        var wrap = openQ.parentElement;
+        ids = wrap ? $$('[data-open-q]', wrap).map(function(b){ return b.dataset.openQ; }) : [];
+      }
+      if (!ids.length || ids.indexOf(q) < 0) ids = [q];
+      openSheet(q, ids);
+    }
+  }, true);
+  prev.addEventListener('click', function(){ if (idx > 0) { idx--; renderCur(); } });
+  next.addEventListener('click', function(){ if (idx < ctx.length - 1) { idx++; renderCur(); } });
+  close.addEventListener('click', closeSheet);
+  backdrop.addEventListener('click', closeSheet);
+  document.addEventListener('keydown', function(e){
+    if (!open) return;
+    if (document.querySelector('#report-shot-viewer[open]')) return;
+    if (e.key === 'Escape') { closeSheet(); e.preventDefault(); return; }
+    if (e.key === 'ArrowLeft' && idx > 0) { idx--; renderCur(); e.preventDefault(); }
+    if (e.key === 'ArrowRight' && idx < ctx.length - 1) { idx++; renderCur(); e.preventDefault(); }
   });
 })();
 """
@@ -1504,58 +1571,6 @@ def _personal_cell_status(record: StudentQuestionRecord) -> str:
     return "part"
 
 
-def _lost_group_label(
-    parent: str,
-    student: StudentReportData,
-    info_by_qid: dict[str, QuestionInfo],
-) -> str:
-    """「第14题计算」形式：大题显示名 + 题型标签。"""
-    info = info_by_qid.get(parent)
-    if info is None:
-        info = next(
-            (
-                info_by_qid.get(r.question_id)
-                for r in student.records
-                if parent_question_id(r.question_id) == parent
-            ),
-            None,
-        )
-    type_label = _question_type_label(info.question_type if info is not None else "")
-    return _question_display_label(parent) + type_label
-
-
-def _score_card_conclusion(
-    student: StudentReportData,
-    info_by_qid: dict[str, QuestionInfo],
-) -> str:
-    scored = [r for r in student.records if r.max_score > 0]
-    n = len(scored)
-    full = sum(1 for r in scored if r.score >= r.max_score)
-    lost = [r for r in scored if r.lost]
-    if not lost:
-        return f"全部 {n} 个小题都拿到满分。"
-    by_parent: dict[str, float] = {}
-    for r in lost:
-        parent = parent_question_id(r.question_id)
-        by_parent[parent] = by_parent.get(parent, 0.0) + r.lost_points
-    ordered = sorted(
-        by_parent.items(),
-        key=lambda kv: (-kv[1], question_id_coordinates(kv[0]) or (10**9, 0)),
-    )
-    total_lost = sum(by_parent.values())
-    if len(ordered) == 1:
-        return (
-            f"{n} 个小题中 {full} 个满分，丢的 {fmt_num(total_lost)} 分都在"
-            f"{_lost_group_label(ordered[0][0], student, info_by_qid)}。"
-        )
-    (g1, x), (g2, y) = ordered[0], ordered[1]
-    return (
-        f"{n} 个小题中 {full} 个满分，丢分最多的是"
-        f"{_lost_group_label(g1, student, info_by_qid)}（{fmt_num(x)}分）和"
-        f"{_lost_group_label(g2, student, info_by_qid)}（{fmt_num(y)}分）。"
-    )
-
-
 def _narrative_analysis_index(
     narrative: dict[str, Any] | None,
     info_by_qid: dict[str, QuestionInfo],
@@ -1567,81 +1582,6 @@ def _narrative_analysis_index(
         raw = str(item.get("question_id") or "").strip()
         result[resolve_known_question_id(raw, info_by_qid) or raw] = item
     return result
-
-
-def _history_chart_html(entries: list[dict[str, Any]], current_sid: int) -> str:
-    """历次成绩：SVG 只画折线（不缩放描边），圆点/分数/场次名用 HTML 等宽列。"""
-    n = len(entries)
-
-    def x_of(i: int) -> float:
-        return (i + 0.5) / n * 100
-
-    def y_of(ratio: float) -> float:
-        return 16 + (1 - min(1.0, max(0.0, ratio))) * 76  # 顶部留分数值空间，纵轴固定 0..满分
-
-    avg_pts: list[tuple[float, float]] = []
-    me_segs: list[list[tuple[float, float]]] = []
-    cur_seg: list[tuple[float, float]] = []
-    dots: list[tuple[int, float, float, float]] = []
-    for i, e in enumerate(entries):
-        full = e.get("full") or 100
-        avg = e.get("avg")
-        if avg is not None:
-            avg_pts.append((x_of(i), y_of(float(avg) / full)))
-        if e.get("score") is not None:
-            cur_seg.append((x_of(i), y_of(float(e["score"]) / full)))
-            dots.append((i, x_of(i), y_of(float(e["score"]) / full), float(e["score"])))
-        else:
-            if len(cur_seg) > 1:
-                me_segs.append(cur_seg)
-            cur_seg = []
-    if len(cur_seg) > 1:
-        me_segs.append(cur_seg)
-
-    svg = ['<svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">']
-    if len(avg_pts) > 1:
-        pts = " ".join(f"{x:.2f},{y:.2f}" for x, y in avg_pts)
-        svg.append(
-            f'<polyline points="{pts}" fill="none" stroke="#8a97a8" stroke-width="1.5" '
-            f'stroke-dasharray="4 3" vector-effect="non-scaling-stroke"/>'
-        )
-    for seg in me_segs:
-        pts = " ".join(f"{x:.2f},{y:.2f}" for x, y in seg)
-        svg.append(
-            f'<polyline points="{pts}" fill="none" stroke="#2b6cb0" stroke-width="2" '
-            f'vector-effect="non-scaling-stroke"/>'
-        )
-    svg.append("</svg>")
-
-    overlays = []
-    for i, x, y, score in dots:
-        cur = entries[i]["session_id"] == current_sid
-        overlays.append(
-            f'<span class="hdot{" cur" if cur else ""}" style="left:{x:.2f}%;top:{y:.2f}%"></span>'
-            f'<span class="hval{" cur" if cur else ""}" style="left:{x:.2f}%;top:{y:.2f}%">{esc(fmt_num(score))}</span>'
-        )
-
-    cols = []
-    for e in entries:
-        name = str(e.get("name") or "")
-        short = name if len(name) <= 6 else name[:6] + "…"
-        rank = e.get("rank")
-        rank_text = f"第{rank}名" if e.get("score") is not None and rank else (
-            "有成绩" if e.get("score") is not None else "未参加"
-        )
-        cur = e["session_id"] == current_sid
-        cols.append(
-            f'<div class="hcol{" cur" if cur else ""}">'
-            f'<div class="hn">{esc(short)}</div><div>{esc(rank_text)}</div></div>'
-        )
-    return (
-        '<div class="hchart">'
-        + "".join(svg)
-        + "".join(overlays)
-        + '</div><div class="hcols">'
-        + "".join(cols)
-        + "</div>"
-    )
 
 
 def _point_question_result(
@@ -1880,8 +1820,9 @@ def _personal_review_link(question_id: str) -> str:
 
 _PERSONAL_KEYBOARD_JS = """
 document.addEventListener('keydown', function(event) {
+  if (event.defaultPrevented) return;
   if (!['Escape', 'ArrowLeft', 'ArrowRight'].includes(event.key)) return;
-  if (document.querySelector('#report-shot-viewer[open]')) return;
+  if (document.querySelector('#report-shot-viewer[open], .psheet:not([hidden])')) return;
   if (event.key !== 'Escape' && event.target.closest('input, textarea, select, [contenteditable="true"]')) return;
   event.preventDefault();
   window.parent.postMessage({type: 'personal-report:key', key: event.key}, location.origin);
@@ -2444,41 +2385,39 @@ def _load_student_histories(
         return {}
 
 
+def _lost_group_label(
+    parent: str,
+    student: StudentReportData,
+    info_by_qid: dict[str, QuestionInfo],
+) -> str:
+    """「第14题计算」形式：大题显示名 + 题型标签。"""
+    info = info_by_qid.get(parent)
+    if info is None:
+        info = next(
+            (
+                info_by_qid.get(r.question_id)
+                for r in student.records
+                if parent_question_id(r.question_id) == parent
+            ),
+            None,
+        )
+    type_label = _question_type_label(info.question_type if info is not None else "")
+    return _question_display_label(parent) + type_label
+
+
 def _follow_up_action_html(suggestion: dict[str, Any] | None) -> str:
+    """问题卡里的跟进任务框：□ 先做 / ✓ 做到，可选「家长：」一行。"""
     suggestion = suggestion or {}
     action = _narrative_text(suggestion.get("first_action")) or _narrative_text(suggestion.get("detail")) or "先看相关题，弄清错在哪里再订正。"
     check = _narrative_text(suggestion.get("completion_check")) or "不看解析能独立重做。"
     parts = [
-        f'<div class="help"><b>先做：</b>{_report_inline_math(_report_display_text(action))}'
-        f'<span class="check">　做到：{_report_inline_math(_report_display_text(check))}</span></div>',
+        f'<div class="ptask"><div class="ptask-do"><i class="ptask-sq"></i><div>{_report_inline_math(_report_display_text(action))}</div></div>'
+        f'<div class="ptask-done"><i class="ptask-ok"></i><div>{_report_inline_math(_report_display_text(check))}</div></div></div>',
     ]
     parent_help = _narrative_text(suggestion.get("parent_help"))
     if parent_help:
-        parts.append(f'<div class="note">家长可以这样帮：{_report_inline_math(_report_display_text(parent_help))}</div>')
+        parts.append(f'<div class="pparent"><b>家长：</b>{_report_inline_math(_report_display_text(parent_help))}</div>')
     return "".join(parts)
-
-
-def _recurrence_evidence_html(rows: list[Any], label: str) -> str:
-    items = []
-    for row in rows:
-        if isinstance(row, str):  # 兼容仅有场次名的已有调用。
-            text = row
-        elif isinstance(row, dict):
-            text = " · ".join(
-                part for part in (
-                    str(row.get("session_name") or ""),
-                    _question_display_label(str(row["question_id"])) if row.get("question_id") else "",
-                    str(row.get("pattern") or row.get("category") or ""),
-                ) if part
-            )
-        else:
-            continue
-        item = f'<li>{esc(text)}</li>'
-        if text and item not in items:
-            items.append(item)
-    if not items:
-        return ""
-    return f'<div class="history-evidence"><b>{esc(label)}的依据</b><ul>{"".join(items)}</ul></div>'
 
 
 def _load_personal_error_histories(
@@ -2528,7 +2467,6 @@ def _render_personal_html(
     ai_placeholder: bool | None = None,
     narrative_saved_at: str | None = None,
     step_diagnoses: dict[str, dict[str, Any]] | None = None,
-    key_step_repeats: list[dict[str, Any]] | None = None,
 ) -> str:
     # 在线页 narrative_mode="none" 的数据版：AI 段落显示占位文案而不是失败提示。
     if ai_placeholder is None:
@@ -2569,10 +2507,23 @@ def _render_personal_html(
         return "", []
 
     def question_tags(question_ids: list[str]) -> str:
+        """失分题号小片：按作答状态着色、带当前得分；点击在本卡题号范围内翻详情。"""
+        record_by_qid = {r.question_id: r for r in student.records}
+        ordered = sorted(question_ids, key=lambda q: question_id_coordinates(q) or (10**9, 0))
+        ctx = esc(",".join(ordered))
         tags = []
-        for qid in sorted(question_ids, key=lambda q: question_id_coordinates(q) or (10**9, 0)):
+        for qid in ordered:
+            rec = record_by_qid.get(qid)
+            status = _personal_cell_status(rec) if rec is not None else "blank"
             label = _question_display_label(qid)
-            tags.append(f'<button type="button" class="qtag" data-open-q="{esc(qid)}" aria-label="查看{esc(label)}的作答证据">{esc(label)}</button>')
+            score = (
+                f'<span class="qtag-s">{fmt_num(rec.score)}/{fmt_num(rec.max_score)}</span>'
+                if rec is not None else ""
+            )
+            tags.append(
+                f'<button type="button" class="qtag qtag-{status}" data-open-q="{esc(qid)}" '
+                f'data-open-ctx="{ctx}" aria-label="查看{esc(label)}的作答证据">'
+                f'{esc(label)}{score}</button>')
         return "".join(tags)
 
     points = _personal_exam_points(
@@ -2585,70 +2536,94 @@ def _render_personal_html(
         f"{esc(data.session_name)} · {esc(data.subject)} · "
         f"{esc(_report_class_label(student.class_name))} · {esc(student.graded_at)}"
     )
-    comparison = '<div class="v">暂无对比</div><div class="l">尚无上次成绩</div>'
+    # 名次格：主值 名次/参考人数；仅当本次与上次参考人数不同才加一行小注。
     prior = [
         e
         for e in history
         if e["session_id"] != data.session_id and e.get("score") is not None
     ]
-    if prior:
-        prev = prior[-1]
+    prev = prior[-1] if prior else None
+    rank_sub = ""
+    if prev is not None and prev.get("present") and prev["present"] != data.present:
+        rank_sub = f'<div class="sub">参考人数 {fmt_num(prev["present"])}→{data.present}</div>'
+
+    # 较上次格：主值是名次变化（名次数小是进步），分数只作小注；规则不变。
+    if prev is None:
+        change_cell = '<div class="v muted">暂无对比</div>'
+    else:
         if prev.get("full") == data.full_score and data.full_score > 0:
             delta = student.student_score - float(prev["score"])
-            direction = "up" if delta > 0 else "down" if delta < 0 else ""
-            score_change = ("+" if delta > 0 else "−" if delta < 0 else "") + fmt_num(abs(delta)) + "分"
             if delta == 0:
-                score_change = "分数持平"
-            comparison = f'<div class="l">较上次</div><div class="v {direction}">{esc(score_change)}</div>'
+                score_sub = "分数持平"
+            else:
+                sign = "+" if delta > 0 else "−"
+                score_sub = f"分数 {sign}{fmt_num(abs(delta))}分"
         else:
-            comparison = '<div class="l">较上次</div><div class="v">分数不直接比</div><div class="l">满分不同或缺失</div>'
+            score_sub = "满分不同，分数不直接比"
         if prev.get("rank") and student.rank:
             delta_rank = int(prev["rank"]) - student.rank
-            rank_change = f"名次上升{delta_rank}名" if delta_rank > 0 else f"名次下降{abs(delta_rank)}名" if delta_rank < 0 else "名次持平"
-            comparison += f'<div class="rank-change">{esc(rank_change)}</div>'
-            if prev.get("present") and prev["present"] != data.present:
-                comparison += f'<div class="rank-context">参考人数{prev["present"]}→{data.present}</div>'
+            if delta_rank > 0:
+                change_v = f'<div class="v up">↑ {delta_rank} 名</div>'
+            elif delta_rank < 0:
+                change_v = f'<div class="v down">↓ {abs(delta_rank)} 名</div>'
+            else:
+                change_v = '<div class="v">名次持平</div>'
         else:
-            comparison += '<div class="rank-change">名次暂无对比</div>'
+            change_v = '<div class="v muted">暂无对比</div>'
+        change_cell = f'{change_v}<div class="sub">{esc(score_sub)}</div>'
     avg = data.stats.get("avg")
     avg_text = f"{float(avg):.1f}" if avg is not None else "—"
-    bands = list(data.stats.get("bands") or [])
-    scale = (data.full_score / 100) if data.full_score > 0 else 1.0
-    my_band = None
-    for i, cutoff in enumerate(BAND_CUTOFFS):
-        lower = cutoff * scale
-        upper = data.full_score if i == 0 else BAND_CUTOFFS[i - 1] * scale
-        if lower <= student.student_score <= upper if i == 0 else lower <= student.student_score < upper:
-            my_band = len(bands) - 1 - i
-            break
-    max_count = max((b["count"] for b in bands), default=1) or 1
-    band_rows = []
-    for disp_i, band in enumerate(reversed(bands)):  # 低分段在上
-        width = band["count"] / max_count * 100
-        me = disp_i == my_band
-        index = len(bands) - 1 - disp_i
-        lower = BAND_CUTOFFS[index] * scale
-        upper = data.full_score if index == 0 else BAND_CUTOFFS[index - 1] * scale
-        band_label = f"{fmt_num(lower)}≤分数{'≤' if index == 0 else '＜'}{fmt_num(upper)}"
-        band_rows.append(
-            f'<div class="band{" me" if me else ""}"><span>{esc(band_label)}'
-            f'{"<span class=me-tag>孩子在这里</span>" if me else ""}</span>'
-            f'<div class="track"><i style="width:{width:.0f}%"></i></div>'
-            f'<span class="cnt">{band["count"]}人</span></div>'
+
+    # 班级分数分布：与班级统计同一份学生总分，10 等分；孩子所在格描边。
+    def _score_bin(score_value: float) -> int:
+        # 先按 6 位小数取整再取整格，避免满分比例的浮点误差把孩子错落到前一格。
+        return min(9, max(0, int(round(score_value * 10 / data.full_score, 6))))
+    heatmap = ""
+    class_scores = [float(s.student_score) for s in data.students]
+    if data.full_score > 0 and class_scores:
+        bins = [0] * 10
+        for score_value in class_scores:
+            bins[_score_bin(score_value)] += 1
+        max_bin = max(bins) or 1
+        my_bin = _score_bin(float(student.student_score or 0))
+        heat_cells = []
+        for i, count in enumerate(bins):
+            style = ""
+            if count:
+                ratio = count / max_bin
+                color = "#fff" if ratio > 0.55 else "#2b3a4e"
+                style = (f' style="background:rgba(43,108,176,{0.15 + 0.72 * ratio:.2f});'
+                         f'color:{color}"')
+            me = " me" if i == my_bin else ""
+            marker = (f'<em class="pheat-me">{fmt_num(student.student_score)}</em>'
+                      if i == my_bin else "")
+            text = str(count) if count else ""
+            heat_cells.append(f'<div class="pheat-cell{me}"{style}>{marker}{text}</div>')
+        avg_marker = ""
+        if data.stats.get("avg") is not None:
+            pct = max(0.0, min(100.0, float(data.stats["avg"]) / data.full_score * 100))
+            label_pct = max(7.0, min(93.0, pct))
+            avg_marker = (
+                f'<span class="pheat-avg" style="left:{pct:.1f}%"><i></i></span>'
+                f'<em class="pheat-avglb" style="left:{label_pct:.1f}%">班均</em>'
+            )
+        heatmap = (
+            '<div class="pheat"><div class="pheat-strip">'
+            + "".join(heat_cells) + avg_marker
+            + '</div>'
+            + f'<div class="pheat-ends"><span>0</span><span>{fmt_num(data.full_score)}</span></div>'
+            + '<div class="pheat-cap">全班分数分布（每格是人数）</div></div>'
         )
     review = (
         '<div class="review-banner">有题目等待老师复核，分数可能微调</div>'
         if student.needs_review
         else ""
     )
-    strength = ""
     strengths = [
         _narrative_text(i)
         for i in _narrative_items(narrative, "strengths")
         if _narrative_text(i)
     ]
-    if strengths:
-        strength = f'<div class="strength">✓ 值得肯定：{_report_inline_math(strengths[0])}</div>'
     small_sample_note = (
         '<div class="note" style="margin-top:6px">本场参考人数较少，班级对比仅供参考。</div>'
         if data.small_sample
@@ -2659,32 +2634,19 @@ def _render_personal_html(
   {review}
   <div class="meta">{meta}</div>
   <div class="name">{esc(student.student_name)}</div>
-  <div class="score-line"><span class="big">{fmt_num(student.student_score)}</span><span class="of">/ {fmt_num(data.full_score)}</span></div>
+  <div class="score-line{' has-heat' if heatmap else ''}"><span class="big">{fmt_num(student.student_score)}</span><span class="of">/ {fmt_num(data.full_score)}</span>{heatmap}</div>
   <div class="stat3">
-    <div class="cell"><div class="v">{student.rank}/{data.present}</div><div class="l">班级名次</div></div>
-    <div class="cell"><div class="v">{avg_text}</div><div class="l">班级平均</div></div>
-    <div class="cell change">{comparison}</div>
+    <div class="cell"><div class="l">班级名次</div><div class="v">{student.rank}/{data.present}</div>{rank_sub}</div>
+    <div class="cell"><div class="l">较上次</div>{change_cell}</div>
+    <div class="cell"><div class="l">班级平均</div><div class="v">{avg_text}</div></div>
   </div>
-  <div class="bands">{''.join(band_rows)}</div>
   {small_sample_note}
-  <div class="concl">{esc(_score_card_conclusion(student, info_by_qid))}</div>
-  {strength}
 </div>"""
 
-    # ---- B 历次成绩 ----
-    card_b = ""
-    scored_history = [e for e in history if e.get("score") is not None]
-    if len(scored_history) >= 2:
-        card_b = f"""
-<div class="card">
-  <h2>历次成绩</h2>
-  <div class="hist">{_history_chart_html(history, data.session_id)}</div>
-  <div class="note">实线是孩子，虚线是班级平均；各次难度不同，仅供参考。</div>
-</div>"""
-
-    # ---- C 答题一览 ----
+    # ---- C 这次考试对错 ----
     scored_records = [r for r in student.records if r.max_score > 0]
     counts = {"full": 0, "part": 0, "zero": 0, "blank": 0}
+    any_hard = False
     cells, templates = [], []
     for record in scored_records:
         info = info_by_qid.get(record.question_id)
@@ -2692,6 +2654,7 @@ def _render_personal_html(
         counts[status] = counts.get(status, 0) + 1
         sym = {"full": "✓", "part": "△", "zero": "✗", "blank": "—"}[status]
         hard = info is not None and info.class_rate is not None and info.class_rate < 0.5
+        any_hard = any_hard or hard
         cells.append(
             f'<button type="button" class="qcell {status}" data-q="{esc(record.question_id)}" '
             f'aria-expanded="false"><span class="sym">{sym}</span>'
@@ -2709,13 +2672,28 @@ def _render_personal_html(
             )
             + "</template>"
         )
+    legend_html = " · ".join(
+        f'<span class="psw {cls}"><i></i>{esc(label)} {counts[key]}</span>'
+        for cls, key, label in (
+            ("g", "full", "满分"), ("a", "part", "部分得分"),
+            ("r", "zero", "零分"), ("gr", "blank", "未作答"),
+        )
+    )
+    if any_hard:
+        legend_html += '<div class="plegend-hard">▲ 全班平均得分不到一半</div>'
+    strength_line = (
+        f'<div class="pstrength"><span class="pstrength-tag">亮点</span>{_report_inline_math(strengths[0])}</div>'
+        if strengths else ""
+    )
     card_c = f"""
 <div class="card">
-  <h2>本卷答题一览</h2>
+  <h2>这次考试对错</h2>
   <div class="qgrid">{''.join(cells)}</div>
-  <div class="legend">✓ 满分 {counts['full']}　△ 部分得分 {counts['part']}　✗ 零分 {counts['zero']}　— 未作答 {counts['blank']}　▲ 全班平均得分不到一半</div>
+  <div class="plegend">{legend_html}</div>
+  {strength_line}
+  <div class="phint">点题号看题目、作答和解法</div>
   {''.join(f'<div class="note">{esc(note)}</div>' for note in student.material_notes)}
-   <div id="qpanel" tabindex="-1" hidden></div>
+  <div id="qpanel" hidden></div>
   {''.join(templates)}
 </div>"""
 
@@ -2741,12 +2719,12 @@ def _render_personal_html(
             lost_sum = sum(
                 r.lost_points for r in student.records if r.question_id in qids
             )
-            if qids and lost_sum > 0:
-                meta_line = f'<div class="meta2">关联题目失分 {fmt_num(lost_sum)} 分{question_tags(qids)}</div>'
-            else:
-                meta_line = ""
+            lost_pill = (
+                f'<span class="plost">失 {fmt_num(lost_sum)} 分</span>'
+                if qids and lost_sum > 0 else ""
+            )
             recurrence_rows: list[Any] = []
-            recurrence_label, error_recur = error_recurrence(qids)
+            _, error_recur = error_recurrence(qids)
             for q in qids:
                 for p in points_by_qid.get(q, []):
                     for row in p["recur"]:
@@ -2754,64 +2732,23 @@ def _render_personal_html(
                             recurrence_rows.append(row)
             if error_recur:
                 recurrence_rows = error_recur
-            elif recurrence_rows:
-                recurrence_label = "该考查点曾失分"
-            badge = f'<span class="recur">{esc(recurrence_label)}</span>' if recurrence_rows else ""
-            any_feedback = any(
-                _narrative_text((analysis_by_qid.get(q) or {}).get("feedback"))
-                for q in qids
-            )
-            why = (
-                [] if any_feedback
-                else [f'<div class="qd-fb">{_report_paragraphs(_narrative_text(problem.get("detail")))}</div>']
-            )
-            full_action = _narrative_text((suggestion or {}).get("detail"))
-            if _narrative_text((suggestion or {}).get("first_action")) and full_action:
-                why.append(f'<div class="help"><b>具体做法：</b>{_report_inline_math(_report_display_text(full_action))}</div>')
-            if recurrence_rows:
-                why.append(_recurrence_evidence_html(recurrence_rows, recurrence_label))
-            shown_parents = set()
-            for q in qids:
-                rec = next((r for r in student.records if r.question_id == q), None)
-                info = info_by_qid.get(q)
-                objective = _objective_question(info)
-                if rec is not None and objective:
-                    why.append(f'<div class="qd-fb"><b>{esc(_question_display_label(q))}</b></div>')
-                    why.append(_objective_answers_html(rec, info))
-                item = analysis_by_qid.get(q)
-                fb = _narrative_text((item or {}).get("feedback"))
-                if fb:
-                    why.append(
-                        '<div class="qd-fb">'
-                        + ("" if objective else f'<b>{esc(_question_display_label(q))}</b>')
-                        + f'{_report_paragraphs(fb)}</div>'
-                    )
-                elif item is None:
-                    if rec is not None:
-                        fallback = _grading_fallback_html(
-                            rec, info, heading="" if objective else _question_display_label(q), show_answer=not objective
-                        )
-                        if fallback:
-                            why.append(fallback)
-                parent = parent_question_id(q)
-                if parent not in shown_parents:
-                    shown_parents.add(parent)
-                    why.append(_shots_html(shots, parent, _question_display_label(parent)))
+            badge = '<span class="pmissed">以前也错过</span>' if recurrence_rows else ""
             timeframe = _narrative_text((suggestion or {}).get("timeframe"))
             when = f'<span class="when">{esc(timeframe)}</span>' if timeframe in {"本周", "长期"} else ""
             dcards.append(
                 f'<div class="dcard"><div class="dhead"><span class="no">{len(dcards) + 1}</span>'
-                f'<span class="ttl">{esc(_report_display_text(_narrative_text(problem.get("title"))))}</span>{when}</div>'
-                f'<div class="help"><b>发现：</b>{_report_inline_math(_report_display_text(_narrative_text(problem.get("parent_summary")) or _narrative_text(problem.get("detail"))))}</div>'
+                f'<span class="ttl">{esc(_report_display_text(_narrative_text(problem.get("title"))))}</span>{badge}'
+                f'<span class="dhead-r">{when}{lost_pill}</span></div>'
+                f'<div class="pfind">{_report_inline_math(_report_display_text(_narrative_text(problem.get("parent_summary")) or _narrative_text(problem.get("detail"))))}</div>'
                 f'{_follow_up_action_html(suggestion)}'
-                f'<details><summary>看具体题目{f" · {len(qids)}个小问" if qids else ""}</summary>{meta_line}{badge}{"".join(why)}</details></div>'
+                f'<div class="prel">{question_tags(qids)}</div></div>'
             )
         overlap_note = '<div class="note">题目有重叠，各项失分不能相加。</div>' if overlapping else ""
         card_d = f"""
 <div class="card">
-  <h2>这次重点跟进<span class="aitag">{esc(AI_DISCLAIMER)}</span></h2>
-  {overlap_note}
+  <h2>这次暴露的问题<span class="aitag">{esc(AI_DISCLAIMER)}</span></h2>
   {''.join(dcards)}
+  {overlap_note}
 </div>"""
     else:
         lost = [r for r in student.records if r.lost]
@@ -2840,135 +2777,38 @@ def _render_personal_html(
                     error_label(r.question_id) for r in recs if error_label(r.question_id)
                 ]
                 qids = [r.question_id for r in recs]
-                objective_evidence = "".join(
-                    f'<div class="qd-fb"><b>{esc(_question_display_label(r.question_id))}</b></div>'
-                    + _objective_answers_html(r, info_by_qid.get(r.question_id))
-                    for r in recs if _objective_question(info_by_qid.get(r.question_id))
-                )
-                recurrence_label, recurrence_rows = error_recurrence(qids)
-                badge = (
-                    f'<span class="recur">{esc(recurrence_label)}</span>'
-                    if recurrence_rows
-                    else ""
-                )
+                _, recurrence_rows = error_recurrence(qids)
+                badge = '<span class="pmissed">以前也错过</span>' if recurrence_rows else ""
+                evidence = []
+                if error_labels:
+                    evidence.append(
+                        f'<div class="errline">错在：{esc("；".join(dict.fromkeys(error_labels)))}（AI 辅助）</div>')
+                if comments:
+                    evidence.append(
+                        f'<div class="help">老师批语：{_report_inline_math("；".join(comments[:2]))}</div>')
                 cards.append(
-                    f'<div class="dcard"><div class="dhead"><span class="ttl">'
-                    f'{esc(_lost_group_label(parent, student, info_by_qid))}</span></div>'
-                    f'<div class="help"><b>发现：</b>{len(recs)}个小问有失分，先看原卷确认错在哪里。</div>'
+                    f'<div class="dcard"><div class="dhead"><span class="no">{len(cards) + 1}</span>'
+                    f'<span class="ttl">{esc(_lost_group_label(parent, student, info_by_qid))}</span>{badge}'
+                    f'<span class="dhead-r"><span class="plost">失 {fmt_num(lost_sum)} 分</span></span></div>'
+                    f'<div class="pfind">{len(recs)}个小问有失分，先看原卷确认错在哪里。</div>'
+                    + "".join(evidence)
                     + _follow_up_action_html(None)
-                    + f'<details><summary>看具体题目 · {len(recs)}个小问</summary>'
-                    + f'<div class="meta2">关联题目失分 {fmt_num(lost_sum)} 分{question_tags(qids)}</div>{badge}'
-                    + objective_evidence
-                    + (
-                        f'<div class="errline">错在：{esc("；".join(dict.fromkeys(error_labels)))}（AI 辅助）</div>'
-                        if error_labels
-                        else ""
-                    )
-                    + (
-                        f'<div class="help">老师批语：{_report_inline_math("；".join(comments[:2]))}</div>'
-                        if comments
-                        else ""
-                    )
-                    + (
-                        _recurrence_evidence_html(recurrence_rows, recurrence_label)
-                        if recurrence_rows else ""
-                    )
-                    + _shots_html(shots, parent, _question_display_label(parent))
-                    + "</details></div>"
+                    + f'<div class="prel">{question_tags(qids)}</div></div>'
                 )
             inner = "".join(cards)
         card_d = f"""
 <div class="card">
-  <h2>这次重点跟进</h2>
+  <h2>这次暴露的问题</h2>
   {'<div class="note">以下按失分排序；AI 跟进建议整理后显示。</div>' if pending_ai else ""}
   {inner}
 </div>"""
 
-    # ---- E 考查点 ----
-    n_good = sum(1 for p in points if p["status"] == "good")
-    n_mid = sum(1 for p in points if p["status"] == "mid")
-    n_bad = sum(1 for p in points if p["status"] == "bad")
-    n_unknown = sum(1 for p in points if p["status"] == "unknown")
-
-    def _point_row(p: dict[str, Any]) -> str:
-        sym_map = {"full": "✓", "part": "△", "zero": "✗", "unknown": "?"}
-        dots = "".join(
-            f'<span class="dot"><i class="{r}">{sym_map[r]}</i>'
-            f'<s>{esc(_question_cell_label(q["id"]))}</s></span>'
-            for q, r in p["results"]
-        )
-        uncertainty = '<small class="unconfirmed">部分题有失分，这个知识点是否做对还不能判断</small>' if p["status"] == "unknown" else ""
-        recurrence = (
-            '<details class="history-evidence"><summary>该考查点曾失分</summary>'
-            + _recurrence_evidence_html(p["recur"], "该考查点曾失分") + '</details>'
-            if p["recur"] else ""
-        )
-        return (
-            f'<div class="pt-row"><span class="nm">{esc(p["label"])}{uncertainty}{recurrence}</span>'
-            f'<span class="dots">{dots}</span></div>'
-        )
-
-    rows_html = [
-        _point_row(p) for status in ("bad", "mid")
-        for p in points if p["status"] == status
-    ]
-    unknown_rows = [_point_row(p) for p in points if p["status"] == "unknown"]
-    good_sections: dict[str, list[str]] = {}
-    for p in points:
-        if p["status"] == "good":
-            good_sections.setdefault(p["section"] or "其他", []).append(p["label"])
-
-    def _section_key(name: str) -> tuple[int, int]:
-        num = re.match(r"\s*(\d+)", name)
-        return (0, int(num.group(1))) if num else (1, 0)
-
-    cloud = "".join(
-        f'<div class="sec">{esc(sec)}</div><div>'
-        + "".join(f'<span class="tg">{esc(label)}</span>' for label in labels)
-        + "</div>"
-        for sec, labels in sorted(good_sections.items(), key=lambda kv: _section_key(kv[0]))
-    )
-    card_e = ""
-    if points:
-        target_label = {'type': '题型', 'mixed': '训练目标'}.get(data.knowledge_structure.get('target_kind'), '知识点')
-        score_note = ('只看本场。' if target_label == '题型'
-                      else '只看本场；一题可能考几个知识点。')
-        pt_counts = "".join(
-            f'<b class="{cls}">{label} {num}</b>'
-            for cls, label, num in (
-                ("g", "做得好", n_good), ("m", "部分做到", n_mid),
-                ("b", "需要补", n_bad), ("u", "暂不能判断", n_unknown),
-            ) if num
-        )
-        good_head = (f'<div class="pt-good-head">这次做得好（{n_good} 项）</div>' if cloud else "")
-        unknown_details = ""
-        if unknown_rows:
-            unknown_details = (
-                f'<details class="pt-unknown"><summary>暂不能判断的失分点'
-                f'（{n_unknown} 项）</summary>'
-                f'<div class="note">“？”表示这题有失分，但不能确定是不是这一点出错，不代表不会。</div>'
-                f'{"".join(unknown_rows)}</details>')
-        card_e = f"""
-<div class="card">
-  <h2>本次考查点</h2>
-  <div class="pt-counts">{pt_counts}</div>
-  <details class="point-details">
-  <summary>查看全部考查点及对应题目</summary>
-  {good_head}
-  {f'<div class="tagcloud">{cloud}</div>' if cloud else ''}
-  {''.join(rows_html)}
-  {unknown_details}
-  </details>
-  <div class="note" style="margin-top:8px">{score_note}</div>
-</div>"""
-
-    # ---- 学情肖像（本次考查点之后、失分题附录之前） ----
+    # ---- 学情肖像（问题卡之后、失分题附录之前；本学期有成绩的考试≥2场才显示） ----
     from backend.reporting.personal_portrait import (
-        PORTRAIT_CSS, build_portrait_view, portrait_card_html)
+        PORTRAIT_CSS, PORTRAIT_JS, build_portrait_view, portrait_card_html)
     try:
         card_portrait = portrait_card_html(
-            build_portrait_view(data, student, history, error_map, error_history,
-                                key_step_repeats=key_step_repeats))
+            build_portrait_view(data, student, history))
     except Exception as exc:
         logging.getLogger(__name__).warning(
             "optional operation unavailable: portrait card (%s)", type(exc).__name__)
@@ -3008,11 +2848,9 @@ def _render_personal_html(
 <div class="page">
 {pending_ai_note}
 {card_a}
-{card_b}
 {card_c}
 {released_note}
 {card_d}
-{card_e}
 {card_portrait}
 {card_f}
 <footer>
@@ -3024,7 +2862,7 @@ def _render_personal_html(
 <div class="shot-viewer-head"><span>原尺寸作答截图，可滚动查看</span><button type="button" data-close-shot>关闭截图</button></div>
 <div class="shot-viewer-scroll"></div>
 </dialog>
-<script>{_PERSONAL_KATEX_JS}{_PERSONAL_GRID_JS}{_PERSONAL_PRINT_JS}{review_script}{keyboard_script}</script>
+<script>{_PERSONAL_KATEX_JS}{_PERSONAL_GRID_JS}{PORTRAIT_JS}{_PERSONAL_PRINT_JS}{review_script}{keyboard_script}</script>
 </body>
 </html>
 """
@@ -3314,43 +3152,6 @@ class AnalysisReportGenerator:
         histories = _load_student_histories(
             self.repositories, session_data, self.data_root
         )
-        history_step_diagnoses: dict[int, Any | None] = {}
-        if bank_path is not None:
-            history_student_ids = [student.student_id for _group, student in scoped_students]
-            batch_session_ids = {
-                int(entry["session_id"])
-                for student_id in history_student_ids
-                for entry in histories.get(student_id, [])
-                if entry.get("score") is not None and int(entry.get("session_id") or 0) > 0
-            }
-            for history_session_id in sorted(batch_session_ids):
-                if history_session_id == data.session_id and current_step_diagnosis is not None:
-                    history_step_diagnoses[history_session_id] = current_step_diagnosis
-                    continue
-                try:
-                    history_step_diagnoses[history_session_id] = build_session_step_diagnosis(
-                        self.repositories, history_session_id,
-                        student_ids=history_student_ids,
-                        question_bank_path=bank_path,
-                    )
-                except (OSError, sqlite3.Error):
-                    history_step_diagnoses[history_session_id] = None
-        def _student_key_step_repeats(student_id: int):
-            if bank_path is None:
-                return None
-            from backend.step_diagnosis import collect_student_key_step_repeats
-            session_ids = {
-                int(entry["session_id"])
-                for entry in histories.get(student_id, [])
-                if entry.get("score") is not None and int(entry.get("session_id") or 0) > 0
-            }
-            diagnoses = []
-            for history_session_id in sorted(session_ids):
-                diagnosis = history_step_diagnoses.get(history_session_id)
-                if diagnosis is None:
-                    return None
-                diagnoses.append(diagnosis)
-            return collect_student_key_step_repeats(diagnoses, int(student_id))["repeated"]
         # "建议核对"提示集中存档：与教师复核锁的修订号对账，导出后可在
         # 成绩中心集中查看并跳转复核。
         note_info_by_qid = {info.question_id: info for info in session_data.questions}
@@ -3496,7 +3297,6 @@ class AnalysisReportGenerator:
                             error_map=error_maps.get(student.student_id),
                             error_history=error_history,
                             step_diagnoses=step_diagnoses.get(student.student_id),
-                            key_step_repeats=_student_key_step_repeats(student.student_id),
                             originals_released=self.data_root is not None and originals_state(self.data_root, data.session_id) in {"clearing", "cleared"},
                             narrative_saved_at=(personal_store.load(data.session_id, student.student_id) or {}).get("generated_at") if personal_store is not None else None,
                         )

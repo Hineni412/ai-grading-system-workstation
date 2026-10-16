@@ -1,11 +1,10 @@
 """The deterministic semester-wide hierarchical mastery model (numpy only)."""
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 from collections import defaultdict
-from dataclasses import asdict, dataclass, replace
+from dataclasses import astuple, dataclass
 from datetime import datetime, timedelta, timezone
 from functools import cached_property
 
@@ -42,7 +41,7 @@ class MasteryParameters:
 
     @cached_property
     def version(self):
-        return hashlib.sha256(json.dumps(asdict(self), sort_keys=True).encode()).hexdigest()
+        return json.dumps(astuple(self), separators=(",", ":"))
 
 
 def week_of(value: datetime) -> int:
@@ -93,27 +92,45 @@ def _conflict_weights(observations, discount):
 def build_exam_observations(rows, resolver, session_times):
     """Consume the integration layer's eligible, teacher-authoritative projection."""
     observations = {}
+    resolved_keys = {}
+    times = {}
+
+    def target_keys(value):
+        text = str(value or "")
+        if text not in resolved_keys:
+            resolved_keys[text] = tuple(target.stable_key for target in resolver.resolve(text))
+        return resolved_keys[text]
+
+    def add(item, y, links):
+        total = sum(links.values())
+        if total <= 0:
+            return
+        identity = (student, item)
+        observations[identity] = dict(student=student, item=item, qkey=(session, question),
+            activity=("exam", session), session=session, source="exam", occurred_at=occurred,
+            week=week, d=difficulty, y=min(max(float(y), 0), 1),
+            links={k: v / total for k, v in sorted(links.items())})
+
     for row in rows:
         assessment = row.get("assessment") or {}
         session_id = int(row.get("session_id") or 0)
-        occurred = session_times.get(session_id) or session_times.get(str(session_id))
-        if assessment.get("eligible") is False or occurred is None:
+        if assessment.get("eligible") is False:
             continue
-        if isinstance(occurred, str):
-            occurred = datetime.fromisoformat(occurred.replace("Z", "+00:00"))
-        if occurred.tzinfo is None:
-            occurred = occurred.replace(tzinfo=CHINA)
+        if session_id not in times:
+            occurred = session_times.get(session_id) or session_times.get(str(session_id))
+            if occurred is None:
+                times[session_id] = None
+            else:
+                if isinstance(occurred, str):
+                    occurred = datetime.fromisoformat(occurred.replace("Z", "+00:00"))
+                if occurred.tzinfo is None:
+                    occurred = occurred.replace(tzinfo=CHINA)
+                times[session_id] = occurred, week_of(occurred)
+        if times[session_id] is None:
+            continue
+        occurred, week = times[session_id]
         session, student, question = int(row["session_id"]), str(row["student_id"]), str(row["question_id"])
         difficulty = float(assessment.get("part_difficulty") or 5.5)
-        def add(item, y, links):
-            total = sum(links.values())
-            if total <= 0:
-                return
-            identity = (student, item)
-            observations[identity] = dict(student=student, item=item, qkey=(session, question),
-                activity=("exam", session), session=session, source="exam", occurred_at=occurred,
-                week=week_of(occurred), d=difficulty, y=min(max(float(y), 0), 1),
-                links={k: v / total for k, v in sorted(links.items())})
         points = row.get("point_observations")
         if isinstance(points, list) and points:
             by_point = defaultdict(list)
@@ -122,8 +139,8 @@ def build_exam_observations(rows, resolver, session_times):
             for point_id, linked in by_point.items():
                 links = defaultdict(float)
                 for point in linked:
-                    for target in resolver.resolve(point["stable_key"]):
-                        links[target.stable_key] += float(point["weight"])
+                    for key in target_keys(point["stable_key"]):
+                        links[key] += float(point["weight"])
                 add((session, question, point_id), linked[0]["achieved"], links)
             continue
         score, full = row.get("score_awarded"), row.get("full_score")
@@ -134,10 +151,10 @@ def build_exam_observations(rows, resolver, session_times):
             for key, (part_score, part_full) in contributions.items():
                 if float(part_full) <= 0:
                     continue
-                for target in resolver.resolve(key):
-                    add((session, question, "t:" + target.stable_key), part_score / part_full, {target.stable_key: 1})
+                for target in target_keys(key):
+                    add((session, question, "t:" + target), part_score / part_full, {target: 1})
             continue
-        targets = {t.stable_key for k in (row.get("question_tags") or {}).get("knowledge_point", []) for t in resolver.resolve(k)}
+        targets = {t for k in (row.get("question_tags") or {}).get("knowledge_point", []) for t in target_keys(k)}
         add((session, question), float(score) / float(full), {t: 1 for t in targets})
     return list(observations.values())
 
@@ -165,36 +182,34 @@ def classify(mean, sd, parameters=MasteryParameters()):
     return "insufficient"
 
 
-def lbfgs(objective, initial, iterations=600, memory=10, *, loss=None):
-    """Use a matching scalar loss to skip gradients for rejected trials."""
+def lbfgs(objective, initial, iterations=600, memory=10):
+    """Evaluate each trial once; calculate its gradient only when accepted."""
     x = initial.copy()
-    value, grad = objective(x)
+    value, gradient = objective(x)
+    grad = gradient()
     history = []
     for _ in range(iterations):
         if np.max(np.abs(grad), initial=0) < 1e-6:
             break
         q, alphas = grad.copy(), []
-        for s, y in reversed(history):
-            alpha = (s @ q) / (y @ s)
+        for s, y, ys, _scale in reversed(history):
+            alpha = (s @ q) / ys
             alphas.append(alpha)
             q -= alpha * y
         if history:
-            s, y = history[-1]
-            q *= (s @ y) / (y @ y)
-        for (s, y), alpha in zip(history, reversed(alphas)):
-            q += s * (alpha - (y @ q) / (y @ s))
+            q *= history[-1][3]
+        for (s, y, ys, _scale), alpha in zip(history, reversed(alphas)):
+            q += s * (alpha - (y @ q) / ys)
         direction, step = -q, 1.0
-        if grad @ direction >= 0:
+        slope = grad @ direction
+        if slope >= 0:
             direction, history = -grad, []
+            slope = grad @ direction
         for _ in range(40):
             candidate = x + step * direction
-            if loss is None:
-                new_value, new_grad = objective(candidate)
-            else:
-                new_value = loss(candidate)
-            if new_value <= value + 1e-4 * step * (grad @ direction):
-                if loss is not None:
-                    new_value, new_grad = objective(candidate)
+            new_value, gradient = objective(candidate)
+            if new_value <= value + 1e-4 * step * slope:
+                new_grad = gradient()
                 break
             step *= 0.5
         else:
@@ -202,8 +217,9 @@ def lbfgs(objective, initial, iterations=600, memory=10, *, loss=None):
         if new_value >= value and step < 1.0:
             break
         s, y = candidate - x, new_grad - grad
-        if y @ s > 1e-12:
-            history = (history + [(s, y)])[-memory:]
+        ys = y @ s
+        if ys > 1e-12:
+            history = (history + [(s, y, ys, (s @ y) / (y @ y))])[-memory:]
         x, value, grad = candidate, new_value, new_grad
     return x
 
@@ -230,8 +246,11 @@ class MasteryModel:
         identity = key, week
         if cache is not None and identity in cache:
             return cache[identity]
-        sigma = self.parameters.sigma_theta if key[0] == "theta" else self.sigma(key[2])
-        indices = [(self._param(key, create, sigma), 1.0)]
+        index = self.index.get(key)
+        if index is None and create:
+            sigma = self.parameters.sigma_theta if key[0] == "theta" else self.sigma(key[2])
+            index = self._param(key, True, sigma)
+        indices = [(index, 1.0)] if index is not None else []
         tau = self.parameters.tau_theta if key[0] == "theta" else self.parameters.tau_kc
         dynamic = key[0] == "theta" or key[2] in self.dynamic_nodes
         weeks = self.state_weeks.get(key, ())
@@ -239,8 +258,13 @@ class MasteryModel:
             for previous, current in zip(weeks, weeks[1:]):
                 if current > week:
                     break
-                indices.append((self._param((*key, "delta", current), create, tau * math.sqrt(current - previous)), 1.0))
-        result = [(i, c) for i, c in indices if i is not None]
+                delta = (*key, "delta", current)
+                index = self.index.get(delta)
+                if index is None and create:
+                    index = self._param(delta, True, tau * math.sqrt(current - previous))
+                if index is not None:
+                    indices.append((index, 1.0))
+        result = indices
         if cache is not None:
             cache[identity] = result
         return result
@@ -267,7 +291,7 @@ class MasteryModel:
             index = self._param(("gamma",), create, 1)
             if index is not None:
                 entries[index] += 1
-        return list(entries.items())
+        return entries
 
     def fit(self, observations, *, iterations=600, laplace=True):
         self.observations = sorted(observations, key=lambda o: (o["week"], str(o["activity"]), o["student"], str(o["item"])))
@@ -289,30 +313,28 @@ class MasteryModel:
         self._param(("beta1",), True, 10)
         self.prec = np.array(self.prec)
         self.obs_index = np.array([r for r, row in enumerate(self.rows) for _ in row], dtype=int)
-        self.par_index = np.array([i for row in self.rows for i, _ in row], dtype=int)
-        self.coef = np.array([c for row in self.rows for _, c in row])
+        self.par_index = np.array([i for row in self.rows for i in row], dtype=int)
+        self.coef = np.array([c for row in self.rows for c in row.values()])
         self.y = np.array([o["y"] for o in self.observations])
         count = len(self.observations)
 
-        def objective(x, slip, *, gradient=True):
+        def objective(x, slip):
             eta = np.bincount(self.obs_index, self.coef * x[self.par_index], minlength=count)
-            q = sigmoid(eta) if gradient or slip else None
+            q = sigmoid(eta) if slip else None
             if slip == 0:
                 loss = np.sum(self.weights * (np.logaddexp(0, eta) - self.y * eta))
             else:
                 p = (1 - slip) * q
                 loss = -np.sum(self.weights * (self.y * (math.log1p(-slip) - np.logaddexp(0, -eta)) + (1 - self.y) * np.log1p(-p)))
-            if not gradient:
-                return loss + 0.5 * np.sum(self.prec * x*x)
-            residual = q - self.y if slip == 0 else (p - self.y) * (1 - q) / (1 - p)
-            grad = np.bincount(self.par_index, self.coef * (self.weights * residual)[self.obs_index], minlength=len(x))
-            return loss + 0.5 * np.sum(self.prec * x*x), grad + self.prec*x
+            def gradient():
+                residual = sigmoid(eta) - self.y if slip == 0 else (p - self.y) * (1 - q) / (1 - p)
+                grad = np.bincount(self.par_index, self.coef * (self.weights * residual)[self.obs_index], minlength=len(x))
+                return grad + self.prec*x
+            return loss + 0.5 * np.sum(self.prec * x*x), gradient
 
-        self.x = lbfgs(lambda x: objective(x, 0), np.zeros(len(self.prec)), iterations,
-                       loss=lambda x: objective(x, 0, gradient=False))
+        self.x = lbfgs(lambda x: objective(x, 0), np.zeros(len(self.prec)), iterations)
         if self.parameters.slip:
-            self.x = lbfgs(lambda x: objective(x, self.parameters.slip), self.x, iterations,
-                           loss=lambda x: objective(x, self.parameters.slip, gradient=False))
+            self.x = lbfgs(lambda x: objective(x, self.parameters.slip), self.x, iterations)
         self.cov = {}
         self._mastery_states = {}
         if laplace:
@@ -320,6 +342,7 @@ class MasteryModel:
         return self
 
     def _laplace(self):
+        values = self.x.tolist()
         local_indices = defaultdict(list)
         by_student = defaultdict(list)
         for key, i in self.index.items():
@@ -331,18 +354,29 @@ class MasteryModel:
             position = {i: j for j, i in enumerate(local)}
             hessian = np.diag(self.prec[local])
             patterns = {}
+            coordinates, increments = [], []
             for o, row, w in by_student[student]:
-                q = float(sigmoid(sum(c*self.x[i] for i, c in row)))
+                eta = 0.0
+                for i, c in row.items():
+                    eta += c * values[i]
+                q = float(sigmoid(eta))
                 s = self.parameters.slip
                 p = (1-s)*q
                 curvature = (1-s)*q*(1-q)**2/(1-p) - (p-o["y"])*s*q*(1-q)/(1-p)**2
-                pattern = tuple((position[i], c) for i, c in row if i in position)
+                pattern = tuple((position[i], c) for i, c in row.items() if i in position)
                 if pattern not in patterns:
                     indices, coefficients = zip(*pattern)
                     coefficients = np.asarray(coefficients, dtype=float)
-                    patterns[pattern] = np.ix_(indices, indices), np.outer(coefficients, coefficients)
+                    columns = np.asarray(indices)
+                    coordinates_for_pattern = (columns[:, None] * len(local) + columns).ravel()
+                    patterns[pattern] = coordinates_for_pattern, np.outer(coefficients, coefficients).ravel()
                 positions, outer = patterns[pattern]
-                hessian[positions] += w * curvature * outer
+                coordinates.append(positions)
+                increments.append(w * curvature * outer)
+            if coordinates:
+                # add.at keeps each observation's addition order, including
+                # the prior already in hessian, without copying a block per row.
+                np.add.at(hessian.ravel(), np.concatenate(coordinates), np.concatenate(increments))
             self.cov[student] = position, np.linalg.inv(hessian)
 
     def mastery(self, student, node, week):
@@ -395,5 +429,5 @@ class MasteryModel:
                 "interval_high": float(scale*sigmoid(mean+1.2816*sd)), "tier": classify(mean, sd, self.parameters)}
 
     def predict(self, observation):
-        eta = sum(c*self.x[i] for i, c in self._entries(observation, False))
+        eta = sum(c*self.x[i] for i, c in self._entries(observation, False).items())
         return float((1-self.parameters.slip)*sigmoid(eta))

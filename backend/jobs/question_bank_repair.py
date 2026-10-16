@@ -17,6 +17,7 @@ from integration.data_generation import (
 )
 from integration.result_cache import ResultCache
 from question_bank.database.schema import connect
+from question_bank.question_types import type_candidate_fingerprint
 from question_bank.services.question_read_service import (
     QuestionBankReadService,
     _ACTIVE_READ_SCOPE,
@@ -103,24 +104,17 @@ def _with_type_contracts(questions, db_path: Path, governance=None):
             for question in questions]
 
 
-def _type_candidate_fingerprint(question) -> str:
-    from question_bank.question_types import is_type_key
-    candidates = sorted((row for row in question.taxonomy_contract.get('candidates', {}).get('knowledge', [])
-                         if is_type_key(row.get('id'))), key=lambda row: row['id'])
-    return sha256(json.dumps(candidates, sort_keys=True, ensure_ascii=False,
-                            separators=(',', ':')).encode()).hexdigest()
-
-
-def _current_type_review(value: str, question, release: str) -> bool:
+def _current_type_review(value: str, question) -> bool:
     from question_bank.training_criteria.analysis import compatible_source_content_hashes
     try:
         review = json.loads(value)
     except (TypeError, ValueError):
         return False
     return bool(isinstance(review, dict) and review.get('status') == 'type_unclassified'
-                and review.get('release_id') == release
+                and review.get('review_source') == 'model_result'
+                and isinstance(review.get('reason'), str) and review['reason'].strip()
                 and review.get('source_hash') in compatible_source_content_hashes(question, kind='tag')
-                and review.get('type_candidate_fingerprint') == _type_candidate_fingerprint(question))
+                and review.get('type_candidate_fingerprint') == type_candidate_fingerprint(question.taxonomy_contract))
 
 
 def _skill_candidate_state_token() -> tuple[object, ...]:
@@ -291,25 +285,33 @@ def _compute_repair_preview(service: QuestionBankReadService, volume_id: str, ki
                 profile = profiles_all.get(qid, {})
                 row = rows[qid]
                 blocked = ''
+                blocked_kind = ''
                 if qid in load_failures:
                     blocked = str(_failure(qid, 'validation', reason_code=load_failures[qid])['message'])
+                    blocked_kind = 'source'
                 elif qid not in inputs or not inputs[qid].has_required_images:
                     blocked = '题目内容或图片无法读取，请先检查原题'
+                    blocked_kind = 'source'
                 elif not snapshot['release']:
                     blocked = '当前知识标准不可用'
+                    blocked_kind = 'standard'
                 elif any(part in missing for part in ('skills', 'knowledge_points')) and str(profile.get('evidence_version_id', '')) in teacher:
                     blocked = '教师已确认关联，请打开题目人工核对'
+                    blocked_kind = 'review'
                 if pending_states[qid]['workspace'].get('state') == 'rejected':
                     blocked = '训练判定已拒绝，请先核对题面或人工修正'
-                type_pending = '本章题型尚未整理，暂时待归类' if 'types' in missing and qid in inputs and inputs[qid].taxonomy_contract.get('question_type_mode') is not True else ''
+                    blocked_kind = 'review'
+                type_pending = '本章尚无候选题型，需在基础分析完成后按章整理题型' if 'types' in missing and qid in inputs and inputs[qid].taxonomy_contract.get('question_type_mode') is not True else ''
                 if 'types' in missing and qid in inputs and any(
-                        _current_type_review(value, inputs[qid], str(snapshot['release']))
+                        _current_type_review(value, inputs[qid])
                         for value in type_reviews.get(qid, ())):
-                    type_pending = '已核对当前候选，暂无适合题型，待标准整理'
-                if type_pending and missing == ['types']:
+                    type_pending = '已核对当前候选，暂无合适题型；保留待归类，整理题型或调整候选范围后再匹配'
+                if type_pending and missing == ['types'] and not blocked:
                     blocked = type_pending
+                    blocked_kind = 'type_pending'
                 item = {'id': qid, 'question_number': str(row['question_number']), 'paper_title': row['paper_title'],
-                        'missing': missing, 'blocked_reason': blocked, 'type_pending_reason': type_pending}
+                        'missing': missing, 'blocked_reason': blocked, 'blocked_kind': blocked_kind,
+                        'type_pending_reason': type_pending}
                 if qid in load_failures:
                     item['blocked_reason_code'] = load_failures[qid]
                 # Internal revision has no question body and is never returned in job diagnostics.

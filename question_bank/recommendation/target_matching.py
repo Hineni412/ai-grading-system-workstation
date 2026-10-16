@@ -299,7 +299,9 @@ _FACETS_CACHE: dict[tuple[Any, ...], dict[int, dict[str, Any]]] = {}
 
 
 def load_question_facets(db_path: Path, resolver: CurrentKnowledgeResolver,
-                         question_ids: Sequence[int] | None = None) -> dict[int, dict[str, Any]]:
+                         question_ids: Sequence[int] | None = None, *,
+                         include_practice_observations: bool = True,
+                         association_skill_keys: Sequence[str] | None = None) -> dict[int, dict[str, Any]]:
     """Read existing tags and current point links; never create analyses or versions."""
     from question_bank.solution_evidence.knowledge_links import load_point_links
     from question_bank.services.question_read_service import _source_generation_token
@@ -316,19 +318,39 @@ def load_question_facets(db_path: Path, resolver: CurrentKnowledgeResolver,
             # Reuse the existing read generation rather than scanning five
             # source tables just to decide whether to scan them again.
             # Any bank commit invalidates; no updated_at convention is assumed.
-            cache_key = (resolver.release_id, generation)
+            cache_key = (resolver.release_id, generation, include_practice_observations,
+                         tuple(sorted(association_skill_keys)) if association_skill_keys is not None else None)
             with _FACETS_CACHE_LOCK:
                 cached = _FACETS_CACHE.get(cache_key)
                 if cached is not None:
                     return cached
         index = target_index(resolver)
         ids = set(question_ids) if question_ids is not None else None
+        if association_skill_keys is not None:
+            wanted = set(association_skill_keys)
+            # Include every release/version: the authoritative link reader
+            # below still chooses the current or compatible historical rows.
+            # This is only a broad prefilter, including cross-volume questions.
+            # stable_key is the stored canonical identity, already resolved at
+            # link publication. Do not scan/resolve every bank term again.
+            raw_keys = sorted(wanted)
+            matching = set()
+            for start in range(0, len(raw_keys), 500):
+                batch = raw_keys[start:start + 500]
+                marks = ','.join('?' for _ in batch)
+                matching.update(int(row[0]) for row in conn.execute(
+                    f"SELECT DISTINCT question_id FROM evidence_point_knowledge_links "
+                    f"WHERE role='direct' AND stable_key IN ({marks})", batch))
+            ids = matching if ids is None else ids & matching
+            if not ids:
+                return {}
+        restriction = '' if ids is None else ' AND q.id IN (' + ','.join(str(int(qid)) for qid in ids) + ')'
         rows = [r for r in conn.execute("""
             SELECT q.id, s.evidence_version_id, v.evidence_json
             FROM questions q JOIN question_scope_summary s ON s.question_id=q.id
             JOIN question_solution_evidence_versions v ON v.evidence_version_id=s.evidence_version_id
             WHERE q.is_deleted=0 AND v.status IN ('approved','proposed')
-        """) if ids is None or int(r["id"]) in ids]
+        """ + restriction)]
         tags: dict[int, list[str]] = {}
         secondary: dict[int, list[str]] = {}
         for row in conn.execute("SELECT question_id, tag_type, tag_value FROM question_tags WHERE tag_type IN ('knowledge_point','secondary_type')"):
@@ -344,10 +366,11 @@ def load_question_facets(db_path: Path, resolver: CurrentKnowledgeResolver,
             topics = topic_keys(tags.get(qid, []), resolver, index)
             evidence = json.loads(row["evidence_json"])
             facets = part_facets(evidence, links.get(str(row["evidence_version_id"]), {}), resolver, index, topics)
-            practice = _question_evidence_metadata(evidence, resolver, links=links.get(str(row["evidence_version_id"]), {}))
+            practice = (_question_evidence_metadata(evidence, resolver, links=links.get(str(row["evidence_version_id"]), {}))
+                        if include_practice_observations else {})
             result[qid] = {"parts": facets, "topic_keys": topics,
                            "evidence_version_id": str(row["evidence_version_id"]),
-                           "practice_observations_by_key": practice["practice_observations_by_key"],
+                           "practice_observations_by_key": practice.get("practice_observations_by_key", {}),
                            "skill_keys": sorted({key for part in facets for key in part["skill_keys"]}),
                            "type_keys": sorted({key for part in facets for key in part["type_keys"]}),
                            "secondary_type_keys": sorted({key for key in secondary.get(qid, []) if is_type_key(key)})}

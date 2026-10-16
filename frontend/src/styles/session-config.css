@@ -1272,8 +1272,12 @@
 .config-source__picker {
   display: grid;
   min-width: 0;
-  gap: 0;
+  gap: var(--space-2);
   font-weight: var(--font-weight-medium);
+}
+
+.config-source__mode {
+  justify-self: start;
 }
 
 .config-source__native-input {

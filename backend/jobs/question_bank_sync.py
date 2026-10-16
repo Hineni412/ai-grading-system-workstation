@@ -112,10 +112,9 @@ def run_session_question_bank_sync_job(
         payload.get("source_paper_sha256"),
         "source_paper_sha256",
     )
-    config_revision = _sha256(
-        payload.get("config_revision"),
-        "config_revision",
-    )
+    config_revision = str(payload.get("config_revision") or "").strip()
+    if not config_revision or len(config_revision) > 256:
+        raise ValueError("config_revision must be a nonempty version")
     mode = str(payload.get("mode") or "").strip()
     if mode not in {"sync", "sync_retry", "tag_retry"}:
         raise ValueError("unsupported question-bank sync mode")

@@ -49,7 +49,7 @@ function exact(value: Record<string, unknown>, keys: string[]): boolean {
   return Object.keys(value).sort().join('|') === [...keys].sort().join('|')
 }
 function positive(value: unknown): value is number { return Number.isSafeInteger(value) && Number(value) > 0 }
-function hash(value: unknown): value is string { return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value) }
+function revision(value: unknown): value is string { return typeof value === 'string' && value.trim().length > 0 && value.length <= 4096 }
 function safeUrl(value: unknown): value is string {
   return typeof value === 'string' && /^\/api\/sessions\/\d+\/template\/pages\/(front|back)$/.test(value)
 }
@@ -60,7 +60,7 @@ function page(value: unknown): value is TemplatePage {
 function decodeTemplate(value: unknown): TemplateSummary {
   if (!isRecord(value) || !exact(value, ['session_id', 'template_id', 'template_fingerprint',
     'first_page_role', 'pages', 'is_confirmed', 'regions_snapshot_pending'])
-    || !positive(value.session_id) || !positive(value.template_id) || !hash(value.template_fingerprint)
+    || !positive(value.session_id) || !positive(value.template_id) || !revision(value.template_fingerprint)
     || (value.first_page_role !== 'front' && value.first_page_role !== 'back')
     || !isRecord(value.pages) || !exact(value.pages, ['front', 'back'])
     || !page(value.pages.front) || !page(value.pages.back)
@@ -116,7 +116,7 @@ function decodeDraft(value: unknown): RegionDraftResponse {
   if (!isRecord(value) || !exact(value, ['status', 'session_id', 'template_id', 'template_fingerprint', 'draft'])
     || (value.reason != null && typeof value.reason !== 'string')
     || typeof value.status !== 'string' || !positive(value.session_id) || !positive(value.template_id)
-    || !hash(value.template_fingerprint) || (value.draft !== null && (!isRecord(value.draft)
+    || !revision(value.template_fingerprint) || (value.draft !== null && (!isRecord(value.draft)
       || !exact(value.draft, ['revision', 'regions']) || !Number.isSafeInteger(value.draft.revision)
       || !Array.isArray(value.draft.regions) || !value.draft.regions.every(region)))) {
     throw new Error('Invalid region draft response')
@@ -156,7 +156,7 @@ export function fetchRegionAutoProposal(id: number, signal?: AbortSignal): Promi
         || !Array.isArray(value.regions) || !value.regions.every(region)
         || !Array.isArray(value.missing_question_ids)
         || !value.missing_question_ids.every((item) => typeof item === 'string')
-        || !hash(value.template_fingerprint)) throw new Error('Invalid region auto proposal')
+        || !revision(value.template_fingerprint)) throw new Error('Invalid region auto proposal')
       return value as unknown as RegionAutoProposal
     },
   })
@@ -185,7 +185,7 @@ export function assignTemplatePageRole(
   firstPageRole: PageRole,
   expectedTemplateFingerprint: string,
 ): Promise<TemplatePageAssignment> {
-  if (!hash(expectedTemplateFingerprint)) throw new Error('Invalid template fingerprint')
+  if (!revision(expectedTemplateFingerprint)) throw new Error('Invalid template fingerprint')
   return apiClient.request(`/api/sessions/${sessionId(id)}/template/page-assignment`, {
     method: 'PUT',
     body: {
@@ -208,7 +208,7 @@ export function commitRegions(id: number, request: { regions: Region[]; image_si
   return apiClient.request(`/api/sessions/${sessionId(id)}/regions/commit`, { method: 'POST', body: request, decode: decodeCommit })
 }
 export function retryRegionSnapshot(id: number, fingerprint: string): Promise<RegionCommitResponse> {
-  if (!hash(fingerprint)) throw new Error('Invalid template fingerprint')
+  if (!revision(fingerprint)) throw new Error('Invalid template fingerprint')
   return apiClient.request(`/api/sessions/${sessionId(id)}/regions/snapshot/retry`, { method: 'POST',
     body: { expected_template_fingerprint: fingerprint }, decode: decodeCommit })
 }

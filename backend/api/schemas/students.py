@@ -64,7 +64,7 @@ class StudentUpsertRequest(BaseModel):
 
 
 class StudentUpdateRequest(StudentUpsertItem):
-    expected_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_revision: str = Field(min_length=1, max_length=256)
 
 
 class StudentResponse(BaseModel):
@@ -95,12 +95,12 @@ class StudentDeleteResponse(BaseModel):
     deleted_attendance: int
     unlinked_papers: int
     backup_created: bool
-    roster_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    roster_revision: str = Field(min_length=1, max_length=256)
 
 
 class StudentMutationResponse(BaseModel):
     student: StudentResponse
-    roster_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    roster_revision: str = Field(min_length=1, max_length=256)
 
 
 class StudentDeletionCounts(BaseModel):
@@ -115,7 +115,7 @@ class StudentDeletionCounts(BaseModel):
 class StudentDeletionImpactResponse(BaseModel):
     student: StudentResponse
     counts: StudentDeletionCounts
-    roster_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    roster_revision: str = Field(min_length=1, max_length=256)
 
 
 class StudentImportMapping(BaseModel):
@@ -149,7 +149,7 @@ class StudentImportPreviewResponse(BaseModel):
     mapping: StudentImportMapping
     counts: StudentImportCounts
     rows: list[StudentImportRowResponse]
-    roster_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    roster_revision: str = Field(min_length=1, max_length=256)
     issues: list[str]
 
 
@@ -160,11 +160,11 @@ class StudentWorkspaceResponse(BaseModel):
     page_size: int
     total_pages: int
     class_names: list[str]
-    roster_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    roster_revision: str = Field(min_length=1, max_length=256)
 
 
 class StudentImportCommitRequest(BaseModel):
-    expected_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_revision: str = Field(min_length=1, max_length=256)
     items: list[StudentUpsertItem] = Field(min_length=1, max_length=10000)
 
 
@@ -173,7 +173,7 @@ class StudentImportCommitResponse(BaseModel):
     updated: int
     unchanged: int
     total: int
-    roster_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    roster_revision: str = Field(min_length=1, max_length=256)
 
 
 class StudentExamResultItem(BaseModel):

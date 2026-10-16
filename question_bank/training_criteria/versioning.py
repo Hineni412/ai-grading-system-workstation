@@ -117,11 +117,12 @@ def blocking_quality_codes(codes: Sequence[str]) -> tuple[str, ...]:
 def evaluate_criterion_quality(
     question: QuestionAnalysisInput,
     draft: TrainingCriteriaDraft,
+    *, verify_source: bool = True,
 ) -> QualityGateResult:
     codes: list[str] = []
     if draft.question_id != question.question_id:
         codes.append("question_mismatch")
-    if draft.source_content_hash != question.criterion_source_content_hash:
+    if verify_source and draft.source_content_hash != question.criterion_source_content_hash:
         codes.append("source_stale")
     if not draft.points:
         codes.append("no_points")
@@ -278,6 +279,7 @@ def saved_criteria_states(
     connection: sqlite3.Connection,
     question_ids: Iterable[int],
     profiles: Mapping[int, Mapping[str, Any]],
+    *, include_history: bool = True,
 ) -> dict[int, dict[str, Any]]:
     """Classify criterion readiness from saved rows only.
 
@@ -301,13 +303,25 @@ def saved_criteria_states(
             ).fetchall()
         }
         versions: dict[int, list[Any]] = {}
+        # Readiness depends on the current/approved heads, not old bodies.
+        # Keep existence separately: orphan history must not look like a new
+        # question with no saved criteria at all.
+        saved_ids = set()
+        version_filter = ""
+        if not include_history:
+            saved_ids = {int(row[0]) for row in connection.execute(
+                f"SELECT DISTINCT question_id FROM training_criterion_versions "
+                f"WHERE question_id IN ({placeholders})", batch)}
+            version_filter = f""" AND version_id IN (
+                SELECT current_version_id FROM training_criterion_heads WHERE question_id IN ({placeholders})
+                UNION SELECT approved_version_id FROM training_criterion_heads WHERE question_id IN ({placeholders}))"""
         for row in connection.execute(
             f"""
             SELECT * FROM training_criterion_versions
-            WHERE question_id IN ({placeholders})
+            WHERE question_id IN ({placeholders}) {version_filter}
             ORDER BY question_id, version_number DESC
             """,
-            batch,
+            batch if include_history else [*batch, *batch, *batch],
         ).fetchall():
             versions.setdefault(int(row["question_id"]), []).append(row)
         for question_id in batch:
@@ -319,7 +333,8 @@ def saved_criteria_states(
             criteria_ready = (
                 usable is not None and str(usable.get("status") or "") != "stale"
             ) or _criterion_covered_by_current_evidence(usable, profile) or (
-                head is None and not rows and bool(profile and profile.get("available")))
+                head is None and not rows and question_id not in saved_ids
+                and bool(profile and profile.get("available")))
             result[question_id] = {
                 "criteria_ready": criteria_ready,
                 "criteria_needs_review": not criteria_ready and bool(
@@ -337,9 +352,11 @@ def saved_analysis_states(
     connection: sqlite3.Connection,
     question_ids: Iterable[int],
     profiles: Mapping[int, Mapping[str, Any]],
+    *, include_history: bool = True,
 ) -> dict[int, dict[str, Any]]:
     """Saved evidence + criterion readiness shared by previews and repair jobs."""
-    states = saved_criteria_states(connection, question_ids, profiles)
+    states = saved_criteria_states(connection, question_ids, profiles,
+                                  include_history=include_history)
     return {
         question_id: {
             "evidence_ready": bool(
@@ -397,6 +414,7 @@ class TrainingCriterionModule:
         self, questions: Sequence[QuestionAnalysisInput],
         *, connection=None, profiles: Mapping[int, Mapping[str, Any]] | None = None,
         verify_source: bool = False,
+        include_history: bool = True,
     ) -> dict[int, dict[str, Any]]:
         """Read saved workspaces; current-source checks are explicit for adoption."""
         by_id = {question.question_id: question for question in questions}
@@ -419,12 +437,15 @@ class TrainingCriterionModule:
                     ).fetchall()
                 }
                 versions: dict[int, list[Any]] = {}
+                version_filter = "" if include_history else """ AND version_id IN (
+                    SELECT current_version_id FROM training_criterion_heads WHERE question_id IN ({marks})
+                    UNION SELECT approved_version_id FROM training_criterion_heads WHERE question_id IN ({marks}))""".format(marks=placeholders)
                 for row in connection.execute(
                     f"""
                     SELECT * FROM training_criterion_versions
-                    WHERE question_id IN ({placeholders})
+                    WHERE question_id IN ({placeholders}) {version_filter}
                     ORDER BY question_id, version_number DESC
-                    """, batch,
+                    """, batch if include_history else [*batch, *batch, *batch],
                 ).fetchall():
                     versions.setdefault(int(row["question_id"]), []).append(row)
                 for question_id in batch:
@@ -475,7 +496,7 @@ class TrainingCriterionModule:
                     or rejected_evidence["version_id"] == profile["evidence"].get("version_id"))
             if not rejected:
                 try:
-                    derived = _version_from_profile(question, profile)
+                    derived = _version_from_profile(question, profile, verify_source=verify_source)
                 except (KeyError, TypeError, ValueError):
                     derived = None
                 if derived is not None:
@@ -1488,7 +1509,7 @@ class TrainingCriterionModule:
         return self._backfill(connection, run_id)
 
 
-def _evidence_from_payload(question: QuestionAnalysisInput, payload: Mapping[str, Any]):
+def _evidence_from_payload(question: QuestionAnalysisInput, payload: Mapping[str, Any], *, source_hash: str | None = None):
     from question_bank.solution_evidence.contracts import CoreResolution, QuestionSolutionEvidence
     from question_bank.solution_evidence.repository import _model_evidence_payload
     resolutions = {
@@ -1504,22 +1525,25 @@ def _evidence_from_payload(question: QuestionAnalysisInput, payload: Mapping[str
     model = _model_evidence_payload(payload)
     return QuestionSolutionEvidence.from_model_dict(
         {key: model[key] for key in ("schema_version", "question_id", "parts", "auxiliary_rules", "rationale", "confidence")},
-        question_id=question.question_id, source_content_hash=question.criterion_source_content_hash,
+        question_id=question.question_id, source_content_hash=(
+            question.criterion_source_content_hash if source_hash is None else source_hash),
         resolver=StoredResolver(),
     )
 
 
-def _version_from_profile(question: QuestionAnalysisInput, profile: Mapping[str, Any]) -> dict[str, Any]:
+def _version_from_profile(question: QuestionAnalysisInput, profile: Mapping[str, Any], *, verify_source: bool = True) -> dict[str, Any]:
     from question_bank.training_criteria.analysis import training_criteria_from_solution_evidence
+    source_hash = (question.criterion_source_content_hash if verify_source else
+                   str(profile.get("evidence_source_hash") or profile["evidence"]["source_content_hash"]))
     draft = training_criteria_from_solution_evidence(
-        _evidence_from_payload(question, profile["evidence"]), question=question,
+        _evidence_from_payload(question, profile["evidence"], source_hash=source_hash), question=question,
     )
-    quality = evaluate_criterion_quality(question, draft)
+    quality = evaluate_criterion_quality(question, draft, verify_source=verify_source)
     criteria = draft.to_dict()
     return {
         "version_id": str(profile["evidence_version_id"]), "question_id": question.question_id,
         "version_number": 1, "parent_version_id": None,
-        "source_content_hash": question.criterion_source_content_hash,
+        "source_content_hash": source_hash,
         "schema_version": draft.schema_version, "status": str(profile["evidence_status"]),
         "source_kind": (str(profile.get("source_kind"))
             if profile.get("source_kind") in {"combined_model", "teacher_manual", "backfill"} else "backfill"),

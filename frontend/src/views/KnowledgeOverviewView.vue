@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { assemblyApi, type AssemblyQuestion } from '../api/assembly'
 import {
@@ -19,7 +19,6 @@ import OverviewScopeBar from '../components/knowledge-overview/OverviewScopeBar.
 import OverviewMapRows from '../components/knowledge-overview/OverviewMapRows.vue'
 import OverviewTierBar from '../components/knowledge-overview/OverviewTierBar.vue'
 import StudentTierChips from '../components/knowledge-overview/StudentTierChips.vue'
-import QuestionContentRenderer from '../components/question-bank/QuestionContentRenderer.vue'
 import { compareFocusNodes, formatPercent, masteryDetail, shortNodeName } from '../components/knowledge-overview/model'
 import { RATE_BANDS, chapterMetrics, nodeMastery, rateBand, isItem, itemWeakCount, nodeLocation, relatedNodes, scoreOpportunities, volumeItems } from '../components/knowledge-overview/metrics'
 import { saveEvidenceScope, semesterEvidenceQuery } from '../features/evidence-scope/session'
@@ -29,6 +28,7 @@ import { useMasteryOverviewStore } from '../stores/mastery-overview'
 import '../styles/knowledge-overview.css'
 import '../styles/knowledge-graph.css'
 const route = useRoute(), router = useRouter()
+const QuestionContentRenderer = defineAsyncComponent(() => import('../components/question-bank/QuestionContentRenderer.vue'))
 const curriculum = useCurriculumScopeStore(), store = useMasteryOverviewStore()
 const overview = computed(() => store.overview)
 // Typed releases present question types instead of the topic/skill columns.

@@ -34,7 +34,7 @@
     "CREATE TABLE mastery_v2_spot_checks (\n    evaluation_id TEXT NOT NULL,\n    item_hash TEXT NOT NULL,\n    decision TEXT NOT NULL CHECK (decision IN ('accepted', 'rejected')),\n    teacher_ref TEXT NOT NULL,\n    reason TEXT NOT NULL,\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    PRIMARY KEY(evaluation_id, item_hash),\n    CHECK (TRIM(teacher_ref) <> ''),\n    CHECK (TRIM(reason) <> ''),\n    FOREIGN KEY(evaluation_id, item_hash)\n        REFERENCES mastery_v2_evaluation_items(evaluation_id, item_hash)\n        ON DELETE CASCADE\n)",
     "CREATE TABLE paper_permanent_delete_receipts (\n    request_token TEXT PRIMARY KEY,\n    request_fingerprint TEXT NOT NULL,\n    result_json TEXT NOT NULL,\n    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))\n)",
     "CREATE TABLE paper_question_occurrences (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    paper_id INTEGER NOT NULL,\n    question_id INTEGER NOT NULL,\n    question_number TEXT NOT NULL,\n    match_kind TEXT NOT NULL DEFAULT 'exact'\n        CHECK (match_kind IN ('exact')),\n    signature TEXT NOT NULL DEFAULT '',\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    FOREIGN KEY(paper_id) REFERENCES papers(id),\n    FOREIGN KEY(question_id) REFERENCES questions(id)\n)",
-    "CREATE TABLE papers (\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                title TEXT,\n                source_file TEXT,\n                year TEXT,\n                province TEXT,\n                city TEXT,\n                district TEXT,\n                exam_type TEXT,\n                grade TEXT,\n                semester TEXT,\n                textbook_version TEXT,\n                import_status TEXT,\n                content_fingerprint TEXT,\n                created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n                updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))\n            , deleted_at TEXT, deleted_from_status TEXT, delete_operation_id TEXT, folder_name TEXT)",
+    "CREATE TABLE papers (\n                id INTEGER PRIMARY KEY AUTOINCREMENT,\n                title TEXT,\n                source_file TEXT,\n                year TEXT,\n                province TEXT,\n                city TEXT,\n                district TEXT,\n                exam_type TEXT,\n                grade TEXT,\n                semester TEXT,\n                textbook_version TEXT,\n                import_status TEXT,\n                content_fingerprint TEXT,\n                created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n                updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))\n            , deleted_at TEXT, deleted_from_status TEXT, delete_operation_id TEXT, folder_name TEXT, is_exam_reference INTEGER NOT NULL DEFAULT 0 CHECK (is_exam_reference IN (0, 1)), year_confirmed INTEGER NOT NULL DEFAULT 0 CHECK (year_confirmed IN (0, 1)))",
     "CREATE TABLE personalized_paper_batch_items (\n    batch_run_id TEXT NOT NULL,\n    student_id TEXT NOT NULL,\n    item_order INTEGER NOT NULL CHECK (item_order >= 1),\n    status TEXT NOT NULL DEFAULT 'pending'\n        CHECK (status IN ('pending', 'running', 'succeeded', 'failed')),\n    paper_instance_id TEXT,\n    error_code TEXT,\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    PRIMARY KEY(batch_run_id, student_id),\n    CHECK (\n        (status IN ('pending', 'running') AND paper_instance_id IS NULL AND error_code IS NULL)\n        OR (status = 'succeeded' AND paper_instance_id IS NOT NULL AND error_code IS NULL)\n        OR (status = 'failed' AND paper_instance_id IS NULL AND error_code IS NOT NULL)\n    ),\n    FOREIGN KEY(batch_run_id)\n        REFERENCES personalized_paper_batches(batch_run_id)\n        ON DELETE CASCADE,\n    FOREIGN KEY(paper_instance_id)\n        REFERENCES personalized_paper_instances(paper_instance_id)\n        ON DELETE RESTRICT\n)",
     "CREATE TABLE personalized_paper_batches (\n    batch_run_id TEXT PRIMARY KEY,\n    operation_token TEXT NOT NULL UNIQUE,\n    operation_fingerprint TEXT NOT NULL,\n    request_json TEXT NOT NULL,\n    draft_id TEXT NOT NULL,\n    draft_revision INTEGER NOT NULL CHECK (draft_revision >= 1),\n    paper_batch_id TEXT NOT NULL,\n    status TEXT NOT NULL DEFAULT 'creating'\n        CHECK (status IN ('creating', 'complete', 'partial', 'failed', 'cancelled')),\n    requested_count INTEGER NOT NULL DEFAULT 0 CHECK (requested_count >= 0),\n    succeeded_count INTEGER NOT NULL DEFAULT 0 CHECK (succeeded_count >= 0),\n    failed_count INTEGER NOT NULL DEFAULT 0 CHECK (failed_count >= 0),\n    manifest_path TEXT,\n    bundle_path TEXT,\n    frozen_bundle_path TEXT,\n    created_by TEXT NOT NULL,\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    CHECK (length(batch_run_id) = 64),\n    CHECK (length(operation_token) = 32),\n    CHECK (length(operation_fingerprint) = 64),\n    CHECK (length(draft_id) = 64),\n    CHECK (length(paper_batch_id) = 64),\n    FOREIGN KEY(draft_id)\n        REFERENCES personalized_recommendation_drafts(draft_id)\n        ON DELETE RESTRICT\n)",
     "CREATE TABLE personalized_paper_events (\n    event_id INTEGER PRIMARY KEY AUTOINCREMENT,\n    paper_instance_id TEXT NOT NULL,\n    operation_token TEXT NOT NULL UNIQUE,\n    operation_fingerprint TEXT NOT NULL,\n    event_type TEXT NOT NULL\n        CHECK (event_type IN ('created', 'frozen')),\n    actor_ref TEXT NOT NULL,\n    expected_revision INTEGER NOT NULL CHECK (expected_revision >= 0),\n    resulting_revision INTEGER NOT NULL CHECK (resulting_revision >= 1),\n    details_json TEXT NOT NULL,\n    resulting_instance_json TEXT NOT NULL,\n    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),\n    CHECK (length(operation_token) = 32),\n    CHECK (length(operation_fingerprint) = 64),\n    CHECK (json_valid(details_json)),\n    CHECK (json_valid(resulting_instance_json)),\n    FOREIGN KEY(paper_instance_id)\n        REFERENCES personalized_paper_instances(paper_instance_id)\n        ON DELETE CASCADE\n)",
@@ -816,6 +816,10 @@
     [
       "049_deduplicate_recommendation_drafts",
       "cf397ef6757b4cdcf463d217787c61f9"
+    ],
+    [
+      "050_add_exam_reference",
+      "402288bae6db6fea8b201584010e90ce"
     ]
   ],
   "schema": {
@@ -6811,7 +6815,10 @@
         ]
       },
       "papers": {
-        "checks": [],
+        "checks": [
+          "is_exam_reference in (0, 1)",
+          "year_confirmed in (0, 1)"
+        ],
         "columns": {
           "city": [
             "text",
@@ -6897,6 +6904,13 @@
             0,
             0
           ],
+          "is_exam_reference": [
+            "integer",
+            1,
+            "0",
+            0,
+            0
+          ],
           "province": [
             "text",
             0,
@@ -6943,6 +6957,13 @@
             "text",
             0,
             "none",
+            0,
+            0
+          ],
+          "year_confirmed": [
+            "integer",
+            1,
+            "0",
             0,
             0
           ]

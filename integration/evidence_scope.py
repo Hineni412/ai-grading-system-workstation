@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -18,6 +16,7 @@ class ResolvedEvidenceScope:
     score_profiles: Mapping[str, dict[str, Any]]
     historical_session_ids_by_student: Mapping[str, tuple[int, ...]]
     warnings: tuple[str, ...]
+    revision: str = ""
 
     def normalized_scope(self, request: Mapping[str, Any]) -> dict[str, Any]:
         class_ids = _text_list(request.get("class_ids"))
@@ -42,9 +41,7 @@ class ResolvedEvidenceScope:
                 for student_id, profile in self.score_profiles.items()
             },
         }
-        result["scope_revision"] = hashlib.sha256(
-            json.dumps(result, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
+        result["scope_revision"] = self.revision
         return result
 
 
@@ -60,6 +57,9 @@ class EvidenceScopeResolver:
         scope: Mapping[str, Any],
         exam_scope: Mapping[str, Any],
     ) -> ResolvedEvidenceScope:
+        from integration.data_generation import data_version_token
+
+        revision = str((data_version_token(self.db.db_path, "results") or ())[1:])
         warnings: list[str] = []
         all_sessions = [
             dict(item)
@@ -92,6 +92,7 @@ class EvidenceScopeResolver:
             score_profiles=score_profiles,
             historical_session_ids_by_student=history_ids,
             warnings=tuple(warnings),
+            revision=revision,
         )
 
     def _resolve_sessions(

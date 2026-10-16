@@ -39,6 +39,7 @@ from question_bank.taxonomy.curriculum_catalog import (
     curriculum_knowledge_node,
     curriculum_volume_contract,
     eligible_curriculum_knowledge_nodes,
+    load_curriculum_catalog,
 )
 
 ALLOWED_DIMENSIONS = (
@@ -1786,11 +1787,20 @@ class TaxonomyGovernance:
         knowledge_release: Mapping[str, Any],
     ) -> dict[str, Any]:
         values = _context_mapping(context)
+        from question_bank.services.exam_reference import is_entrance_paper
+        entrance = bool(is_entrance_paper(values))
         volume_contract = curriculum_volume_contract(
             values.get("curriculum_volume_id")
         )
+        if entrance and volume_contract is not None:
+            contracts = [curriculum_volume_contract(v["id"]) for v in load_curriculum_catalog()["volumes"]]
+            volume_contract = {**volume_contract,
+                "chapters": [c for contract in contracts for c in contract["chapters"]],
+                "sections": [s for contract in contracts for s in contract["sections"]],
+                "eligible_knowledge_volume_ids": contracts[-1]["eligible_knowledge_volume_ids"],
+                "eligible_knowledge_count": contracts[-1]["eligible_knowledge_count"]}
         scoped_knowledge_nodes = (
-            eligible_curriculum_knowledge_nodes(volume_contract["id"])
+            eligible_curriculum_knowledge_nodes(load_curriculum_catalog()["volumes"][-1]["id"] if entrance else volume_contract["id"])
             if volume_contract is not None
             else ()
         )
@@ -2042,7 +2052,7 @@ class TaxonomyGovernance:
                             item["usage"] = "mapped"
                         item["allowed_roles"] = (
                             ["direct", "supporting_prerequisite"]
-                            if str(metadata.get("volume_id") or "") == volume_id
+                            if entrance or str(metadata.get("volume_id") or "") == volume_id
                             else ["supporting_prerequisite"]
                         )
                     knowledge_candidates.append(item)
@@ -2124,6 +2134,8 @@ class TaxonomyGovernance:
         if volume_contract is not None:
             result["curriculum_volume"] = volume_contract
             result["rules"]["curriculum"] = (
+                "中考真题的教材归属从全初中已就绪目录的小节稳定 ID 中选择；模型返回 curriculum_sections，本地程序派生所属章节。"
+                if entrance else
                 "教材归属只能从当前册别的小节稳定 ID 中选择；"
                 "模型返回 curriculum_sections，本地程序据此派生所属章节。"
             )

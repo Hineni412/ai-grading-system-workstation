@@ -10,6 +10,7 @@ import AppButton from '../design-system/AppButton.vue'
 import QuestionContentRenderer from './QuestionContentRenderer.vue'
 import QuestionAnnotationPanel from './QuestionAnnotationPanel.vue'
 import QuestionInsights from './QuestionInsights.vue'
+import ExamReferenceBadge from './ExamReferenceBadge.vue'
 
 const props = defineProps<{ question: QuestionBankListItem; paperMode?: boolean; badgeLabel?: string }>()
 const emit = defineEmits<{ similar: [question: QuestionBankListItem] }>()
@@ -57,7 +58,7 @@ watch(expanded, async (value, wasExpanded) => {
 </script>
 
 <template>
-  <article :id="`qb-question-${question.id}`" class="qb-question-card qb-inline-card" :class="{ 'is-expanded': expanded, 'is-current': expanded, 'is-in-basket': inBasket }">
+  <article :id="`qb-question-${question.id}`" class="qb-question-card qb-inline-card" :class="{ 'is-expanded': expanded, 'is-current': expanded, 'is-in-basket': inBasket, 'is-reference-unrecommended': paperMode && ['unmatched', 'pending', 'reference'].includes(question.exam_reference?.status ?? '') }">
     <header class="qb-inline-card__heading" @click="clickHeading">
       <button ref="heading" class="qb-inline-card__title" type="button" :aria-expanded="expanded" :aria-controls="`qb-annotation-${question.id}`" @click="toggle">第 {{ question.question_number || question.id }} 题</button>
       <span v-if="!paperMode" class="qb-inline-card__source">{{ question.paper_title || '未命名试卷' }}</span>
@@ -76,6 +77,7 @@ watch(expanded, async (value, wasExpanded) => {
       </template>
       </div>
     </header>
+    <ExamReferenceBadge :assessment="question.exam_reference" />
     <div v-if="!expanded" class="qb-inline-card__collapsed">
       <div class="qb-inline-card__stem"><QuestionContentRenderer :blocks="question.rich_content?.question_blocks" :fallback="question.question_text" image-alt="题目配图" media-mode="list" compact /></div>
       <div class="qb-inline-card__tags">
@@ -93,3 +95,7 @@ watch(expanded, async (value, wasExpanded) => {
     <QuestionAnnotationPanel v-else :id="`qb-annotation-${question.id}`" :question="question"><template #similar><AppButton type="button" variant="ghost" size="small" @click="emit('similar', question)">相似题</AppButton></template></QuestionAnnotationPanel>
   </article>
 </template>
+
+<style scoped>
+.is-reference-unrecommended { background: var(--color-bg-subtle); border-color: var(--color-border-default); border-left: 3px solid var(--color-text-muted); }
+</style>

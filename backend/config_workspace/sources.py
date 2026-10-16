@@ -123,11 +123,23 @@ class ConfigSourceInvalidError(ConfigSourceError):
 class ConfigSourceParseError(ConfigSourceInvalidError):
     """A known, actionable parsing failure with a fixed public explanation."""
 
-    def __init__(self, reason: Literal["repeated_numbering", "no_questions", "missing_crops"]) -> None:
+    def __init__(
+        self,
+        reason: Literal[
+            "repeated_numbering",
+            "no_questions",
+            "missing_crops",
+            "answer_unmatched",
+            "answer_numbering_mismatch",
+        ],
+    ) -> None:
+        self.reason = reason
         ConfigSourceError.__init__(self, {
             "repeated_numbering": "试卷各分节重复使用大题编号，无法可靠对应答案。请将整卷大题改为连续编号后重新上传。",
             "no_questions": "未识别到可用题目。请检查原卷清晰度及本地 PDF 识别是否可用，再重新上传。",
             "missing_crops": "部分题目缺少完整题干裁图，无法用于分析。请核对原卷题号和版面。",
+            "answer_unmatched": "答案文件里没有找到和试卷题号对应的答案，请确认上传的是这份试卷的答案。",
+            "answer_numbering_mismatch": "答案文件的题号和试卷对不上（答案里有试卷没有的题号），请确认上传的是这份试卷的答案。",
         }[reason])
 
 
@@ -178,6 +190,7 @@ class ConfigSourceRecord:
     private_document_text: str
     private_question_images: dict[str, dict[str, str | list[str] | None]]
     private_whole_page_images: tuple[bytes, ...]
+    answer_safe_filename: str | None = None
 
     def public_snapshot(self) -> dict[str, Any]:
         return {
@@ -189,6 +202,7 @@ class ConfigSourceRecord:
             "size_bytes": self.size_bytes,
             "sha256_prefix": self.sha256[:12],
             "parse_state": "ready",
+            "answer_filename": self.answer_safe_filename,
             "questions": _public_questions_with_rich_content(
                 self.questions,
                 self.private_blocks,
@@ -231,6 +245,7 @@ class _ConfigSourceMetadata:
     asset_files: dict[str, dict[str, str | None]]
     whole_page_files: tuple[str, ...]
     stored_questions: tuple[ConfigQuestionPreview, ...] | None = None
+    answer_safe_filename: str | None = None
 
     def public_snapshot(
         self,
@@ -246,6 +261,7 @@ class _ConfigSourceMetadata:
             "size_bytes": self.size_bytes,
             "sha256_prefix": self.sha256[:12],
             "parse_state": "ready",
+            "answer_filename": self.answer_safe_filename,
             "questions": _public_questions_with_rich_content(
                 self.questions,
                 self.private_blocks,
@@ -392,10 +408,17 @@ class ConfigSourceService:
         session_id: int,
         filename: str,
         chunks: AsyncIterator[bytes],
+        answer_filename: str | None = None,
+        answer_size: int | None = None,
         activation_guard: Callable[[], ContextManager[None]] | None = None,
     ) -> ConfigSourceRecord:
         clean_session_id = _positive_session_id(session_id)
         safe_filename, suffix = _safe_filename(filename)
+        answer_safe_filename: str | None = None
+        if answer_filename is not None:
+            answer_safe_filename, answer_suffix = _safe_filename(answer_filename)
+            if suffix != ".pdf" or answer_suffix != ".pdf":
+                raise ConfigSourceTypeUnsupportedError()
         clean_source_id = uuid.uuid4().hex
         source_dir = self._source_dir(clean_session_id, clean_source_id)
         self._prepare_source_dir(source_dir)
@@ -420,7 +443,28 @@ class ConfigSourceService:
                 stream.flush()
             if size_bytes <= 0:
                 raise ConfigSourceInvalidError()
-            _validate_magic(self._files.read_bytes(temporary_path)[:1024], suffix)
+            # 试卷与答案分两个文件上传时，正文为试卷内容后接答案内容；
+            # 答案只用于本次拆题，不持久化、不计入来源清单。
+            answer_bytes: bytes | None = None
+            if answer_safe_filename is not None:
+                if (
+                    answer_size is None
+                    or answer_size <= 0
+                    or answer_size >= size_bytes
+                ):
+                    raise ConfigSourceInvalidError()
+                staged = self._files.read_bytes(temporary_path)
+                paper_content = staged[: size_bytes - answer_size]
+                answer_bytes = staged[size_bytes - answer_size :]
+                _validate_magic(paper_content[:1024], ".pdf")
+                _validate_magic(answer_bytes[:1024], ".pdf")
+                self._files.atomic_write_bytes(temporary_path, paper_content)
+                size_bytes = len(paper_content)
+                digest = hashlib.sha256(paper_content)
+            else:
+                _validate_magic(
+                    self._files.read_bytes(temporary_path)[:1024], suffix
+                )
             registry.register(source_path, manifest_owned=True)
             self._files.replace(temporary_path, source_path)
 
@@ -432,6 +476,7 @@ class ConfigSourceService:
                     source_path,
                     source_dir,
                     registry,
+                    answer_bytes,
                 )
             )
             try:
@@ -503,6 +548,8 @@ class ConfigSourceService:
                 "asset_files": asset_files,
                 "whole_page_files": whole_page_files,
             }
+            if answer_safe_filename is not None:
+                manifest["answer_safe_filename"] = answer_safe_filename
             source_revision = _canonical_source_revision(manifest)
             manifest["source_revision"] = source_revision
             if len((json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8")) > self.max_manifest_bytes:
@@ -568,6 +615,7 @@ class ConfigSourceService:
         source_path: Path,
         source_dir: Path,
         registry: _OwnedFileRegistry,
+        answer_bytes: bytes | None = None,
     ) -> tuple[list[dict[str, Any]], str, dict[str, dict[str, str | None]], list[str]]:
         key = (os.path.normcase(str(self.upload_config_dir)), int(session_id))
         with _PARSE_LOCKS_GUARD:
@@ -578,7 +626,10 @@ class ConfigSourceService:
                 if suffix == ".docx":
                     result = self._parse_docx(source_path, source_dir, registry)
                 else:
-                    result = self._parse_pdf(source_path, source_dir, registry)
+                    result = self._parse_pdf(
+                        source_path, source_dir, registry,
+                        answer_bytes=answer_bytes,
+                    )
             except RepeatedQuestionNumberError:
                 raise ConfigSourceParseError("repeated_numbering") from None
             if not result[0]:
@@ -1148,7 +1199,6 @@ class ConfigSourceService:
                 )
                 if active_metadata.source_revision != active_revision:
                     return ()
-                self._validate_generation_integrity(active_metadata)
             except ConfigSourceError:
                 return ()
             session_dir = self._session_dir(clean_session_id)
@@ -1173,7 +1223,6 @@ class ConfigSourceService:
                     metadata = self._metadata_from_manifest(manifest_path, manifest)
                     if metadata.source_id != source_id:
                         continue
-                    self._validate_generation_integrity(metadata)
                     owned_paths = [
                         self._owned_path(source_dir, name)
                         for name in sorted(metadata.owned_names)
@@ -1196,13 +1245,12 @@ class ConfigSourceService:
         metadata: _ConfigSourceMetadata,
     ) -> None:
         try:
-            manifest = _metadata_manifest(metadata)
-            if _canonical_source_revision(manifest) != metadata.source_revision:
-                raise ConfigSourceInvalidError()
             for filename, inventory_entry in sorted(metadata.file_inventory.items()):
                 path = self._owned_path(metadata.manifest_path.parent, filename)
                 content = self._files.read_bytes(path)
                 self._validate_inventory_content(metadata, filename, content)
+                if hashlib.sha256(content).hexdigest() != inventory_entry["sha256"]:
+                    raise ConfigSourceInvalidError()
                 if inventory_entry["role"] != "source":
                     _image_type(content)
         except ConfigSourceError:
@@ -1220,8 +1268,6 @@ class ConfigSourceService:
         if (
             not isinstance(inventory_entry, dict)
             or len(content) != inventory_entry.get("size_bytes")
-            or hashlib.sha256(content).hexdigest()
-            != inventory_entry.get("sha256")
         ):
             raise ConfigSourceInvalidError()
 
@@ -1283,6 +1329,8 @@ class ConfigSourceService:
         source_path: Path,
         source_dir: Path,
         registry: _OwnedFileRegistry,
+        *,
+        answer_bytes: bytes | None = None,
     ) -> tuple[
         list[dict[str, Any]],
         str,
@@ -1304,6 +1352,19 @@ class ConfigSourceService:
             raise ConfigSourceTooLargeError()
         if page_count <= 0:
             raise ConfigSourceInvalidError()
+        if answer_bytes is not None:
+            try:
+                answer_document = fitz.open(stream=answer_bytes, filetype="pdf")
+                try:
+                    answer_page_count = len(answer_document)
+                finally:
+                    answer_document.close()
+            except Exception:
+                raise ConfigSourceInvalidError() from None
+            if answer_page_count > self.max_pdf_pages:
+                raise ConfigSourceTooLargeError()
+            if answer_page_count <= 0:
+                raise ConfigSourceInvalidError()
 
         from question_bank.document_pipeline.pipeline import QuestionDocumentPipeline
         from question_bank.importers.batch_importer import _extract_paper
@@ -1314,6 +1375,8 @@ class ConfigSourceService:
 
         # Reuse the bank's local PDF extraction, including layout coordinates.
         # Temporary OCR assets never become persistent source references.
+        # The separately uploaded answer file is parsed inside the same
+        # temporary directory and never becomes a persisted source file.
         with tempfile.TemporaryDirectory(prefix="config-pdf-") as workdir:
             extracted = _extract_paper(
                 source_path, asset_root=Path(workdir) / "images",
@@ -1322,6 +1385,21 @@ class ConfigSourceService:
             )
             document_text = extracted.text
             layout = extracted.pdf_layout
+            answer_layout_pages = None
+            if answer_bytes is not None:
+                answer_path = Path(workdir) / "answer.pdf"
+                answer_path.write_bytes(answer_bytes)
+                # 答案文件里的红字分数不是彩色答案层，跳过按颜色拆层。
+                answer_extracted = _extract_paper(
+                    answer_path, asset_root=Path(workdir) / "answer-images",
+                    document_pipeline=QuestionDocumentPipeline(
+                        Path(workdir) / "answer-ocr"
+                    ),
+                    operation_id="config-source-answer",
+                    colored_layers=False,
+                )
+                answer_layout = answer_extracted.pdf_layout or {}
+                answer_layout_pages = answer_layout.get("pages")
         blocks = parse_plain_question_blocks(document_text)
         for block in blocks:
             if isinstance(block, dict):
@@ -1335,6 +1413,39 @@ class ConfigSourceService:
                 values["answer"] = answer_assets.get(qid, {}).get("question")
         else:
             raw_assets = extract_pdf_question_images(file_bytes, blocks, **crop_options) if blocks else {}
+        if answer_bytes is not None and blocks:
+            # 答案文件整本都按答案区裁图，题号行表格也按同一题号配对。
+            answer_table_numbers: set[int] = set()
+            answer_crop_options = (
+                {"layout_pages": answer_layout_pages}
+                if answer_layout_pages
+                else {}
+            )
+            answer_assets = extract_pdf_question_images(
+                answer_bytes,
+                blocks,
+                include_answer=False,
+                whole_document_is_answer=True,
+                answer_table_numbers=answer_table_numbers,
+                **answer_crop_options,
+            )
+            paper_numbers = {
+                str(block.get("question_id") or "").lstrip("Qq")
+                for block in blocks
+            }
+            if any(
+                str(number) not in paper_numbers
+                for number in answer_table_numbers
+            ):
+                raise ConfigSourceParseError("answer_numbering_mismatch")
+            matched = 0
+            for qid, values in raw_assets.items():
+                paired = answer_assets.get(qid, {}).get("question")
+                if paired:
+                    values["answer"] = paired
+                    matched += 1
+            if matched == 0:
+                raise ConfigSourceParseError("answer_unmatched")
         if any(not raw_assets.get(str(block.get("question_id")), {}).get("question") for block in blocks):
             raise ConfigSourceParseError("missing_crops")
         raw_pages = extract_pdf_images(file_bytes)
@@ -1430,6 +1541,18 @@ class ConfigSourceService:
             or manifest_path.parent.parent.name != f"session-{session_id}"
         ):
             raise ConfigSourceInvalidError()
+        answer_safe_filename = manifest.get("answer_safe_filename")
+        if answer_safe_filename is not None:
+            try:
+                valid_answer_name = _safe_filename(answer_safe_filename) == (
+                    answer_safe_filename,
+                    ".pdf",
+                )
+            except ConfigSourceError:
+                valid_answer_name = False
+            if not isinstance(answer_safe_filename, str) or not valid_answer_name:
+                raise ConfigSourceInvalidError()
+
         owned_names = manifest.get("owned_files")
         if (
             not isinstance(owned_names, list)
@@ -1518,9 +1641,8 @@ class ConfigSourceService:
             ]
             if stored_ids != recomputed_ids:
                 raise ConfigSourceInvalidError()
-        # Stored previews may predate current preview rules; the manifest and
-        # its revision are still validated against the stored values below,
-        # while the loaded record serves the recomputed ones.
+        # Stored previews may predate current preview rules. The immutable
+        # source revision is reused; reading does not re-hash its contents.
         current_questions = normalized_questions
 
         expected_roles = _expected_inventory_roles(
@@ -1565,27 +1687,6 @@ class ConfigSourceService:
         }:
             raise ConfigSourceInvalidError()
 
-        normalized_manifest = {
-            "version": 2,
-            "session_id": session_id,
-            "source_id": source_id,
-            "source_revision": source_revision,
-            "safe_filename": safe_filename,
-            "suffix": suffix,
-            "size_bytes": size_bytes,
-            "sha256": sha256,
-            "parse_state": "ready",
-            "source_file": source_file,
-            "owned_files": list(owned_names),
-            "file_inventory": file_inventory,
-            "questions": [asdict(question) for question in questions],
-            "private_blocks": private_blocks,
-            "private_document_text": document_text,
-            "asset_files": normalized_assets,
-            "whole_page_files": normalized_whole_pages,
-        }
-        if _canonical_source_revision(normalized_manifest) != source_revision:
-            raise ConfigSourceInvalidError()
         return _ConfigSourceMetadata(
             session_id=session_id,
             source_id=source_id,
@@ -1604,6 +1705,7 @@ class ConfigSourceService:
             asset_files=normalized_assets,
             whole_page_files=tuple(normalized_whole_pages),
             stored_questions=questions,
+            answer_safe_filename=answer_safe_filename,
         )
 
     def _record_from_metadata(
@@ -1675,6 +1777,7 @@ class ConfigSourceService:
             private_document_text=metadata.private_document_text,
             private_question_images=private_images,
             private_whole_page_images=tuple(whole_pages),
+            answer_safe_filename=metadata.answer_safe_filename,
         )
 
     def _prepare_source_dir(self, source_dir: Path) -> None:
@@ -1849,6 +1952,9 @@ def _canonical_source_revision(manifest: dict[str, Any]) -> str:
             "whole_page_files",
         )
     }
+    # 旧清单没有这个可选键；存在时才参与修订号计算。
+    if "answer_safe_filename" in manifest:
+        payload["answer_safe_filename"] = manifest["answer_safe_filename"]
     try:
         canonical = json.dumps(
             payload,
@@ -1860,28 +1966,6 @@ def _canonical_source_revision(manifest: dict[str, Any]) -> str:
     except (KeyError, TypeError, ValueError):
         raise ConfigSourceInvalidError() from None
     return hashlib.sha256(canonical).hexdigest()
-
-
-def _metadata_manifest(metadata: _ConfigSourceMetadata) -> dict[str, Any]:
-    return {
-        "version": 2,
-        "session_id": metadata.session_id,
-        "source_id": metadata.source_id,
-        "source_revision": metadata.source_revision,
-        "safe_filename": metadata.safe_filename,
-        "suffix": metadata.suffix,
-        "size_bytes": metadata.size_bytes,
-        "sha256": metadata.sha256,
-        "parse_state": "ready",
-        "source_file": metadata.source_path.name,
-        "owned_files": sorted(metadata.owned_names),
-        "file_inventory": copy.deepcopy(metadata.file_inventory),
-        "questions": [asdict(question) for question in (metadata.stored_questions if metadata.stored_questions is not None else metadata.questions)],
-        "private_blocks": copy.deepcopy(list(metadata.private_blocks)),
-        "private_document_text": metadata.private_document_text,
-        "asset_files": copy.deepcopy(metadata.asset_files),
-        "whole_page_files": list(metadata.whole_page_files),
-    }
 
 
 def _expected_inventory_roles(

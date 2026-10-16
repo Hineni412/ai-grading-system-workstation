@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import hashlib
+import json
 import re
 import time
 import uuid
@@ -222,13 +222,11 @@ class OpsWriteService:
         if target not in {"grading", "question_bank", "all"}:
             raise OpsRequestInvalid("invalid migration target")
         targets = ("grading", "question_bank") if target == "all" else (target,)
-        digest = hashlib.sha256()
-        for item in targets:
-            digest.update(item.encode("ascii"))
-            for migration in sorted(Path(self.migration_dirs[item]).glob("*.sql")):
-                digest.update(migration.name.encode("utf-8"))
-                digest.update(_file_sha256(migration).encode("ascii"))
-        return digest.hexdigest()
+        return json.dumps([
+            (item, migration.name, _file_revision(migration))
+            for item in targets
+            for migration in sorted(Path(self.migration_dirs[item]).glob("*.sql"))
+        ], separators=(",", ":"))
 
     def _preflight_backup(self, request: Any) -> OpsInternalPlan:
         reason = str(getattr(request, "reason", "") or "")
@@ -287,7 +285,7 @@ class OpsWriteService:
             OpsOperation.RESTORE,
             {"backup_filename": filename},
             summary,
-            resource_fingerprint=_file_sha256(archive),
+            resource_fingerprint=_file_revision(archive),
         )
 
     def _preflight_migration(self, request: Any) -> OpsInternalPlan:
@@ -331,7 +329,7 @@ class OpsWriteService:
             OpsOperation.TRANSFER_IMPORT,
             {"upload_id": upload_id},
             summary,
-            resource_fingerprint=_file_sha256(archive),
+            resource_fingerprint=_file_revision(archive),
         )
 
     def _preflight_transfer_export(self, request: Any) -> OpsInternalPlan:
@@ -382,9 +380,9 @@ class OpsWriteService:
 
     def _fingerprint_for_plan(self, plan: OpsInternalPlan) -> str:
         if plan.operation is OpsOperation.RESTORE:
-            return _file_sha256(self._controlled_backup(str(plan.parameters["backup_filename"])))
+            return _file_revision(self._controlled_backup(str(plan.parameters["backup_filename"])))
         if plan.operation is OpsOperation.TRANSFER_IMPORT:
-            return _file_sha256(self._upload_path(str(plan.parameters["upload_id"])))
+            return _file_revision(self._upload_path(str(plan.parameters["upload_id"])))
         if plan.operation is OpsOperation.MIGRATION:
             return self.migration_files_fingerprint(str(plan.parameters["target"]))
         return ""
@@ -425,12 +423,9 @@ class OpsWriteService:
             raise OpsResourceNotFound("upload resource not found")
         return path
 
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+def _file_revision(path: Path) -> str:
+    info = Path(path).stat()
+    return f"file:{info.st_mtime_ns}:{info.st_size}"
 
 
 __all__ = [

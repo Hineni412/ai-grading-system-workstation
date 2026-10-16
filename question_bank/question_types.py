@@ -1,10 +1,12 @@
 """Current training targets, resolved per textbook chapter."""
 from __future__ import annotations
 
+import json
 import re
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from hashlib import sha256
 from typing import Any
 
 from question_bank.taxonomy.curriculum_catalog import (
@@ -67,6 +69,14 @@ def _memoized(memo: OrderedDict, memo_key: tuple, compute) -> Any:
 
 def is_type_key(key: object) -> bool:
     return bool(_TYPE_KEY.fullmatch(str(key or "").strip()))
+
+
+def type_candidate_fingerprint(contract: Any) -> str:
+    """Identify the offered type definitions, independent of other standard changes."""
+    candidates = sorted((dict(row) for row in contract.get('candidates', {}).get('knowledge', [])
+                         if is_type_key(row.get('id'))), key=lambda row: row['id'])
+    return sha256(json.dumps(candidates, sort_keys=True, ensure_ascii=False,
+                            separators=(',', ':')).encode()).hexdigest()
 
 
 def _scope_for_key(key: str, parents: dict[str, str]) -> tuple[str, str]:

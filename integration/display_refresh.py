@@ -1,13 +1,11 @@
 """Serve the last display result while a fresh one computes in the background.
 
-Slow read endpoints hand their final JSON bytes to ``serve_with_refresh``.
-Each request starts (or joins) a single-flight compute on a small shared pool.
-When the compute finishes inside ``wait_seconds`` its bytes are served and
-saved as the last result for that request key; otherwise the caller receives
-the previously saved bytes marked as refreshing while the compute continues
-and stores the fresh result for the next request. Compute errors propagate on
-the synchronous path exactly as before; once a stale result was served a late
-failure is logged and dropped.
+Slow read endpoints hand their final JSON bytes and source version to
+``serve_with_refresh``. An unchanged version reuses the saved result. A changed
+version waits briefly for the fresh bytes, then serves the previous bytes if
+the single-flight compute is still running. Without saved bytes the caller waits for the
+first result. Compute errors propagate on that synchronous path; once a stale
+result was served a late failure is logged and dropped.
 
 Last results live in ``reports/.training_diagnosis/last_display`` as one
 gzip-compressed ``.entry`` file per (endpoint, request key) pair, capped at
@@ -41,15 +39,16 @@ _EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="display-refres
 class _Flight:
     """One single-flight compute; ``served_last`` marks a stale serve."""
 
-    __slots__ = ("future", "served_last")
+    __slots__ = ("future", "served_last", "scope")
 
-    def __init__(self, future: Future) -> None:
+    def __init__(self, future: Future, scope: str = '') -> None:
         self.future = future
         self.served_last = False
+        self.scope = scope
 
 
 _FLIGHTS: dict[tuple[str, str, str], _Flight] = {}
-_FLIGHTS_LOCK = threading.Lock()
+_FLIGHTS_LOCK = threading.RLock()
 
 
 def _store(data_root: Path):
@@ -64,9 +63,12 @@ def _compute_and_store(
     compute: Callable[[], bytes],
     store,
     key: tuple[str, str],
+    version: object = None,
+    source_version: Callable[[], object] | None = None,
 ) -> bytes:
     result = compute()
-    store.put(key, _LAST_SIGNATURE, gzip.compress(result))
+    current = version if source_version is not None and source_version() == version else None
+    store.put(key, _LAST_SIGNATURE, (current, gzip.compress(result)))
     return result
 
 
@@ -121,6 +123,7 @@ def serve_with_refresh(
     request_key: Mapping[str, Any],
     compute: Callable[[], bytes],
     wait_seconds: float = 1.0,
+    source_version: Callable[[], object] | None = None,
 ) -> tuple[bytes, bool]:
     """Return ``(response_bytes, refreshing)`` for one display request.
 
@@ -136,33 +139,48 @@ def serve_with_refresh(
     )
     key = (endpoint, request_json)
     flight_key = (endpoint, request_json, str(data_root.resolve(strict=False)))
+    version = source_version() if source_version is not None else None
+    saved = store.get(key, _LAST_SIGNATURE)
+    saved_version = None
+    if isinstance(saved, tuple) and len(saved) == 2:
+        saved_version, saved = saved
+    if saved is not None and version is not None and saved_version == version:
+        return gzip.decompress(saved), False
+    scope = json.dumps({name: request_key[name] for name in
+                        ('scope', 'exam_scope', 'curriculum_volume_id', 'class_ids') if name in request_key},
+                       sort_keys=True, ensure_ascii=False, default=str)
     created = False
     with _FLIGHTS_LOCK:
+        for other_key, other in tuple(_FLIGHTS.items()):
+            if (other_key[0] == endpoint and other_key[2] == flight_key[2]
+                    and other.scope != scope and not other.future.running()):
+                # Cancellation invokes the existing completion callback.
+                other.future.cancel()
         flight = _FLIGHTS.get(flight_key)
         if flight is None:
             flight = _Flight(
-                _EXECUTOR.submit(_compute_and_store, compute, store, key)
+                _EXECUTOR.submit(_compute_and_store, compute, store, key, version, source_version), scope
             )
             _FLIGHTS[flight_key] = flight
             created = True
     if created:
         flight.future.add_done_callback(_complete(flight_key, flight))
+    if saved is not None:
+        with _FLIGHTS_LOCK:
+            flight.served_last = True
+        # Fast recomputations should complete this request, instead of returning
+        # old bytes and waiting through the client's polling backoff.
+        done, _ = wait((flight.future,), timeout=wait_seconds)
+        if done and not flight.future.cancelled() and flight.future.exception() is None:
+            return flight.future.result(), source_version is not None and source_version() != version
+        return gzip.decompress(saved), True
     try:
-        return flight.future.result(timeout=wait_seconds), False
+        result = flight.future.result(timeout=wait_seconds)
+        return result, source_version is not None and source_version() != version
     except TimeoutError:
         pass
-    saved = store.get(key, _LAST_SIGNATURE)
-    if saved is None:
-        return flight.future.result(), False
-    with _FLIGHTS_LOCK:
-        flight.served_last = True
-    if flight.future.done():
-        # Finished between the wait timeout and the flag; the done callback
-        # already ran, so surface the failure here instead.
-        error = flight.future.exception()
-        if error is not None:
-            _LOG.warning("background refresh for %s failed: %r", endpoint, error)
-    return gzip.decompress(saved), True
+    result = flight.future.result()
+    return result, source_version is not None and source_version() != version
 
 
 def json_bytes(payload: Any) -> bytes:

@@ -699,6 +699,7 @@ def build_chapter_exam_profile(
     conn: sqlite3.Connection,
     snapshot: dict[str, Any],
     volume: dict[str, Any],
+    *, section_ids: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """按本册期中/期末卷统计章节出卷情况；snapshot 为读服务的知识快照。"""
     prep = _prepare(conn, snapshot, volume)
@@ -717,6 +718,10 @@ def build_chapter_exam_profile(
     chapters_out: list[dict[str, Any]] = []
     for chapter in volume["chapters"]:
         cid = chapter["knowledge_id"]
+        if section_ids is not None and not (
+            {section['knowledge_id'] for section in chapter['sections']} | {f'{cid}#synthesis'}
+        ).intersection(section_ids):
+            continue
         main = [rec for rec in recs.values() if rec["chapter"] == cid]
         cross = [rec for rec in recs.values()
                  if rec["chapter"] != cid and cid in rec["direct_chapters"]]
@@ -727,6 +732,9 @@ def build_chapter_exam_profile(
         raw_sections.append((cid, "章内综合", True))
         sections_out = []
         for raw_id, label, synthesis in raw_sections:
+            section_id = f'{cid}#synthesis' if synthesis else raw_id
+            if section_ids is not None and section_id not in section_ids:
+                continue
             smain = [rec for rec in main if rec["section"] == raw_id]
             if synthesis and not smain:
                 continue
@@ -791,7 +799,7 @@ def build_chapter_exam_profile(
                 )
                 row["typical"] = typical_map.get(row["key"] or "", [])
             sections_out.append({
-                "id": f"{cid}#synthesis" if synthesis else raw_id,
+                "id": section_id,
                 "label": label,
                 "synthesis": synthesis,
                 "main_count": len(smain),

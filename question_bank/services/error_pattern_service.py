@@ -170,8 +170,13 @@ def _content_fingerprint(question_text: Any, answer_text: Any) -> str:
 
 def _stale_prediction(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
     token = str(row["confirm_token"] or "")
-    if row["source"] != "ai_predicted" or not token.startswith("content:"):
+    if row["source"] != "ai_predicted":
         return False
+    if token == "source-stale":
+        return True
+    if not token.startswith("content:"):
+        return False
+    # Compatibility only: historical predictions lack a saved current/stale state.
     question = conn.execute(
         "SELECT question_text, answer_text FROM questions WHERE id=?",
         (int(row["question_id"]),),

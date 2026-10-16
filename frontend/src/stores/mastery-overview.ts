@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { computed, ref, shallowRef } from 'vue'
+import { computed, onScopeDispose, ref, shallowRef } from 'vue'
 import { fetchStudents, type StudentSummary } from '../api/students'
 import { trainingApi, type TrainingKeyStepTypeStatsResponse, type TrainingOverview, type TrainingOverviewNode, type TrainingOverviewExamQuestion } from '../api/training'
 import { requestWithRefresh } from '../api/display-refresh'
@@ -19,6 +19,17 @@ export const useMasteryOverviewStore = defineStore('mastery-overview', () => {
   let resultKey = ''
   let requestKey = ''
   let request: Promise<void> | null = null
+  const results = new Map<string, TrainingOverview>()
+  function invalidate(event: Event) {
+    const path = (event as CustomEvent<string>).detail
+    if (/^\/api\/(question-bank|students|sessions|review|training\/(evidence|assessments|submissions))\b/.test(path)) {
+      results.clear(); resultKey = ''; keyStepKey = ''
+      controller?.abort(); keyStepController?.abort()
+      controller = null; request = null; requestKey = ''
+    }
+  }
+  window.addEventListener('api-data-written', invalidate)
+  onScopeDispose(() => window.removeEventListener('api-data-written', invalidate))
 
   async function load(volumeId: string | null, force = false, persistScope = true): Promise<void> {
     if (!volumeId) {
@@ -31,9 +42,15 @@ export const useMasteryOverviewStore = defineStore('mastery-overview', () => {
       : { mode: 'class' as const, class_id: scopeSelection.value, class_ids: [scopeSelection.value] }
     const query = semesterEvidenceQuery(scope, volumeId)
     if (persistScope) saveEvidenceScope(query)
-    if (!force && key === resultKey && loadState.value === 'ready') return
+    if (!force && key === resultKey && loadState.value === 'ready' && results.get(key) === overview.value) return
     if (!force && key === requestKey && request) return request
     controller?.abort()
+    const cached = results.get(key)
+    if (!force && cached) {
+      overview.value = cached; resultKey = key; loadState.value = 'ready'
+      refreshing.value = false; refreshMessage.value = ''; errorMessage.value = ''
+      return
+    }
     const current = new AbortController()
     controller = current
     requestKey = key
@@ -59,6 +76,10 @@ export const useMasteryOverviewStore = defineStore('mastery-overview', () => {
           })
         if (current.signal.aborted) return
         loadState.value = 'ready'
+        if (overview.value && !refreshing.value) {
+          results.delete(key); results.set(key, overview.value)
+          while (results.size > 16) results.delete(results.keys().next().value!)
+        }
       } catch {
         if (current.signal.aborted) return
         loadState.value = overview.value ? 'stale-error' : 'error'

@@ -814,6 +814,9 @@ class QuestionBankWriteService:
         metadata: PaperMetadataUpdate,
     ) -> PaperMetadataWriteResult:
         target = _normalize_paper_metadata(metadata)
+        from question_bank.services.exam_reference import is_entrance_paper, is_shenzhen_paper
+        target_source = {"title": target.title, "city": target.city, "exam_type": target.exam_type}
+        reference_allowed = bool(is_entrance_paper(target_source) and is_shenzhen_paper(target_source))
         expected = str(expected_updated_at or "").strip()
         if not expected:
             raise ValueError("Paper metadata version is required")
@@ -824,7 +827,8 @@ class QuestionBankWriteService:
             if current_row is None:
                 raise PaperMetadataNotFound("Paper not found")
             current = _paper_metadata_result(current_row)
-            if _same_paper_metadata(current, target):
+            confirm_year = bool(target.year and re.fullmatch(r"20\d{2}", target.year))
+            if _same_paper_metadata(current, target) and (not confirm_year or current_row["year_confirmed"]):
                 return current
             if current.updated_at != expected:
                 raise PaperMetadataConflict(current.updated_at)
@@ -834,6 +838,8 @@ class QuestionBankWriteService:
                 UPDATE papers
                 SET title = ?,
                     year = ?,
+                    year_confirmed = ?,
+                    is_exam_reference = CASE WHEN ? THEN is_exam_reference ELSE 0 END,
                     province = ?,
                     city = ?,
                     district = ?,
@@ -850,6 +856,8 @@ class QuestionBankWriteService:
                 (
                     target.title,
                     target.year,
+                    int(confirm_year),
+                    int(reference_allowed),
                     target.province,
                     target.city,
                     target.district,
@@ -874,6 +882,26 @@ class QuestionBankWriteService:
             if updated_row is None:
                 raise PaperMetadataNotFound("Paper not found")
             return _paper_metadata_result(updated_row)
+
+    def set_exam_reference(self, paper_id: int, *, expected_updated_at: str, starred: bool) -> dict:
+        from question_bank.services.exam_reference import is_entrance_paper, is_shenzhen_paper
+        if not expected_updated_at:
+            raise ValueError("缺少试卷版本")
+        with connect(self.db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = _load_paper_metadata(conn, paper_id)
+            if row is None:
+                raise PaperMetadataNotFound("试卷不存在")
+            paper = dict(row)
+            if starred and not (is_entrance_paper(paper) and is_shenzhen_paper(paper)):
+                raise ValueError("只能将深圳中考真题卷设为参照，请先核对地区和考试类型")
+            if bool(paper["is_exam_reference"]) == starred:
+                return {"id": paper_id, "is_exam_reference": starred, "updated_at": paper["updated_at"]}
+            if paper["updated_at"] != expected_updated_at:
+                raise PaperMetadataConflict(paper["updated_at"])
+            updated = _next_paper_updated_at(paper["updated_at"])
+            conn.execute("UPDATE papers SET is_exam_reference=?,updated_at=? WHERE id=?", (int(starred), updated, paper_id))
+            return {"id": paper_id, "is_exam_reference": starred, "updated_at": updated}
 
     def set_paper_deleted(
         self,
@@ -1676,7 +1704,7 @@ def _load_paper_metadata(
         """
         SELECT
             id, title, year, province, city, district, exam_type, grade,
-            semester, folder_name, textbook_version, updated_at
+            semester, folder_name, textbook_version, updated_at, year_confirmed, is_exam_reference
         FROM papers
         WHERE id = ?
           AND COALESCE(import_status, '') <> 'deleted'
@@ -2993,6 +3021,11 @@ def sync_question_type_labels(
         ).fetchone()
     version = str(evidence[0]) if evidence else ''
     rows = conn.execute("SELECT id,tag_type,tag_value FROM question_tags WHERE question_id=?", (question_id,)).fetchall()
+    conn.execute(
+        "DELETE FROM question_tags WHERE question_id=? AND tag_type='tag_status' "
+        "AND CASE WHEN json_valid(tag_value) THEN json_extract(tag_value,'$.status') END='type_unclassified'",
+        (question_id,),
+    )
     stale = [int(row[0]) for row in rows if row[1] == 'secondary_type'
              or (row[1] == 'knowledge_point' and any(is_type_key(target.stable_key) for target in resolver.resolve(row[2])))]
     conn.executemany("DELETE FROM question_tags WHERE id=?", [(value,) for value in stale])

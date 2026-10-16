@@ -522,9 +522,9 @@ class JobStore:
             raise ValueError("scan_batch_id must be 32 lowercase hex characters")
         config_revision = str(
             clean_payload.get("config_revision") or ""
-        ).strip().casefold()
-        if not _SHA256.fullmatch(config_revision):
-            raise ValueError("config_revision must be sha256")
+        ).strip()
+        if (not config_revision or len(config_revision) > 256):
+            raise ValueError("config_revision must be a nonempty version")
         expected_rubric_path = _nonblank_text(
             clean_payload.get("expected_rubric_path"),
             "expected_rubric_path",
@@ -749,8 +749,8 @@ class JobStore:
         config_revision = str(clean_payload.get("config_revision") or "").strip()
         if not _SHA256.fullmatch(source_sha256):
             raise ValueError("source_paper_sha256 must be sha256")
-        if not _SHA256.fullmatch(config_revision):
-            raise ValueError("config_revision must be sha256")
+        if (not config_revision or len(config_revision) > 256):
+            raise ValueError("config_revision must be a nonempty version")
 
         payload_json = json.dumps(clean_payload, ensure_ascii=False, sort_keys=True)
         with self._connect() as conn:
@@ -899,12 +899,12 @@ class JobStore:
         clean_session_id = _positive_int(session_id)
         clean_job_id = _positive_int(job_id)
         clean_source_sha256 = str(source_paper_sha256 or "").strip().casefold()
-        clean_config_revision = str(config_revision or "").strip().casefold()
+        clean_config_revision = str(config_revision or "").strip()
         clean_state = str(state or "").strip().casefold()
         if not _SHA256.fullmatch(clean_source_sha256):
             raise ValueError("source_paper_sha256 must be sha256")
-        if not _SHA256.fullmatch(clean_config_revision):
-            raise ValueError("config_revision must be sha256")
+        if (not clean_config_revision or len(clean_config_revision) > 256):
+            raise ValueError("config_revision must be a nonempty version")
         if clean_state not in _QUESTION_BANK_SYNC_STATES - {"running"}:
             raise ValueError("unsupported terminal question-bank sync state")
         terminal_details = {
@@ -945,7 +945,7 @@ class JobStore:
                     or _positive_int_or_zero(owner.get("job_id")) != clean_job_id
                     or str(owner.get("source_paper_sha256") or "").casefold()
                     != clean_source_sha256
-                    or str(owner.get("config_revision") or "").casefold()
+                    or str(owner.get("config_revision") or "")
                     != clean_config_revision
                 ):
                     conn.rollback()
@@ -992,11 +992,11 @@ class JobStore:
         clean_session_id = _positive_int(session_id)
         clean_job_id = _positive_int(job_id)
         clean_source_sha256 = str(source_paper_sha256 or "").strip().casefold()
-        clean_config_revision = str(config_revision or "").strip().casefold()
+        clean_config_revision = str(config_revision or "").strip()
         if not _SHA256.fullmatch(clean_source_sha256):
             raise ValueError("source_paper_sha256 must be sha256")
-        if not _SHA256.fullmatch(clean_config_revision):
-            raise ValueError("config_revision must be sha256")
+        if (not clean_config_revision or len(clean_config_revision) > 256):
+            raise ValueError("config_revision must be a nonempty version")
         clean_rubric_path = _nonblank_text(
             expected_rubric_path,
             "expected_rubric_path",
@@ -1042,7 +1042,7 @@ class JobStore:
                         job_payload.get("source_paper_sha256") or ""
                     ).casefold()
                     != clean_source_sha256
-                    or str(job_payload.get("config_revision") or "").casefold()
+                    or str(job_payload.get("config_revision") or "")
                     != clean_config_revision
                 ):
                     conn.rollback()
@@ -1086,7 +1086,7 @@ class JobStore:
                             owner.get("source_paper_sha256") or ""
                         ).casefold()
                         != clean_source_sha256
-                        or str(owner.get("config_revision") or "").casefold()
+                        or str(owner.get("config_revision") or "")
                         != clean_config_revision
                     ):
                         conn.rollback()
@@ -1790,11 +1790,11 @@ class JobStore:
             ).strip().casefold()
             config_revision = str(
                 owner.get("config_revision") or ""
-            ).strip().casefold()
+            ).strip()
             if (
                 job_id <= 0
                 or not _SHA256.fullmatch(source_sha256)
-                or not _SHA256.fullmatch(config_revision)
+                or (not config_revision or len(config_revision) > 256)
             ):
                 continue
             job = conn.execute(
@@ -1821,7 +1821,7 @@ class JobStore:
                 != source_sha256
                 or str(
                     payload.get("config_revision") or ""
-                ).strip().casefold()
+                ).strip()
                 != config_revision
             ):
                 continue

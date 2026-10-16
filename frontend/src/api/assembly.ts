@@ -5,6 +5,8 @@ import {
   isQuestionBankRichContent,
   type QuestionBankRichContent,
   type QuestionBankTag,
+  type ExamAssessment,
+  isExamAssessment,
 } from './question-bank'
 import {
   hasExactKeys,
@@ -61,6 +63,7 @@ export function paperRulesSummary(rules: PaperRules, targetKind: 'skill' | 'type
 
 export interface AssemblyQuestion {
   id: number
+  exam_reference?: ExamAssessment | null
   skill_keys?: string[]
   revision: string
   question_number: string
@@ -345,7 +348,9 @@ function isAssemblyQuestion(value: unknown): value is AssemblyQuestion {
       'rich_content',
       'score_value',
       ...(value.skill_keys === undefined ? [] : ['skill_keys']),
+      ...(value.exam_reference === undefined ? [] : ['exam_reference']),
     ]) &&
+    (value.exam_reference == null || isExamAssessment(value.exam_reference)) &&
     isPositiveInteger(value.id) &&
     (value.skill_keys === undefined || isStrings(value.skill_keys)) &&
     isRevision(value.revision) &&

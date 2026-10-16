@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -218,7 +217,7 @@ class AnswerRegionCommitService:
             if not all(path.is_file() for path in paths):
                 return False
             return (
-                self._draft_service.compute_template_fingerprint(
+                self._draft_service.template_revision(
                     str(template.get("front_template_path") or ""),
                     str(template.get("back_template_path") or ""),
                 )
@@ -605,12 +604,12 @@ def _restore_workflow_if_owned(
         path.unlink(missing_ok=True)
 
 
-def _draft_marker(draft_path: Path) -> str | None:
+def _draft_marker(draft_path: Path) -> tuple[int, int] | None:
     try:
-        content = draft_path.read_bytes()
+        state = draft_path.stat()
     except FileNotFoundError:
         return None
-    return hashlib.sha256(content).hexdigest()
+    return state.st_mtime_ns, state.st_size
 
 
 def _snapshot_is_pending(db: Any, session_id: int) -> bool:

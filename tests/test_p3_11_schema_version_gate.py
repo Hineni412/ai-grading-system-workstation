@@ -327,7 +327,10 @@ def test_historical_database_requires_conversion_manifest_and_keeps_its_records(
     source = sorted((PROJECT_ROOT / "migrations" / target).glob("*.sql"))
     legacy = tmp_path / "TEST-legacy-sql"
     legacy.mkdir()
-    for file in source[:-1]:
+    # This fixture contains pre-normalisation draft_json, even when later
+    # unrelated migrations (such as reference stars) have been appended.
+    legacy_source = [f for f in source if f.stem < "049_deduplicate_recommendation_drafts"] if target == "question_bank" else source[:-1]
+    for file in legacy_source:
         shutil.copy2(file, legacy / file.name)
     database = tmp_path / "TEST-legacy.db"
     ensure_schema_current(target, database, migrations_dir=legacy)
@@ -383,7 +386,7 @@ def test_historical_database_requires_conversion_manifest_and_keeps_its_records(
     shutil.move(str(removed), str(manifest_root))
     with pytest.raises(schema_migrations.SchemaMigrationRequired) as required:
         ensure_schema_current(target, database, allow_existing_migrations=False)
-    assert required.value.pending == (source[-1].stem,)
+    assert required.value.pending == tuple(f.stem for f in source if f not in legacy_source)
     assert database.read_bytes() == before
     report = run_migrations(target, db_path=database, migrations_dir=manifest_root / target,
                             backup_dir_override=tmp_path / "TEST-backups")

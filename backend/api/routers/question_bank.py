@@ -44,6 +44,7 @@ from backend.api.schemas.question_bank import (
     QuestionPaperPermanentDeleteRequest,
     QuestionPaperPermanentDeleteResponse,
     QuestionPaperStateChangeRequest,
+    ExamReferenceChangeRequest,
     QuestionPaperStateWriteResponse,
     QuestionRefListItem,
     QuestionRefListResponse,
@@ -179,7 +180,6 @@ from question_bank.training_criteria import (
     QuestionAnalysisInput,
     QuestionAnalysisInputLoader,
     TrainingCriterionModule,
-    solution_evidence_source_content_hash,
 )
 
 router = APIRouter(prefix="/api/question-bank", tags=["question-bank"])
@@ -392,6 +392,7 @@ def get_skill_index(
         content, refreshing = serve_with_refresh(
             data_root=_read_service_data_root(service),
             endpoint="question-bank-skill-index",
+            source_version=lambda: service.volume_source_version(curriculum_volume_id),
             request_key={"curriculum_volume_id": curriculum_volume_id},
             compute=lambda: _skill_index_response_bytes(
                 service.db_path, service.data_root, curriculum_volume_id
@@ -404,6 +405,33 @@ def get_skill_index(
     return _display_response(content, refreshing)
 
 
+@router.get("/exam-reference")
+def get_exam_reference(
+    curriculum_volume_id: str | None = None,
+    service: QuestionBankReadService = Depends(get_question_bank_read_service),
+) -> dict[str, Any]:
+    try:
+        return service.entrance_exam_profile(curriculum_volume_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.patch("/papers/{paper_id}/exam-reference")
+def set_exam_reference(
+    paper_id: int,
+    body: ExamReferenceChangeRequest,
+    service: QuestionBankWriteService = Depends(get_question_bank_write_service),
+) -> dict[str, Any]:
+    try:
+        return service.set_exam_reference(paper_id, expected_updated_at=body.expected_updated_at, starred=body.starred)
+    except PaperMetadataNotFound as exc:
+        raise ApiError(404, "paper_not_found", "试卷不存在") from exc
+    except PaperMetadataConflict as exc:
+        raise ApiError(409, "paper_metadata_conflict", "试卷已更新，已刷新卡片，请重试", {"current_updated_at": exc.current_updated_at}) from exc
+    except ValueError as exc:
+        raise ApiError(422, "exam_reference_invalid", str(exc)) from exc
+
+
 @router.get("/chapter-exam-profile", responses=QUESTION_SNAPSHOT_ERROR_RESPONSES)
 def get_chapter_exam_profile(
     curriculum_volume_id: Annotated[str, Query(min_length=1)],
@@ -413,6 +441,7 @@ def get_chapter_exam_profile(
         content, refreshing = serve_with_refresh(
             data_root=_read_service_data_root(service),
             endpoint="question-bank-chapter-exam-profile",
+            source_version=lambda: service.volume_source_version(curriculum_volume_id),
             request_key={"curriculum_volume_id": curriculum_volume_id},
             compute=lambda: _chapter_exam_profile_response_bytes(
                 service.db_path, service.data_root, curriculum_volume_id
@@ -1665,6 +1694,7 @@ def question_repair_preview(curriculum_volume_id: str, kind: Literal['skills', '
         content, refreshing = serve_with_refresh(
             data_root=_read_service_data_root(service),
             endpoint='question-bank-repair-preview',
+            source_version=lambda: service._asset_generation(refresh=True)[0],
             request_key={'curriculum_volume_id': curriculum_volume_id, 'kind': kind},
             compute=lambda: _repair_preview_response_bytes(
                 service.db_path, service.data_root, curriculum_volume_id, kind))
@@ -2364,14 +2394,14 @@ def _active_criterion_backfill_job(
 )
 def list_papers(
     deleted: bool = False,
+    include_analysis: bool = True,
+    paper_ids: str | None = None,
     service: QuestionBankReadService = Depends(get_question_bank_read_service),
 ) -> QuestionPaperListResponse:
     try:
-        rows = (
-            service.list_papers(deleted=True)
-            if deleted
-            else service.list_papers()
-        )
+        selected = ([int(value) for value in paper_ids.split(',') if value.strip().isdigit()]
+                    if paper_ids is not None else None)
+        rows = service.list_papers(deleted=deleted, include_analysis=include_analysis, paper_ids=selected)
     except QuestionBankSnapshotError as exc:
         _raise_question_snapshot_api_error(exc)
     items = [QuestionPaperListItem(**row) for row in rows]
@@ -2892,30 +2922,9 @@ def get_question_solution_evidence(
             "Question not found",
             {"question_id": int(question_id)},
         )
-    current_question = None
-    try:
-        current_question = QuestionAnalysisInputLoader(
-            db_path=question_bank_db_path,
-            data_root=data_root,
-        ).load((question_id,))[0]
-        current_source_hash = solution_evidence_source_content_hash(
-            current_question
-        )
-        from question_bank.training_criteria.analysis import compatible_source_content_hashes
-        source_hashes = compatible_source_content_hashes(current_question, kind="solution_evidence")
-    except (KeyError, OSError, TypeError, ValueError):
-        # If the current content cannot be reconstructed safely, an old
-        # evidence body must never be presented as current.
-        current_source_hash = "current-content-unavailable"
-        source_hashes = ()
-    latest = SolutionEvidenceRepository(question_bank_db_path).latest(
-        question_id,
-        current_source_content_hash=current_source_hash,
-        compatible_source_hashes=source_hashes,
-    )
+    latest = SolutionEvidenceRepository(question_bank_db_path).latest(question_id)
     from question_bank.solution_evidence.part_assessments import load_profiles
-    profile = load_profiles(question_bank_db_path, [question_id], data_root=data_root,
-        question_inputs={question_id: current_question} if current_question is not None else None).get(question_id)
+    profile = load_profiles(question_bank_db_path, [question_id], data_root=data_root).get(question_id)
     if profile and profile["available"]:
         return QuestionSolutionEvidenceResponse(
             question_id=int(question_id), available=True,

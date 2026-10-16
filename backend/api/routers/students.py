@@ -484,7 +484,7 @@ def get_student_deletion_impact(
 )
 def delete_student(
     student_id: int,
-    expected_revision: str = Query(pattern=r"^[0-9a-f]{64}$"),
+    expected_revision: str = Query(min_length=1, max_length=256),
     confirmed: bool = Query(),
     roster: StudentRosterModule = Depends(get_student_roster_module),
 ) -> StudentDeleteResponse:

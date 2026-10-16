@@ -1,12 +1,11 @@
 """智学网成绩导入预览计划：列映射、名单匹配、检查与差异。
 
 ``build_import_plan`` 同时服务 preview 与 confirm——confirm 用相同输入重算
-计划并比对 preview_revision，保证两次结果一致。
+计划；确认时用配置版本和成绩版本拦截过期预览。
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from pathlib import Path
@@ -350,7 +349,6 @@ def build_import_plan(
     )
     rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
     answer_key = json.loads(answer_key_path.read_text(encoding="utf-8"))
-    rubric_sha = hashlib.sha256(rubric_path.read_bytes()).hexdigest()
     questions = rubric_questions(rubric)
     questions_by_qno = {q["qno"]: q for q in questions}
     answers = {
@@ -1008,25 +1006,11 @@ def build_import_plan(
         else None
     )
 
-    preview_revision = hashlib.sha256(
-        json.dumps(
-            {
-                "session_id": int(session_id),
-                "upload_ids": sorted(params["upload_ids"]),
-                "params": {
-                    "sheet_classes": params["sheet_classes"],
-                    "part_choices": params["part_choices"],
-                    "item_max": params["item_max"],
-                    "student_overrides": params["student_overrides"],
-                },
-                "rubric_sha256": rubric_sha,
-                "results_state": _results_state(db, session_id),
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-            default=str,
-        ).encode("utf-8")
-    ).hexdigest()
+    from backend.config_workspace.publish import config_revision
+    from integration.data_generation import data_version_token
+
+    preview_revision = config_revision(session, data_root=data_root) + "|" + str(
+        (data_version_token(db.db_path, "results") or ())[1:])
 
     return {
         "questions": question_plans,

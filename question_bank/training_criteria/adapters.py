@@ -16,7 +16,7 @@ from backend.llm import LLMRequestKind, usage_fields
 from backend.llm.json_repair import parse_json_object_locally
 from backend.llm.policy import policy_from_profile
 from question_bank.database.schema import connect
-from question_bank.question_types import is_type_key
+from question_bank.question_types import is_type_key, type_candidate_fingerprint
 from question_bank.models.tag_schema import (
     DIFFICULTY_SCALE_GUIDANCE,
     TagAnalysis,
@@ -242,7 +242,7 @@ class ExistingTagProjectionWriter:
         model_name: str,
         operation_id: str,
     ) -> None:
-        """Persist validated secondary types on the existing question-tag seam."""
+        """Persist type labels or an explicit no-match result on the existing tag seam."""
         from question_bank.knowledge_graph_release.repository import active_release_id
         from question_bank.training_criteria.analysis import validate_question_type_labels
 
@@ -267,6 +267,26 @@ class ExistingTagProjectionWriter:
                 expected_release_id=question.taxonomy_snapshot.knowledge_graph_release_id,
                 source="taxonomy", data_root=self.write_service.data_root,
             )
+            # A successful no-match is a saved decision, not a failed request.
+            # Respect a teacher's type that sync_question_type_labels retained.
+            has_type = any(is_type_key(target.stable_key) for row in connection.execute(
+                "SELECT tag_value FROM question_tags WHERE question_id=? AND tag_type='knowledge_point'",
+                (question.question_id,)) for target in resolver.resolve(row[0]))
+            if not labels["primary_type_id"] and not has_type:
+                review = {
+                    "status": "type_unclassified",
+                    "review_source": "model_result",
+                    "operation_id": operation_id,
+                    "release_id": question.taxonomy_snapshot.knowledge_graph_release_id,
+                    "source_hash": question.source_content_hash,
+                    "type_candidate_fingerprint": type_candidate_fingerprint(question.taxonomy_contract),
+                    "reason": str(labels["reason"]),
+                }
+                connection.execute(
+                    "INSERT INTO question_tags(question_id,tag_type,tag_value,source,model_name) "
+                    "VALUES(?,'tag_status',?,'taxonomy',?)",
+                    (question.question_id, json.dumps(review, ensure_ascii=False, sort_keys=True), model_name),
+                )
 
     def audit_summary(
         self,
@@ -485,7 +505,13 @@ class QuestionAnalysisInputLoader:
         curriculum_volume_id: str | None = None,
         load_failures: MutableMapping[int, str] | None = None,
         verify_content: bool = True,
+        include_word_blocks: bool = True,
+        include_assets: bool = True,
+        include_image_content: bool = True,
+        image_metadata_out: MutableMapping[int, tuple] | None = None,
     ) -> tuple[QuestionAnalysisInput, ...]:
+        if verify_content and (not include_assets or not include_image_content):
+            raise ValueError('Source verification requires complete assets')
         ids = tuple(dict.fromkeys(int(value) for value in question_ids))
         if not ids or any(value <= 0 for value in ids):
             raise ValueError("question_ids must contain positive integers")
@@ -497,7 +523,7 @@ class QuestionAnalysisInputLoader:
                        q.question_number, q.question_type,
                        q.image_paths, q.has_images, q.is_deleted,
                        p.grade, p.semester, p.textbook_version,
-                       p.exam_type, p.district
+                       p.exam_type, p.district, p.title AS paper_title
                 FROM questions q
                 LEFT JOIN papers p ON p.id = q.paper_id
                 WHERE q.id IN ({placeholders})
@@ -518,7 +544,7 @@ class QuestionAnalysisInputLoader:
             ).fetchall()
             evidence_parts_by_id = load_evidence_parts_for_tagging(
                 self.db_path, ids, connection=connection,
-            )
+            ) if include_assets and include_image_content else {}
         special_types_by_id: dict[int, list[str]] = {}
         for tag_row in special_type_rows:
             bucket = special_types_by_id.setdefault(int(tag_row["question_id"]), [])
@@ -537,7 +563,7 @@ class QuestionAnalysisInputLoader:
                 question_id,
                 root=self.data_root / "question_bank" / "rich_content",
                 strict=True,
-            ) or {}
+            ) or {} if include_assets else {}
             question_blocks = _safe_blocks(rich.get("question_blocks"))
             answer_blocks = _safe_blocks(rich.get("answer_blocks"))
             question_paths = _dedupe_paths(
@@ -546,23 +572,25 @@ class QuestionAnalysisInputLoader:
                     *_marker_paths(row["question_text"]),
                     *_rich_paths(question_blocks),
                 ]
-            )
+            ) if include_assets else []
             answer_paths = _dedupe_paths(
                 [
                     *_marker_paths(row["answer_text"]),
                     *_rich_paths(answer_blocks),
                 ]
-            )
+            ) if include_assets else []
             image_hashes_by_path: dict[str, str] = {}
             question_images = self._images(
                 question_paths,
                 role="question",
                 image_hashes_by_path=image_hashes_by_path,
+                metadata_only=not include_image_content,
             )
             answer_images = self._images(
                 answer_paths,
                 role="answer",
                 image_hashes_by_path=image_hashes_by_path,
+                metadata_only=not include_image_content,
             )
             # Some DOCX/PDF extractors attach a diagram to the answer-side
             # rich blocks even though it is the figure the question refers to.
@@ -570,15 +598,19 @@ class QuestionAnalysisInputLoader:
             # when no question-side body could be resolved, so the structural
             # image gate does not reject an otherwise usable question.
             if bool(row["has_images"]) and not question_images and answer_images:
-                question_images = [
+                question_images = ([('question', image[1], image[2]) for image in answer_images]
+                                   if not include_image_content else [
                     QuestionAnalysisImage(
                         role="question",
                         mime_type=image.mime_type,
                         content=image.content,
                     )
                     for image in answer_images
-                ]
+                ])
             images = tuple([*question_images, *answer_images])
+            if image_metadata_out is not None:
+                image_metadata_out[question_id] = (images if not include_image_content else
+                    tuple((image.role, image.mime_type, image.sha256) for image in images))
             has_images = bool(row["has_images"]) or bool(
                 question_paths or answer_paths
             )
@@ -599,7 +631,7 @@ class QuestionAnalysisInputLoader:
                     curriculum_volume_id=str(
                         curriculum_volume_id or ""
                     ).strip(),
-                    exam_type=str(row["exam_type"] or ""),
+                    exam_type=str(row["exam_type"] or ("中考" if "中考" in str(row["paper_title"] or "") and not re.search("模拟|模考|一模|二模|三模|适应性", str(row["paper_title"])) else "")),
                     district=str(row["district"] or ""),
                     has_images=has_images,
                     existing_tags_by_dimension=(
@@ -612,20 +644,20 @@ class QuestionAnalysisInputLoader:
                     ),
                 ),
                 rich_question_blocks=tuple(
-                    _public_block(item) for item in question_blocks
+                    _public_block(item) for item in (question_blocks if include_image_content else ())
                 ),
                 rich_answer_blocks=tuple(
-                    _public_block(item) for item in answer_blocks
+                    _public_block(item) for item in (answer_blocks if include_image_content else ())
                 ),
                 word_question_blocks=tuple(
                     _word_block(item, image_hashes_by_path)
-                    for item in _question_content_blocks(question_blocks)
+                    for item in (_question_content_blocks(question_blocks) if include_word_blocks else ())
                 ),
                 word_answer_blocks=tuple(
                     _word_block(item, image_hashes_by_path)
-                    for item in answer_blocks
+                    for item in (answer_blocks if include_word_blocks else ())
                 ),
-                images=images,
+                images=images if include_image_content else (),
                 taxonomy_contract=(
                     (taxonomy_contracts or {}).get(question_id, {})
                 ),
@@ -654,7 +686,7 @@ class QuestionAnalysisInputLoader:
                 return question_id, "question_content_unreadable"
 
         with batch_file_reads(self.data_root), source_content_hash_reuse() as hash_reuse:
-            if len(ids) < 8:
+            if len(ids) < 8 or not include_assets:
                 loaded = [try_load_one(question_id) for question_id in ids]
             else:
                 def load_with_hashes(question_id: int):
@@ -682,7 +714,8 @@ class QuestionAnalysisInputLoader:
         *,
         role: str,
         image_hashes_by_path: dict[str, str] | None = None,
-    ) -> list[QuestionAnalysisImage]:
+        metadata_only: bool = False,
+    ) -> list:
         result: list[QuestionAnalysisImage] = []
         for saved_path in paths:
             try:
@@ -703,6 +736,22 @@ class QuestionAnalysisInputLoader:
                 or "application/octet-stream"
             )
             try:
+                if metadata_only:
+                    from question_bank.services.file_cache import question_identity_map
+                    from hashlib import sha256
+                    info = resolved.stat()
+                    if (mime not in {'image/jpeg', 'image/png', 'image/webp', 'image/gif'}
+                            or not 0 < info.st_size <= 20 * 1024 * 1024):
+                        continue
+                    identities = question_identity_map(self.data_root)
+                    key = ('image-bytes', str(resolved), info.st_dev, info.st_ino,
+                           info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+                    digest = identities.get(key)
+                    if not isinstance(digest, str) or len(digest) != 64:
+                        digest = sha256(cached_file_bytes(resolved)).hexdigest()
+                        identities.put(key, digest)
+                    result.append((role, mime, digest))
+                    continue
                 image = QuestionAnalysisImage(
                     role=role,  # type: ignore[arg-type]
                     mime_type=mime,
@@ -997,8 +1046,8 @@ def _combined_prompt(
         "就能完成的操作不挂到更晚章节的词条（例如完全平方数开方这类已会操作，"
         "不得因为式子里出现 √ 就挂到更晚章节的开平方词条）；"
         "supporting_prerequisite 不得来自比本题主考章节更晚的章节。"
-        "候选条带 allowed_roles 时只能照抄其中的角色。更早册别的小节与细项知识点只用于标记“用到的前置知识”，只能标 "
-        "supporting_prerequisite，不得标 direct。"
+        "候选条带 allowed_roles 时只能照抄其中的角色。普通学期考试中，更早册别的小节与细项知识点只能标 "
+        "supporting_prerequisite，不得标 direct。中考真题按全初中直接考查内容标注，早期册别也可按 allowed_roles 标 direct。"
         "每个链接标注 direct 或 supporting_prerequisite，同一 (id, role) 不得在一个 "
         "evidence point 内重复。不要推断或返回核心图谱映射。"
         "每个 part 还要返回 response_mode、canonical_answer、full_answer、accepted_forms、"

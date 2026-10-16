@@ -570,34 +570,28 @@ class ResultRepository:
         *,
         student_ids: list[int],
         session_ids: list[int],
+        include_diagnostics: bool = True,
     ) -> list[dict[str, Any]]:
-        query = """
+        diagnostic_columns = """
+                sd.knowledge_ids, sd.deduction_reason, sd.error_category,
+                sd.error_summary, sd.secondary_errors_json,
+                gs.created_at AS exam_created_at, sr.student_score, sr.total_score,
+                s.student_code, s.name AS student_name, s.class_name,
+                ep.front_image, ep.back_image, sd.id AS detail_id,
+                sr.graded_at,
+        """ if include_diagnostics else ""
+        query = f"""
             SELECT
                 sr.session_id,
                 gs.session_name,
-                gs.created_at AS exam_created_at,
                 sr.id AS result_id,
                 sr.student_id,
-                sr.student_score,
-                sr.total_score,
-                s.student_code,
-                s.name AS student_name,
-                s.class_name,
-                ep.front_image,
-                ep.back_image,
-                sd.id AS detail_id,
                 sd.question_id,
-                sd.knowledge_ids,
+                {diagnostic_columns}
                 COALESCE(tsl.score_awarded, sd.score_awarded) AS score_awarded,
                 tsl.max_score AS teacher_final_max_score,
-                tsl.revision AS teacher_final_revision,
                 tsl.scan_batch_id AS teacher_final_scan_batch_id,
-                sr.raw_json AS assessment_raw_json,
-                sd.deduction_reason,
-                sd.error_category,
-                sd.error_summary,
-                sd.secondary_errors_json,
-                sr.graded_at
+                tsl.revision AS teacher_final_revision
             FROM session_details sd
             JOIN session_results sr ON sr.id = sd.result_id
             JOIN grading_sessions gs ON gs.id = sr.session_id
@@ -622,19 +616,28 @@ class ResultRepository:
         result = []
         metadata_by_result = {}
         teacher_reviews_by_result = {}
-        for raw_row in rows:
-            row = dict(raw_row)
-            raw = row.pop("assessment_raw_json", None)
-            if row["result_id"] not in metadata_by_result:
+        # A result's raw JSON contains the complete answer sheet. Fetch it
+        # once per result instead of duplicating it for every question row.
+        result_ids = list(dict.fromkeys(row['result_id'] for row in rows))
+        for offset in range(0, len(result_ids), 500):
+            batch = result_ids[offset:offset + 500]
+            placeholders = ','.join('?' for _ in batch)
+            for raw_row in self.session.connection.execute(
+                f'SELECT id, raw_json FROM session_results WHERE id IN ({placeholders})', batch
+            ):
+                result_id = raw_row['id']
                 try:
-                    payload = json.loads(raw or "{}")
-                    metadata = payload.get("detail_metadata", {})
-                    metadata_by_result[row["result_id"]] = metadata if isinstance(metadata, dict) else {}
-                    teacher_reviews = payload.get("teacher_reviews")
-                    teacher_reviews_by_result[row["result_id"]] = teacher_reviews if isinstance(teacher_reviews, dict) else {}
+                    payload = json.loads(raw_row['raw_json'] or '{}')
+                    metadata = payload.get('detail_metadata', {})
+                    reviews = payload.get('teacher_reviews')
+                    metadata_by_result[result_id] = metadata if isinstance(metadata, dict) else {}
+                    teacher_reviews_by_result[result_id] = reviews if isinstance(reviews, dict) else {}
                 except (TypeError, ValueError, AttributeError):
-                    metadata_by_result[row["result_id"]] = {}
-            detail = metadata_by_result[row["result_id"]].get(row["question_id"], {})
+                    metadata_by_result[result_id] = {}
+        columns = rows[0].keys() if rows else ()
+        for raw_row in rows:
+            row = dict(zip(columns, raw_row))
+            detail = metadata_by_result.get(row["result_id"], {}).get(row["question_id"], {})
             row["assessment_state"] = {
                 key: detail.get(key) for key in (
                     "need_review", "answer_is_blank_or_no_valid_work", "answer_discarded_by_smudge",
@@ -645,7 +648,7 @@ class ResultRepository:
             teacher_review = teacher_reviews.get(row["question_id"])
             if isinstance(teacher_review, dict):
                 row["assessment_state"]["teacher_review"] = teacher_review
-            result.append(_detail_row_with_secondary_errors(row))
+            result.append(_detail_row_with_secondary_errors(row) if include_diagnostics else row)
         return result
 
     def get_active_error_point_rows(
@@ -1218,11 +1221,13 @@ class ResultRepositoryGateway:
         *,
         student_ids: list[int],
         session_ids: list[int],
+        include_diagnostics: bool = True,
     ) -> list[dict[str, Any]]:
         with self._sessions.session(read_only=True) as session:
             return ResultRepository(session).get_active_assessment_rows(
                 student_ids=student_ids,
                 session_ids=session_ids,
+                include_diagnostics=include_diagnostics,
             )
 
     def get_active_error_point_rows(
@@ -1370,13 +1375,23 @@ class ResultRepositoryGateway:
         *,
         student_ids: list[str] | tuple[str, ...] = (),
         session_ids: list[int] | tuple[int, ...] = (),
+        include_diagnostics: bool = True,
     ) -> list[dict[str, Any]]:
         normalized_students = [int(value) for value in student_ids]
         normalized_sessions = [int(value) for value in session_ids]
         rows = self.get_active_assessment_rows(
             student_ids=normalized_students,
             session_ids=normalized_sessions,
+            include_diagnostics=include_diagnostics,
         )
+        if not include_diagnostics:
+            scores = {sid: self._load_rubric_maps_for_session(sid)["score"]
+                      for sid in dict.fromkeys(int(row["session_id"]) for row in rows)}
+            for row in rows:
+                full_score = scores[int(row["session_id"])].get(str(row["question_id"]))
+                row["full_score"] = (_safe_float(full_score, 0.0) if full_score is not None
+                                     else _safe_float(row.get("score_awarded"), 0.0))
+            return rows
         enriched = self._enrich_detail_rows(rows)
         for row in enriched:
             row["full_score"] = _safe_float(row.get("max_score"), 0.0)
@@ -1506,8 +1521,7 @@ class ResultRepositoryGateway:
             if session_id not in rubric_cache:
                 rubric_cache[session_id] = self._load_rubric_maps_for_session(session_id)
             qid = str(row.get("question_id") or "")
-            row_knowledge_ids = _knowledge_ids_from_result_row(row)
-            if knowledge_id is not None and not _knowledge_id_matches(knowledge_id, row_knowledge_ids):
+            if knowledge_id is not None and not _knowledge_id_matches(knowledge_id, _knowledge_ids_from_result_row(row)):
                 continue
             full_score = rubric_cache[session_id]["score"].get(qid)
             awarded = _safe_float(row.get("score_awarded"), 0.0)

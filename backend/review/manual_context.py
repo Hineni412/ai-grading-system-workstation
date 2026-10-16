@@ -29,5 +29,6 @@ def current_manual_context(
         return None
     return {
         "scan_batch_id": str(preflight["scan_batch_id"]),
+        "revision": int(preflight["revision"]),
         "papers": preflight_match_status(preflight)["papers"],
     }

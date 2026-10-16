@@ -16,7 +16,6 @@ from backend.repositories.students import (
     StudentRecord,
     StudentRepositoryGateway,
     StudentRosterRevisionConflict,
-    student_roster_revision,
 )
 
 FIELD_ALIASES = {
@@ -263,7 +262,7 @@ class StudentRosterModule:
 
         columns = tuple(str(column).strip() for column in frame.columns)
         resolved_mapping = self._resolve_mapping(columns, mapping)
-        existing_rows = self._students.list_students()
+        existing_rows, revision = self._students.student_roster_snapshot()
         if not resolved_mapping["student_code"] or not resolved_mapping["name"]:
             return StudentImportPreview(
                 filename=clean_filename,
@@ -274,7 +273,7 @@ class StudentRosterModule:
                     for key in ("insert", "update", "unchanged", "invalid", "duplicate")
                 },
                 rows=(),
-                roster_revision=student_roster_revision(existing_rows),
+                roster_revision=revision,
                 issues=("请选择学号列和姓名列",),
             )
 
@@ -338,7 +337,7 @@ class StudentRosterModule:
             mapping=resolved_mapping,
             counts=counts,
             rows=tuple(preview_rows),
-            roster_revision=student_roster_revision(existing_rows),
+            roster_revision=revision,
         )
 
     def commit_import(
@@ -346,10 +345,7 @@ class StudentRosterModule:
         expected_revision: str,
         items: list[dict[str, Any]],
     ) -> StudentImportResult:
-        if (
-            len(str(expected_revision)) != 64
-            or any(character not in "0123456789abcdef" for character in str(expected_revision))
-        ):
+        if not str(expected_revision).strip():
             raise StudentRosterError("学生名单版本无效")
         if not items:
             raise StudentRosterError("请至少选择一名有效学生")

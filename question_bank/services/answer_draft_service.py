@@ -134,6 +134,14 @@ class AnswerDraftService:
             )
             applied = cursor.rowcount > 0
             if applied:
+                # Content identity is maintained at this write boundary.
+                from question_bank.services.duplicate_analysis_copy_service import upsert_content_index
+                upsert_content_index(conn, question_id=int(question_id), key="")
+                conn.execute(
+                    "UPDATE question_error_patterns SET confirm_token='source-stale' "
+                    "WHERE question_id=? AND source='ai_predicted'",
+                    (int(question_id),),
+                )
                 # 答案正文变化后，同事务把按旧题面保存的判定点标记为失效；
                 # 单题输入读取失败不阻挡教师保存。
                 try:

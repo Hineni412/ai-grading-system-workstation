@@ -441,7 +441,7 @@ _CURRENT_PREVIEW_ORDER_SQL = "updated_at DESC, id DESC"
 _READ_RESULT_CACHE_LIMIT = 48
 _BROWSE_CACHE_LIMITS = {"skill_snapshot": 2, "skill_inventory": 2, "skill_page": 4,
                         "skill_index": 4, "skill_questions": 8, "facets": 4, "papers": 2,
-                        "repair_preview": 6, "analysis_materials": 2}
+                        "repair_preview": 6, "analysis_materials": 2, "exam_references": 2}
 _READ_RESULT_CACHE_LOCK = threading.Lock()
 _SKILL_SNAPSHOT_LOCK = threading.Lock()
 _SKILL_LOCAL_CACHE_MAX_BYTES = 16 * 1024 * 1024
@@ -1083,7 +1083,7 @@ def _read_result_cache_put(key: tuple[object, ...], value: object) -> None:
         # Skill snapshots are internal, read-only projections. Public results
         # still receive independent copies; copying the whole bank per filter
         # request would defeat the shared projection.
-        _READ_RESULT_CACHE[key] = value if key[0] in {"skill_snapshot", "skill_inventory", "skill_page"} else deepcopy(value)
+        _READ_RESULT_CACHE[key] = value if key[0] in {"skill_snapshot", "skill_inventory", "skill_page", "exam_references"} else deepcopy(value)
         _READ_RESULT_CACHE.move_to_end(key)
         if key[0] == "collapsed_ids":
             # Group keys contain a candidate set, not just a 20-row page.
@@ -1202,7 +1202,7 @@ class QuestionBankReadService:
         generation = scope.generation if scope is not None else None
         asset_generation, _ = self._asset_generation()
         cache_key = ("analysis_materials", generation, self._cache_data_root,
-                     asset_generation, _taxonomy_generation_token())
+                     asset_generation)
         cacheable = (generation is not None and asset_generation is not None
                      and generation == _source_generation_token(self.db_path))
         cached = _read_result_cache_get(cache_key) if cacheable else _CACHE_MISS
@@ -1214,14 +1214,14 @@ class QuestionBankReadService:
             snapshot = _read_result_cache_get(("skill_snapshot", generation,
                 self._cache_data_root, asset_generation), shared=True)
         retained = snapshot.get("profiles", {}) if isinstance(snapshot, dict) else {}
-        for start in range(0, len(missing), 64):
-            batch = missing[start:start + 64]
+        for start in range(0, len(missing), 200):
+            batch = missing[start:start + 200]
             profiles = {qid: retained[qid] for qid in batch if qid in retained}
             unchecked = [qid for qid in batch if qid not in profiles]
             if unchecked:
                 profiles.update(load_profiles(self.db_path, unchecked, connection=conn,
                                               data_root=self.data_root))
-            states = saved_analysis_states(conn, batch, profiles)
+            states = saved_analysis_states(conn, batch, profiles, include_history=False)
             for qid in batch:
                 state = states[qid]
                 known[qid] = {
@@ -1267,9 +1267,50 @@ class QuestionBankReadService:
         with _SKILL_SNAPSHOT_LOCK:
             return self._load_skill_snapshot(volume_id=volume_id, question_ids=question_ids)
 
+    def _skill_inventory(self, conn, generation):
+        from question_bank.services.question_skill_index import load_skill_inventory
+        scope = _ACTIVE_READ_SCOPE.get()
+        if scope is not None and scope.skill_inventory is not None:
+            return scope.skill_inventory
+        key = ('skill_inventory', generation, self._cache_data_root)
+        inventory = _read_result_cache_get(key, shared=True) if generation is not None else _CACHE_MISS
+        if inventory is _CACHE_MISS:
+            inventory = load_skill_inventory(conn)
+            if generation is not None and generation == _source_generation_token(self.db_path):
+                _read_result_cache_put(key, inventory)
+        if scope is not None:
+            scope.skill_inventory = inventory
+        return inventory
+
+    def volume_source_version(self, volume_id: str):
+        from integration.data_generation import question_version_state
+        generation = _source_generation_token(self.db_path)
+        cache_key = ('volume_source_version', generation, self._cache_data_root, volume_id)
+        cached = _read_result_cache_get(cache_key, shared=True) if generation is not None else _CACHE_MISS
+        if cached is not _CACHE_MISS:
+            return cached
+        state = question_version_state(self.db_path)
+        if state is None:
+            return self._asset_generation(refresh=True)[0]
+        with _read_connection(self.db_path) as conn:
+            scope = _ACTIVE_READ_SCOPE.get()
+            generation = scope.generation if scope else _source_generation_token(self.db_path)
+            inventory = self._skill_inventory(conn, generation)
+            ids = set(inventory['volumes'].get(volume_id, ()))
+            # A reused question may belong to several papers; every contributing
+            # paper's metadata participates even if its canonical owner is elsewhere.
+            papers = tuple(tuple(row) for row in conn.execute(
+                'SELECT id,title,exam_type,year,grade,semester,textbook_version,updated_at FROM papers ORDER BY id')
+                if ids.intersection(inventory['members'].get(int(row[0]), ())))
+        result = ('volume-materials-v1', str(self.db_path.resolve(strict=False)), state.materials_global,
+                  tuple((qid, state.versions.get(qid, 0)) for qid in sorted(ids)), papers)
+        if generation is not None and generation == _source_generation_token(self.db_path):
+            _read_result_cache_put(cache_key, result)
+        return result
+
     def _load_skill_snapshot(self, *, volume_id: str | None = None,
                              question_ids: tuple[int, ...] | None = None) -> dict[str, Any]:
-        from question_bank.services.question_skill_index import build_skill_snapshot, load_skill_inventory
+        from question_bank.services.question_skill_index import build_skill_snapshot
 
         active = _ACTIVE_READ_SCOPE.get()
         generation = active.generation if active is not None else _source_generation_token(self.db_path)
@@ -1285,16 +1326,7 @@ class QuestionBankReadService:
             return cached
         with _read_connection(self.db_path) as conn:
             scope = _ACTIVE_READ_SCOPE.get()
-            inventory = scope.skill_inventory if scope is not None else None
-            inventory_key = ("skill_inventory", generation, self._cache_data_root)
-            if inventory is None:
-                inventory = _read_result_cache_get(inventory_key, shared=True) if generation is not None else _CACHE_MISS
-                if inventory is _CACHE_MISS:
-                    inventory = load_skill_inventory(conn)
-                    if generation is not None and generation == _source_generation_token(self.db_path):
-                        _read_result_cache_put(inventory_key, inventory)
-                if scope is not None:
-                    scope.skill_inventory = inventory
+            inventory = self._skill_inventory(conn, generation)
             selected = (set(inventory["volumes"].get(volume_id, ())) if volume_id is not None
                         else set(question_ids) if question_ids is not None else set(inventory["questions"]))
             selected.intersection_update(inventory["questions"])
@@ -1550,12 +1582,13 @@ class QuestionBankReadService:
         generation = None if _ACTIVE_READ_SCOPE.get() is not None else _source_generation_token(self.db_path)
         with _read_connection(self.db_path) as conn:
             asset_generation, _manifest = self._asset_generation()
-            key = ("skill_index", generation, self._cache_data_root, asset_generation, curriculum_volume_id)
+            source = self.volume_source_version(curriculum_volume_id)
+            key = ("skill_index", source, self._cache_data_root, curriculum_volume_id)
             cached = _read_result_cache_get(key) if generation is not None and asset_generation is not None else _CACHE_MISS
             if cached is not _CACHE_MISS:
                 return cached
             snapshot = self._skill_snapshot(volume_id=curriculum_volume_id)
-            review_ids = self._criteria_needs_review_ids(conn, list(snapshot["questions"]))
+            review_ids = self._criteria_needs_review_ids(conn, list(snapshot['volumes'].get(curriculum_volume_id, ())))
         result = skill_index(snapshot, curriculum_volume_id, review_ids)
         if (generation is not None and asset_generation is not None
                 and generation == _source_generation_token(self.db_path)
@@ -1563,7 +1596,8 @@ class QuestionBankReadService:
             _read_result_cache_put(key, result)
         return result
 
-    def chapter_exam_profile(self, curriculum_volume_id: str) -> dict[str, Any]:
+    def chapter_exam_profile(self, curriculum_volume_id: str, *,
+                             section_ids: Iterable[str] | None = None) -> dict[str, Any]:
         """章节考情：本册期中/期末卷的出卷统计，只读、无模型调用。"""
         from question_bank.services.chapter_exam_profile import (
             build_chapter_exam_profile,
@@ -1573,24 +1607,43 @@ class QuestionBankReadService:
         volume = curriculum_volume(volume_id=curriculum_volume_id)
         if volume is None:
             raise ValueError("请选择有效的教学学期")
+        selected = frozenset(section_ids) if section_ids is not None else None
+
+        def select_sections(profile):
+            if selected is None:
+                return profile
+            return {**profile, 'chapters': [
+                {**chapter, 'sections': sections}
+                for chapter in profile['chapters']
+                if (sections := [section for section in chapter['sections'] if section['id'] in selected])
+            ]}
+
         generation = None if _ACTIVE_READ_SCOPE.get() is not None else _source_generation_token(self.db_path)
         with _read_connection(self.db_path) as conn:
             asset_generation, _manifest = self._asset_generation()
-            key = ("chapter_exam_profile", generation, self._cache_data_root, asset_generation, curriculum_volume_id)
+            source = self.volume_source_version(curriculum_volume_id)
+            key = ("chapter_exam_profile", source, self._cache_data_root, curriculum_volume_id)
             cached = _read_result_cache_get(key) if generation is not None and asset_generation is not None else _CACHE_MISS
             if cached is _CACHE_MISS and generation is not None and asset_generation is not None:
                 cached = self._read_chapter_exam_profile(key)
                 if cached is not _CACHE_MISS:
                     _read_result_cache_put(key, cached)
             if cached is not _CACHE_MISS:
-                return cached
+                return select_sections(cached)
+            if selected is not None:
+                key = ('chapter_exam_sections', source, self._cache_data_root,
+                       tuple(sorted(selected)), curriculum_volume_id)
+                cached = _read_result_cache_get(key) if generation is not None and asset_generation is not None else _CACHE_MISS
+                if cached is not _CACHE_MISS:
+                    return cached
             snapshot = self._skill_snapshot(volume_id=curriculum_volume_id)
-            result = build_chapter_exam_profile(conn, snapshot, volume)
+            result = build_chapter_exam_profile(conn, snapshot, volume, section_ids=selected)
         if (generation is not None and asset_generation is not None
                 and generation == _source_generation_token(self.db_path)
                 and asset_generation == self._asset_generation(refresh=True)[0]):
             _read_result_cache_put(key, result)
-            self._save_chapter_exam_profile(key, result)
+            if selected is None:
+                self._save_chapter_exam_profile(key, result)
         return result
 
     def _chapter_profile_entries(self) -> dict:
@@ -1613,8 +1666,18 @@ class QuestionBankReadService:
             return _CACHE_MISS
         with _CHAPTER_PROFILE_CACHE_LOCK:
             record = self._chapter_profile_entries().get(key[-1])
-        if not isinstance(record, dict) or record.get("key") != key:
+        if not isinstance(record, dict):
             return _CACHE_MISS
+        stored_key = record.get('key')
+        if stored_key != key:
+            # Existing whole-domain entries remain exact hits while their
+            # original source version is current. New entries use book scope.
+            if not (isinstance(stored_key, tuple) and len(stored_key) == 5
+                    and stored_key[0] == key[0] and stored_key[2] == key[2]
+                    and stored_key[-1] == key[-1]
+                    and stored_key[1] == _source_generation_token(self.db_path)
+                    and stored_key[3] == self._asset_generation()[0]):
+                return _CACHE_MISS
         result = record.get("profile")
         if (not isinstance(result, dict) or result.get("curriculum_volume_id") != key[-1]
                 or result.get("model_calls") != 0
@@ -1779,22 +1842,39 @@ class QuestionBankReadService:
             "model_calls": 0,
         }
 
-    def list_papers(self, *, deleted: bool = False) -> list[dict[str, Any]]:
+    def list_papers(self, *, deleted: bool = False, include_analysis: bool = True,
+                    paper_ids: Iterable[int] | None = None) -> list[dict[str, Any]]:
+        selected = None if paper_ids is None else tuple(sorted({int(qid) for qid in paper_ids if int(qid) > 0}))
+        if selected == ():
+            return []
         generation = (
             None
             if _ACTIVE_READ_SCOPE.get() is not None
             else _source_generation_token(self.db_path)
         )
-        with _read_connection(self.db_path):
+        with _read_connection(self.db_path) as conn:
             asset_generation, _manifest = self._asset_generation()
-            key = ("papers", generation, self._cache_data_root, asset_generation, bool(deleted))
+            key = ("papers", generation, self._cache_data_root, asset_generation, bool(deleted),
+                   include_analysis, selected)
             if generation is not None and asset_generation is not None:
                 cached = _read_result_cache_get(key)
                 if cached is not _CACHE_MISS:
                     return cached  # type: ignore[return-value]
-            items = self._list_papers(deleted=deleted)
-            snapshot = self._skill_snapshot() if not deleted else None
+            items = self._list_papers(deleted=deleted, include_analysis=include_analysis, paper_ids=selected)
+            snapshot = None
+            if not deleted and include_analysis and items:
+                if selected is None:
+                    snapshot = self._skill_snapshot()
+                else:
+                    marks = ','.join('?' for _ in selected)
+                    ids = tuple(int(row[0]) for row in conn.execute(
+                        f'SELECT id FROM questions WHERE paper_id IN ({marks}) UNION '
+                        f'SELECT question_id FROM paper_question_occurrences WHERE paper_id IN ({marks})',
+                        [*selected, *selected]))
+                    snapshot = self._skill_snapshot(question_ids=ids)
         for item in items:
+            if not include_analysis:
+                item['analysis_loaded'] = False
             item["skill_unlinked_question_count"] = (
                 len(snapshot["members"].get(item["id"], set()) & snapshot["unlinked"]) if snapshot else 0
             )
@@ -1804,7 +1884,8 @@ class QuestionBankReadService:
             _read_result_cache_put(key, items)
         return items
 
-    def _list_papers(self, *, deleted: bool = False) -> list[dict[str, Any]]:
+    def _list_papers(self, *, deleted: bool = False, include_analysis: bool = True,
+                     paper_ids: tuple[int, ...] | None = None) -> list[dict[str, Any]]:
         paper_tag_types = ANALYSIS_TAG_TYPES + (
             "curriculum_section",
             "tag_status",
@@ -1826,15 +1907,23 @@ class QuestionBankReadService:
             if deleted
             else "COALESCE(p.import_status, '') <> 'deleted'"
         )
+        if paper_ids is not None:
+            paper_state_sql += ' AND p.id IN (' + ','.join(str(pid) for pid in paper_ids) + ')'
         order_sql = (
             "p.updated_at DESC, p.id DESC"
             if deleted
             else "p.created_at DESC, p.id DESC"
         )
         with _read_connection(self.db_path) as conn:
-            material_ids = [int(row[0]) for row in conn.execute(
-                "SELECT id FROM questions WHERE COALESCE(is_deleted, 0) = 0")]
-            materials = self._analysis_materials(conn, material_ids) if not deleted else {}
+            material_ids = []
+            if include_analysis and not deleted:
+                membership = '' if paper_ids is None else (
+                    ' AND (paper_id IN (' + ','.join(str(pid) for pid in paper_ids) + ') OR id IN '
+                    '(SELECT question_id FROM paper_question_occurrences WHERE paper_id IN ('
+                    + ','.join(str(pid) for pid in paper_ids) + ')))')
+                material_ids = [int(row[0]) for row in conn.execute(
+                    'SELECT id FROM questions WHERE COALESCE(is_deleted, 0) = 0' + membership)]
+            materials = self._analysis_materials(conn, material_ids) if material_ids else {}
             material_json = json.dumps([
                 dict(question_id=qid, **material) for qid, material in materials.items()
             ])
@@ -1878,6 +1967,8 @@ class QuestionBankReadService:
                     p.id,
                     p.title,
                     p.source_file AS _source_file,
+                    p.is_exam_reference,
+                    p.year_confirmed,
                     p.year,
                     p.province,
                     p.city,
@@ -1964,6 +2055,12 @@ class QuestionBankReadService:
         items: list[dict[str, Any]] = []
         for row in rows:
             item = dict(row)
+            from question_bank.services.exam_reference import exam_year, is_entrance_paper, is_shenzhen_paper
+            item["exam_year"] = exam_year(item)
+            item["is_exam_reference"] = bool(item["is_exam_reference"])
+            item["can_be_exam_reference"] = bool(is_entrance_paper(item) and is_shenzhen_paper(item))
+            item["is_entrance_exam"] = bool(is_entrance_paper(item))
+            item.pop("year_confirmed", None)
             item["source_type"] = _safe_source_type(item.pop("_source_file", None))
             volume = curriculum_volume(
                 grade=item.get("grade"),
@@ -2054,7 +2151,30 @@ class QuestionBankReadService:
         }
 
     def _read_filter_parts(self, filters: QuestionReadFilters, *, taxonomy_expansions: dict[str, tuple[str, ...]] | None = None):
-        joins, where, params = _question_filter_parts(filters, current_knowledge=self.current_knowledge, taxonomy_expansions=taxonomy_expansions)
+        across_semesters = bool(filters.curriculum_volume_ids)
+        filter_snapshot = None
+        scoped_filters = replace(filters, curriculum_volume_ids=()) if across_semesters else filters
+        joins, where, params = _question_filter_parts(scoped_filters, current_knowledge=self.current_knowledge, taxonomy_expansions=taxonomy_expansions)
+        if across_semesters:
+            from question_bank.services.exam_reference import is_entrance_paper
+            with _read_connection(self.db_path) as conn:
+                scope = _ACTIVE_READ_SCOPE.get()
+                generation = scope.generation if scope else _source_generation_token(self.db_path)
+                inventory = self._skill_inventory(conn, generation)
+            candidates = set().union(*(inventory['volumes'].get(v, ()) for v in filters.curriculum_volume_ids))
+            candidates.update(inventory['entrance_ids'])
+            snapshot = filter_snapshot = self._skill_snapshot(question_ids=tuple(sorted(candidates)))
+            references = self.exam_references(include_details=False)
+            ids = set().union(*(snapshot["volumes"].get(v, set()) for v in filters.curriculum_volume_ids))
+            for qid, keys in snapshot["knowledge_by_question"].items():
+                canonical = references.aliases.get(qid, qid)
+                if any(is_entrance_paper(references.papers[pid]) for pid in references.sources.get(canonical, ())):
+                    if any((node := curriculum_knowledge_node(k)) and node["volume_id"] in filters.curriculum_volume_ids for k in keys):
+                        ids.add(qid)
+            where.append("q.id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))")
+            params.append(json.dumps(sorted(ids)))
+            if not ids:
+                return joins, where, params
         if filters.analysis_status in {"complete", "incomplete"} or filters.criteria_needs_review:
             with _read_connection(self.db_path) as conn:
                 candidates = conn.execute(" ".join([
@@ -2080,7 +2200,7 @@ class QuestionBankReadService:
             where.append("q.id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))")
             params.append(json.dumps(selected))
         if filters.type_keys or filters.missing_type or filters.missing_knowledge:
-            snapshot = self._skill_snapshot()
+            snapshot = filter_snapshot if filter_snapshot is not None else self._skill_snapshot()
             ids = set(snapshot['questions'])
             if filters.type_keys:
                 matched = set().union(*(snapshot.get('by_type', {}).get(key, set()) for key in filters.type_keys))
@@ -2097,7 +2217,7 @@ class QuestionBankReadService:
             where.append("q.id IN (SELECT CAST(value AS INTEGER) FROM json_each(?))")
             params.append(json.dumps(sorted(ids)))
         if filters.skill_keys or filters.skill_unlinked:
-            snapshot = self._skill_snapshot()
+            snapshot = filter_snapshot if filter_snapshot is not None else self._skill_snapshot()
             ids = set(snapshot["questions"])
             if filters.skill_keys:
                 ids &= set().union(*(snapshot["by_skill"].get(key, set()) for key in filters.skill_keys))
@@ -2105,6 +2225,13 @@ class QuestionBankReadService:
                 ids &= snapshot["unlinked"]
             where.append("q.id IN (" + ",".join("?" for _ in ids) + ")" if ids else "1=0")
             params.extend(sorted(ids))
+        if filters.type_keys and not filters.question_ids:
+            from question_bank.services.exam_reference import automatic_candidate
+            refs = self.exam_references()
+            blocked = [qid for qid in refs.rows if not automatic_candidate(refs.assess(qid))]
+            if blocked:
+                where.append("q.id NOT IN (SELECT CAST(value AS INTEGER) FROM json_each(?))")
+                params.append(json.dumps(blocked))
         if filters.collapse_duplicates:
             from question_bank.services.duplicate_analysis_copy_service import (
                 canonical_question_ranks,
@@ -2241,6 +2368,9 @@ class QuestionBankReadService:
         with _read_connection(self.db_path) as conn:
             count_row = conn.execute(count_sql, params).fetchone()
             total = int(count_row[0] or 0)
+            if total == 0:
+                return QuestionReadPage(items=[], total=0, page=filters.page,
+                                        page_size=filters.page_size, total_pages=1)
             # Sort/filter narrow identity rows first; only load the page's
             # long stems/answers afterwards. Preserve occurrence numbering
             # and DISTINCT semantics, including a question in multiple papers.
@@ -2281,8 +2411,10 @@ class QuestionBankReadService:
             )
             for row in rows
         ]
+        references = self.exam_references()
         for item in items:
             item["criteria_needs_review"] = int(item["id"]) in review_ids
+            item["exam_reference"] = deepcopy(references.assess(int(item["id"])))
         if filters.include_skills:
             from question_bank.services.question_skill_index import short_node_name
             snapshot = self._skill_snapshot(question_ids=tuple(int(item["id"]) for item in items))
@@ -2723,6 +2855,119 @@ class QuestionBankReadService:
                 while len(_SIMILAR_INDEX_CACHE) > 2:
                     _SIMILAR_INDEX_CACHE.popitem(last=False)
             return index
+
+    def exam_references(self, *, include_details: bool = True):
+        """One saved-evidence rule set shared by browsing and both recommenders."""
+        from question_bank.services.exam_reference import ExamReferences, RULE_VERSION
+        generation = _source_generation_token(self.db_path)
+        assets = self._asset_generation()[0]
+        key = ("exam_references", generation, self._cache_data_root, _taxonomy_generation_token(), assets, RULE_VERSION, include_details)
+        cached = _read_result_cache_get(key, shared=True) if generation is not None and assets is not None else _CACHE_MISS
+        if cached is not _CACHE_MISS:
+            return cached
+        with _read_connection(self.db_path) as conn:
+            papers = {int(row["id"]): dict(row) for row in conn.execute(
+                "SELECT * FROM papers WHERE COALESCE(import_status,'')<>'deleted'")}
+            text_column = 'q.question_text' if include_details else 'NULL AS question_text'
+            rows = {int(row["id"]): dict(row) for row in conn.execute(
+                f"SELECT q.id,q.paper_id,q.question_number,{text_column},q.difficulty FROM questions q "
+                "JOIN papers p ON p.id=q.paper_id WHERE q.is_deleted=0 AND COALESCE(p.import_status,'')<>'deleted'")}
+            # Reuse persisted duplicate identities. No file hashing or writes.
+            parents = {qid: qid for qid in rows}
+            def root(qid):
+                while parents[qid] != qid:
+                    qid = parents[qid]
+                return qid
+            def merge(a, b):
+                if a in parents and b in parents:
+                    a, b = root(a), root(b)
+                    parents[max(a, b)] = min(a, b)
+            for a, b in conn.execute("SELECT question_id,duplicate_of_question_id FROM question_duplicate_links"):
+                merge(int(a), int(b))
+            identities = {}
+            for qid, identity in conn.execute("SELECT question_id,content_key FROM question_content_index"):
+                if qid in rows and identity:
+                    merge(qid, identities.setdefault(identity, qid))
+            aliases = {qid: root(qid) for qid in rows}
+            members, numbers = {}, {}
+            for pid, qid, number in conn.execute(
+                    "SELECT paper_id,id,question_number FROM questions UNION ALL "
+                    "SELECT paper_id,question_id,question_number FROM paper_question_occurrences"):
+                if pid in papers and qid in aliases:
+                    canonical = aliases[qid]
+                    members.setdefault(pid, set()).add(canonical)
+                    numbers.setdefault((pid, canonical), str(number or ""))
+            index = None
+            if include_details and any(p.get("is_exam_reference") for p in papers.values()):
+                from question_bank.services.exam_reference import is_entrance_paper
+                relevant = set().union(*(members.get(pid, set()) for pid, p in papers.items() if is_entrance_paper(p)))
+                selected = [rows[qid] for qid in sorted(relevant)]
+                tags = _load_page_tags(conn, sorted(relevant), current_knowledge=self.current_knowledge)
+                index = build_similar_question_index(selected, tags, self.current_knowledge,
+                    db_path=self.db_path, connection=conn, data_root=self.data_root)
+            result = ExamReferences(papers, members, rows, index, aliases=aliases, numbers=numbers)
+        if generation is not None and assets is not None and generation == _source_generation_token(self.db_path) and assets == self._asset_generation(refresh=True)[0]:
+            _read_result_cache_put(key, result)
+        return result
+
+    def entrance_exam_profile(self, volume_id: str | None = None) -> dict:
+        refs = self.exam_references(include_details=volume_id is not None)
+        result = refs.summary()
+        if volume_id is None:
+            return result
+        volume = curriculum_volume(volume_id=volume_id)
+        if volume is None:
+            raise ValueError("学期知识目录尚未就绪")
+        from question_bank.services.question_skill_index import short_node_name
+        ids = {qid for group in refs.groups for qid in group["question_ids"]}
+        snapshot = self._skill_snapshot(question_ids=tuple(sorted(ids)))
+        topics, tasks, types, pending = {}, {}, {}, 0
+        for group in refs.groups:
+            for qid in group["question_ids"]:
+                question = refs.by_question.get(qid)
+                keys = snapshot["knowledge_by_question"].get(qid, set())
+                keys = {k for k in keys if (node := curriculum_knowledge_node(k)) and node["volume_id"] == volume_id}
+                if qid in snapshot["no_usable"] or not snapshot["knowledge_by_question"].get(qid):
+                    pending += 1
+                if not keys:
+                    continue
+                source = {"paper_id": group["id"], "year": group["year"], "question_id": qid,
+                          "question_number": refs.numbers.get((group["id"], qid), "")}
+                for k in keys:
+                    node = curriculum_knowledge_node(k)
+                    item = topics.setdefault(k, {"key": k, "name": short_node_name(node["name"]), "sources": [], "papers": set()})
+                    item["sources"].append(source)
+                    item["papers"].add(group["id"])
+                # Retain every saved task; aggregate only identical target and
+                # primary type, never simply the question number across years.
+                profile = snapshot["profiles"].get(qid, {})
+                type_key = snapshot["primary_types"].get(qid, "")
+                if type_key:
+                    item = types.setdefault(type_key, {"key": type_key, "name": short_node_name(snapshot["nodes"].get(type_key, {}).get("display_name", type_key)), "sources": [], "papers": set()})
+                    item["sources"].append(source)
+                    item["papers"].add(group["id"])
+                for part_index, part in enumerate(profile.get("evidence", {}).get("parts", [])):
+                    if question is None or part_index >= len(question.parts) or not keys.intersection(question.parts[part_index].topics):
+                        continue
+                    targets = list(dict.fromkeys(str(p.get("target") or "").strip() for p in part.get("evidence_points", []) if p.get("target")))
+                    task = "；".join(targets)
+                    if not task:
+                        continue
+                    signature = (type_key, tuple(sorted(keys)), task, part.get("response_mode"))
+                    item = tasks.setdefault(signature, {"name": task, "type_name": short_node_name(snapshot["nodes"].get(type_key, {}).get("display_name", "未标题型")), "sources": [], "papers": set()})
+                    item["sources"].append({**source, "part_id": part.get("part_id")})
+                    item["papers"].add(group["id"])
+        def ranked(values):
+            output = []
+            for item in values:
+                pids = item.pop("papers")
+                item["paper_count"] = len(pids)
+                item["recent_weight"] = round(sum(g["weight"] or 0 for g in refs.groups if g["id"] in pids), 6)
+                output.append(item)
+            return sorted(output, key=lambda i: (-i["paper_count"], -i["recent_weight"], i["name"]))
+        result.update(curriculum_volume_id=volume_id, topics=ranked(topics.values()), tasks=ranked(tasks.values()), types=ranked(types.values()),
+                      pending_question_count=pending, total_reference_questions=sum(len(g["question_ids"]) for g in refs.groups))
+        return result
 
     def _find_similar_questions(
         self,

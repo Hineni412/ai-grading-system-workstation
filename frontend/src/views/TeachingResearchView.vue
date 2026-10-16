@@ -3,7 +3,6 @@ import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { paperReviewApi, type PaperReview, type PaperMark } from '../api/paper-review'
 import { fetchSessions, type SessionSummary } from '../api/sessions'
-import { exportsApi } from '../api/exports'
 import PageHeader from '../components/design-system/PageHeader.vue'
 import StatePanel from '../components/design-system/StatePanel.vue'
 import FeedbackBanner from '../components/design-system/FeedbackBanner.vue'
@@ -24,9 +23,8 @@ async function initialize() {
   error.value = ''; loading.value = true
   try {
     const all = await fetchSessions()
-    const availability = await Promise.all(all.map(async s => ({session:s,context:await exportsApi.getReportContext(s.id,1,1)})))
     if (!alive) return
-    sessions.value = availability.filter(s=>s.context.has_results).map(s=>s.session).sort((a,b)=>(b.updated_at ?? b.created_at ?? '').localeCompare(a.updated_at ?? a.created_at ?? '') || b.id-a.id)
+    sessions.value = all.filter(s=>s.has_results !== false).sort((a,b)=>(b.updated_at ?? b.created_at ?? '').localeCompare(a.updated_at ?? a.created_at ?? '') || b.id-a.id)
     const requested = Number(route.query.session)
     selected.value = sessions.value.find(s=>s.id===requested)?.id ?? sessions.value[0]?.id ?? null
     if (selected.value == null) loading.value = false

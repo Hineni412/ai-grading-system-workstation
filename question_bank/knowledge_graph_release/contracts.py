@@ -89,7 +89,13 @@ class KnowledgeGraphRelease:
     ) -> KnowledgeGraphRelease:
         if not isinstance(raw, Mapping):
             raise KnowledgeGraphReleaseError("release document must be an object")
-        payload = copy.deepcopy(dict(raw))
+        return cls._from_owned_payload(copy.deepcopy(dict(raw)))
+
+    @classmethod
+    def _from_owned_payload(cls, payload: dict[str, Any]) -> KnowledgeGraphRelease:
+        """Validate a freshly decoded/owned tree without copying it again."""
+        if not isinstance(payload, dict):
+            raise KnowledgeGraphReleaseError("release document must be an object")
         provided_hash = str(payload.get("content_hash") or "").strip().lower()
         computed_hash = compute_content_hash(payload)
         if provided_hash and provided_hash != computed_hash:
@@ -107,7 +113,7 @@ class KnowledgeGraphRelease:
             raise KnowledgeGraphReleaseError(
                 f"cannot read knowledge graph release: {exc}"
             ) from exc
-        return cls.from_mapping(raw)
+        return cls._from_owned_payload(raw)
 
     @property
     def release_id(self) -> str:
@@ -140,7 +146,9 @@ class KnowledgeGraphRelease:
 
 
 def compute_content_hash(payload: Mapping[str, Any]) -> str:
-    canonical = copy.deepcopy(dict(payload))
+    # Only the top-level hash field is removed. JSON encoding does not mutate
+    # nested values, so copying the complete release tree is unnecessary.
+    canonical = dict(payload)
     canonical.pop("content_hash", None)
     encoded = json.dumps(
         canonical,
@@ -186,7 +194,12 @@ def cached_release_from_json(
         if cached is not None:
             _RELEASE_CACHE.move_to_end(key)
             return cached
-        release = KnowledgeGraphRelease.from_mapping(json.loads(str(payload_json)))
+        # Persisted releases have passed validation at the write boundary.
+        # Reuse their saved identity; ordinary reads do not hash the whole graph.
+        payload = json.loads(str(payload_json))
+        if not isinstance(payload, dict):
+            raise KnowledgeGraphReleaseError("release document must be an object")
+        release = KnowledgeGraphRelease(payload, str(payload.get("content_hash") or "").lower())
         if (release.release_id, release.content_hash.casefold()) != key:
             raise KnowledgeGraphReleaseError(
                 "release payload does not match its recorded identity"

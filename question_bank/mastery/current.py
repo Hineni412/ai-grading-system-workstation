@@ -140,6 +140,7 @@ class CurrentMasteryCalculator:
         exclude_training_evidence_ids: frozenset[str] = frozenset(),
         allowed_student_ids: frozenset[str] | None = None,
         evidence_until: datetime | None = None,
+        include_unobserved: bool = True,
     ) -> dict[tuple[str, str], CurrentMastery]:
         if self.parameters is None:
             raise ValueError("current mastery parameters are unavailable")
@@ -148,6 +149,8 @@ class CurrentMasteryCalculator:
             raise ValueError("mastery clock must include a timezone")
         if self.semester_mastery is not None:
             extra = {"evidence_until": evidence_until} if evidence_until is not None else {}
+            if not include_unobserved:
+                extra["include_unobserved"] = False
             all_values = self.semester_mastery(profile, exclude_training_evidence_ids=exclude_training_evidence_ids,
                                               as_of=as_of, parameters=self.parameters, **extra)
             selected = allowed_student_ids if allowed_student_ids is not None else frozenset(str(s["student_id"]) for s in profile.get("students", []))
@@ -183,17 +186,18 @@ class CurrentMasteryCalculator:
                 counts[observation["student"], key].append(observation)
         # Include prior estimates for this semester's unobserved nodes, without
         # expanding each student to every textbook volume in the catalogue.
-        roots = {path_for(key)[-1] for o in observations for key in o["links"]}
-        volume_id = (profile.get("exam_scope") or {}).get("curriculum_volume_id")
-        if volume_id:
-            from question_bank.taxonomy.curriculum_catalog import load_curriculum_catalog
-            for volume in load_curriculum_catalog()["volumes"]:
-                if volume["id"] == volume_id:
-                    roots = {str(c["knowledge_id"]) for c in volume["chapters"]}
-        active_keys = [node.stable_key for node in self.resolver.nodes if path_for(node.stable_key)[-1] in roots]
-        for student in {o["student"] for o in observations}:
-            for key in active_keys:
-                counts.setdefault((student, key), [])
+        if include_unobserved:
+            roots = {path_for(key)[-1] for o in observations for key in o["links"]}
+            volume_id = (profile.get("exam_scope") or {}).get("curriculum_volume_id")
+            if volume_id:
+                from question_bank.taxonomy.curriculum_catalog import load_curriculum_catalog
+                for volume in load_curriculum_catalog()["volumes"]:
+                    if volume["id"] == volume_id:
+                        roots = {str(c["knowledge_id"]) for c in volume["chapters"]}
+            active_keys = [node.stable_key for node in self.resolver.nodes if path_for(node.stable_key)[-1] in roots]
+            for student in {o["student"] for o in observations}:
+                for key in active_keys:
+                    counts.setdefault((student, key), [])
         result = {}
         parameter_version = self.parameters.version
         week = week_of(as_of)

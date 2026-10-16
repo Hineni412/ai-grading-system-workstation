@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -35,24 +33,10 @@ class StudentGradingActiveError(RuntimeError):
     pass
 
 
-def student_roster_revision(rows: list[dict[str, Any]]) -> str:
-    payload = [
-        {
-            "id": int(row["id"]),
-            "student_code": str(row["student_code"]),
-            "name": str(row["name"]),
-            "class_name": row.get("class_name"),
-            "created_at": row.get("created_at"),
-        }
-        for row in sorted(rows, key=lambda item: int(item["id"]))
-    ]
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+def student_roster_revision(connection: sqlite3.Connection) -> str:
+    """Read the committed counter inside the caller's roster transaction."""
+    row = connection.execute("SELECT version FROM data_versions WHERE domain='results'").fetchone()
+    return f"roster:{int(row[0])}"
 
 
 def _normalize_name(value: str) -> str:
@@ -402,8 +386,10 @@ class StudentRepositoryGateway:
             return StudentRepository(session).list_students()
 
     def student_roster_snapshot(self) -> tuple[list[dict[str, Any]], str]:
-        rows = self.list_students()
-        return rows, student_roster_revision(rows)
+        with self._sessions.session(read_only=True) as session:
+            with session.transaction():
+                rows = StudentRepository(session).list_students()
+                return rows, student_roster_revision(session.connection)
 
     def student_workspace_snapshot(
         self,
@@ -416,7 +402,7 @@ class StudentRepositoryGateway:
         with self._sessions.session(read_only=True) as session:
             with session.transaction():
                 repository = StudentRepository(session)
-                all_rows = repository.list_students()
+                revision = student_roster_revision(session.connection)
                 snapshot = repository.student_workspace_snapshot(
                     search=search,
                     class_name=class_name,
@@ -425,7 +411,7 @@ class StudentRepositoryGateway:
                 )
         return {
             **snapshot,
-            "roster_revision": student_roster_revision(all_rows),
+            "roster_revision": revision,
         }
 
     def update_student(
@@ -475,10 +461,11 @@ class StudentRepositoryGateway:
                 if student is None:
                     raise ValueError(f"未找到学生记录: {student_id}")
                 counts = repository.deletion_impact(student_id)
+                revision = student_roster_revision(session.connection)
         return {
             "student": student,
             "counts": counts,
-            "roster_revision": student_roster_revision(rows),
+            "roster_revision": revision,
         }
 
     def delete_student_hard(
@@ -503,7 +490,7 @@ class StudentRepositoryGateway:
                     raise ValueError(f"未找到学生记录: {student_id}")
                 if (
                     expected_revision is not None
-                    and student_roster_revision(current_rows)
+                    and student_roster_revision(session.connection)
                     != str(expected_revision)
                 ):
                     raise StudentRosterRevisionConflict(
@@ -528,9 +515,7 @@ class StudentRepositoryGateway:
                         "Student backup was not created before delete"
                     )
                 result = repository.delete_student_history(student_id)
-                next_revision = student_roster_revision(
-                    repository.list_students()
-                )
+                next_revision = student_roster_revision(session.connection)
         self._invalidate_name_cache()
         return {
             **result,
@@ -547,14 +532,12 @@ class StudentRepositoryGateway:
         with self._sessions.session() as session:
             with session.transaction(immediate=True):
                 repository = StudentRepository(session)
-                current_rows = repository.list_students()
-                if student_roster_revision(current_rows) != str(expected_revision):
+                if student_roster_revision(session.connection) != str(expected_revision):
                     raise StudentRosterRevisionConflict(
                         "Student roster changed after preview"
                     )
                 result = repository.upsert_students(students)
-                next_rows = repository.list_students()
-                next_revision = student_roster_revision(next_rows)
+                next_revision = student_roster_revision(session.connection)
         self._invalidate_name_cache()
         return {**result, "roster_revision": next_revision}
 
@@ -571,8 +554,7 @@ class StudentRepositoryGateway:
             with self._sessions.session() as session:
                 with session.transaction(immediate=True):
                     repository = StudentRepository(session)
-                    current_rows = repository.list_students()
-                    if student_roster_revision(current_rows) != str(expected_revision):
+                    if student_roster_revision(session.connection) != str(expected_revision):
                         raise StudentRosterRevisionConflict(
                             "Student roster changed before update"
                         )
@@ -593,7 +575,7 @@ class StudentRepositoryGateway:
                     )
                     if student is None:
                         raise ValueError(f"未找到学生记录: {student_id}")
-                    next_revision = student_roster_revision(next_rows)
+                    next_revision = student_roster_revision(session.connection)
         except sqlite3.IntegrityError as exc:
             raise StudentCodeConflictError("Student code already exists") from exc
         self._invalidate_name_cache()

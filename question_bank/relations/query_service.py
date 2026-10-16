@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import sqlite3
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
@@ -177,7 +175,7 @@ class CurrentKnowledgeGraphQueryService:
                 ),
             },
         }
-        payload["response_version"] = _payload_version(payload)
+        payload["response_version"] = self._response_revision(profile)
         return payload
 
     def evidence(
@@ -251,8 +249,15 @@ class CurrentKnowledgeGraphQueryService:
                 (total + normalized_page_size - 1) // normalized_page_size,
             ),
         }
-        payload["response_version"] = _payload_version(payload)
+        payload["response_version"] = self._response_revision(profile)
         return payload
+
+    def _response_revision(self, profile: Mapping[str, Any]) -> str:
+        from integration.data_generation import data_version_token
+
+        return str((self.resolver.release_id, self.resolver.taxonomy_revision,
+                    (data_version_token(self.db_path, "materials", "taxonomy", "training_records", "training_ops") or ())[1:],
+                    (profile.get("scope") or {}).get("scope_revision", "")))
 
 
 def _current_evidence_rows(
@@ -444,16 +449,6 @@ def _node_payload(
 def _edge_payload(relation: CurrentKnowledgeRelation) -> dict[str, object]:
     return asdict(relation)
 
-
-def _payload_version(payload: Mapping[str, object]) -> str:
-    serialized = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    )
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 __all__ = [

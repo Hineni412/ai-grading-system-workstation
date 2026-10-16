@@ -22,6 +22,7 @@ import type {
 } from '../../api/question-bank'
 import { questionBankApi, chapterTypeCostNote, type ChapterTypePlan, type ChapterTypeAuthorization } from '../../api/question-bank'
 import { useConfirm } from '../../composables/useConfirm'
+import { Star } from '@lucide/vue'
 import { useQuestionBankStore } from '../../stores/question-bank'
 import { useJobStore } from '../../stores/jobs'
 import { useCurriculumScopeStore } from '../../stores/curriculum-scope'
@@ -98,6 +99,22 @@ const permanentDeleteImpact = ref<QuestionBankPaperPermanentDeleteImpact | null>
 const permanentDeleteState = ref<'idle' | 'loading' | 'working' | 'error'>('idle')
 const permanentDeleteMessage = ref('')
 const formError = ref('')
+const referenceBusy = ref<number | null>(null)
+const referenceError = ref('')
+async function toggleReference(paper: QuestionBankPaper) {
+  if (referenceBusy.value !== null) return
+  referenceBusy.value = paper.id
+  referenceError.value = ''
+  try {
+    await questionBankApi.setExamReference(paper, !paper.is_exam_reference)
+    store.invalidateReadSnapshots()
+    await store.loadPapers()
+  } catch (e) {
+    referenceError.value = e instanceof Error ? e.message : '星标保存失败，请重试'
+    if (e instanceof ApiError && e.code === 'paper_metadata_conflict') await store.loadPapers()
+  }
+  finally { referenceBusy.value = null }
+}
 const retagBusyPaperId = ref<number | null>(null)
 const retagAllBusy = ref(false)
 defineExpose({ editPaper, retagPaper, continuePaper, answerPaper })
@@ -107,7 +124,7 @@ const answerDraftBusy = ref(false)
 const pendingAnswerDraft = ref<{ paperCount: number; questionIds: number[] } | null>(null)
 const deleteNotice = ref('')
 const refreshedTerminalJobs = new Set<string>()
-const collapsedFolderKeys = ref(new Set<string>())
+const collapsedFolderKeys = ref(new Set<string>(['scope:other-semesters', 'scope:unclassified']))
 // 这三个表持久化在 store 里：打开试卷再返回时组件重建，
 // 旧的任务状态和缺题提示可以立即显示，再由后台请求校对刷新。
 const {
@@ -128,7 +145,10 @@ const paperDraft = ref({
   textbook_version: '',
 })
 
-const years = computed(() => uniqueValues(store.papers.map((paper) => paper.year)))
+function paperExamYear(paper: QuestionBankPaper): string | null {
+  return paper.is_entrance_exam ? paper.exam_year?.year?.toString() ?? null : paper.year
+}
+const years = computed(() => uniqueValues(store.papers.map(paperExamYear)))
 const examTypes = computed(() => uniqueValues(store.papers.map((paper) => paper.exam_type)))
 const canConfirmPermanentDelete = computed(() => (
   permanentDeleteImpact.value !== null
@@ -142,7 +162,7 @@ const filteredPapers = computed(() => {
     .filter((paper) => {
       if (category.value && paperCategory(paper) !== category.value) return false
       if (onlyIssues.value && !paper.criteria_needs_review_count && !paper.skill_unlinked_question_count && paper.complete_analysis_count >= paper.question_count) return false
-      if (year.value && paper.year !== year.value) return false
+      if (year.value && paperExamYear(paper) !== year.value) return false
       if (examType.value && paper.exam_type !== examType.value) return false
       if (sourceType.value && paper.source_type !== sourceType.value) return false
       if (
@@ -192,6 +212,13 @@ const paperFolders = computed<PaperFolder[]>(() => {
   const otherPapers: QuestionBankPaper[] = []
   const unclassifiedPapers: QuestionBankPaper[] = []
   for (const paper of filteredPapers.value) {
+    if (paper.is_entrance_exam) {
+      const key = 'entrance-exams'
+      const group = groups.get(key) ?? { key, label: '中考真题', manual: false, kindLabel: '跨学期共用；星标深圳试卷作为参照', papers: [] }
+      group.papers.push(paper)
+      groups.set(key, group)
+      continue
+    }
     if (selectedVolumeId && paper.curriculum_volume_id !== selectedVolumeId) {
       if (paper.curriculum_volume_id) otherPapers.push(paper)
       else unclassifiedPapers.push(paper)
@@ -276,8 +303,8 @@ watch(paperPageCount, (count) => { paperPage.value = Math.min(paperPage.value, c
 
 watch(() => curriculumScope.selectedVolumeId, () => {
   const next = new Set(collapsedFolderKeys.value)
-  next.delete('scope:other-semesters')
-  next.delete('scope:unclassified')
+  next.add('scope:other-semesters')
+  next.add('scope:unclassified')
   collapsedFolderKeys.value = next
 }, { immediate: true })
 
@@ -383,6 +410,24 @@ const reviewQuestions = computed(() => store.papers.reduce(
   (total, paper) => total + paper.criteria_needs_review_count,
   0,
 ))
+const analysisComplete = computed(() => store.papers.every(paper => paper.analysis_loaded !== false))
+const analysisReadError = ref(false)
+let analysisReadVersion = 0
+const visibleAnalysisIds = computed(() => {
+  if (onlyIssues.value || progressStatus.value) return store.papers.filter(paper => paper.analysis_loaded === false).map(paper => paper.id)
+  return pageFolders.value.filter(folder => !collapsedFolderKeys.value.has(folder.key) || keyword.value.trim())
+    .flatMap(folder => folder.visiblePapers).filter(paper => paper.analysis_loaded === false).map(paper => paper.id)
+})
+async function readVisibleAnalysis(): Promise<void> {
+  const version = ++analysisReadVersion
+  analysisReadError.value = false
+  try {
+    await store.loadPaperAnalysis(visibleAnalysisIds.value)
+  } catch {
+    if (version === analysisReadVersion) analysisReadError.value = true
+  }
+}
+watch(() => visibleAnalysisIds.value.join(','), () => { void readVisibleAnalysis() }, { immediate: true })
 const libraryJobs = computed(() => Object.values(jobStore.jobs)
   .filter(isQuestionBankLibraryJob)
   .sort((left, right) => right.id - left.id))
@@ -413,6 +458,7 @@ function schedulePapersRefresh(): void {
   if (papersRefreshTimer !== null) clearTimeout(papersRefreshTimer)
   papersRefreshTimer = setTimeout(() => {
     papersRefreshTimer = null
+    store.invalidateReadSnapshots()
     void store.loadPapers()
   }, 400)
 }
@@ -424,7 +470,7 @@ let refRefreshTimer: ReturnType<typeof setTimeout> | null = null
 watch(
   () => [
     libraryJobs.value.map((job) => `${job.id}:${job.status}`).join('|'),
-    store.papers.map((paper) => `${paper.id}:${paper.complete_analysis_count}:${paper.criteria_needs_review_count}:${paper.question_count}`).join('|'),
+    store.papers.map((paper) => `${paper.id}:${paper.analysis_loaded}:${paper.complete_analysis_count}:${paper.criteria_needs_review_count}:${paper.question_count}`).join('|'),
     [...jobPaperLinks.value.entries()].map(([jobId, paperId]) => `${jobId}:${paperId}`).join('|'),
   ].join('/'),
   () => {
@@ -456,8 +502,10 @@ async function refreshQuestionRefs(): Promise<void> {
       .filter((paper) => (
         paper.question_count > 0
         && (
-          paper.complete_analysis_count < paper.question_count
-          || paper.criteria_needs_review_count > 0
+          (paper.analysis_loaded !== false && (
+            paper.complete_analysis_count < paper.question_count
+            || paper.criteria_needs_review_count > 0
+          ))
           || linkedPaperIds.includes(paper.id)
         )
       ))
@@ -494,7 +542,8 @@ async function refreshQuestionRefs(): Promise<void> {
 async function refreshIncompleteNumbers(): Promise<void> {
   const paperIds = store.papers
     .filter((paper) => (
-      paper.question_count > 0
+      paper.analysis_loaded !== false
+      && paper.question_count > 0
       && paper.complete_analysis_count < paper.question_count
     ))
     .map((paper) => paper.id)
@@ -573,8 +622,9 @@ function uniqueValues(values: Array<string | null>): string[] {
 }
 
 function paperYearValue(paper: QuestionBankPaper): number {
-  if (!paper.year?.trim()) return Number.NEGATIVE_INFINITY
-  const value = Number(paper.year)
+  const year = paperExamYear(paper)
+  if (!year?.trim()) return Number.NEGATIVE_INFINITY
+  const value = Number(year)
   return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY
 }
 
@@ -721,9 +771,13 @@ async function attachChapterTypePreviews(plans: PaperTaggingPlan[]): Promise<voi
 async function collectTaggingPlans(
   papers: QuestionBankPaper[],
 ): Promise<{ plans: PaperTaggingPlan[]; skippedWithoutVolume: number }> {
+  await store.loadPaperAnalysis(papers.map(paper => paper.id))
+  const current = new Map(store.papers.map(paper => [paper.id, paper]))
   const plans: PaperTaggingPlan[] = []
   let skippedWithoutVolume = 0
-  for (const paper of papers) {
+  for (const selected of papers) {
+    const paper = current.get(selected.id) ?? selected
+    if (paper.analysis_loaded === false) throw new Error('试卷分析状态刚刚更新，请重试。')
     if (!paper.curriculum_volume_id) {
       skippedWithoutVolume += 1
       continue
@@ -907,7 +961,7 @@ function editPaper(paper: QuestionBankPaper): void {
   editingPaperId.value = paper.id
   paperDraft.value = {
     title: paper.title ?? '',
-    year: paper.year ?? '',
+    year: paper.exam_year?.year?.toString() ?? paper.year ?? '',
     province: paper.province ?? '',
     city: paper.city ?? '',
     district: paper.district ?? '',
@@ -954,6 +1008,7 @@ async function savePaperMetadata(): Promise<void> {
   }
   if (await store.updatePaperMetadata(editingPaperId.value, metadata)) {
     closePaperEditor()
+    await store.loadPapers()
   }
 }
 
@@ -1041,6 +1096,7 @@ async function confirmPermanentDelete(): Promise<void> {
 
 <template>
   <section ref="libraryElement" class="paper-library" aria-labelledby="paper-library-title">
+    <FeedbackBanner v-if="referenceError" tone="warning" role="alert" :description="referenceError" />
     <header class="paper-library__header" :class="{ 'is-relocated': headerTarget }">
       <div v-if="!headerTarget">
         <h2 id="paper-library-title">试卷库</h2>
@@ -1049,14 +1105,15 @@ async function confirmPermanentDelete(): Promise<void> {
       <div class="paper-library__stats" aria-label="试卷库概况">
         <span><strong>{{ store.papers.length }}</strong> 份试卷</span>
         <span><strong>{{ totalQuestions }}</strong> 道题</span>
-        <span><strong>{{ completeQuestions }}</strong> 道联合分析完整</span>
+        <span v-if="analysisComplete"><strong>{{ completeQuestions }}</strong> 道联合分析完整</span>
+        <span v-else>展开分组后读取分析进度</span>
         <AppButton variant="secondary"
           v-if="reviewQuestions > 0"
           type="button"
           class="paper-button is-review"
           @click="emit('reviewCriteria')"
         >
-          判定点需核对
+          {{ analysisComplete ? '判定点需核对' : '已读取试卷：判定点需核对' }}
           <strong>{{ reviewQuestions }}</strong>
         </AppButton>
         <Teleport :to="headerTarget || 'body'" :disabled="!headerTarget" defer>
@@ -1161,6 +1218,18 @@ async function confirmPermanentDelete(): Promise<void> {
       @retry="store.loadPapers()"
     />
     <StatePanel
+      v-else-if="analysisReadError"
+      kind="error"
+      title="试卷分析进度暂时无法读取。"
+      retry-label="重新读取"
+      @retry="readVisibleAnalysis"
+    />
+    <StatePanel
+      v-else-if="(onlyIssues || progressStatus) && !analysisComplete"
+      kind="loading"
+      title="正在读取筛选所需的分析进度…"
+    />
+    <StatePanel
       v-else-if="filteredPapers.length === 0"
       kind="empty"
       :title="store.papers.length ? '当前筛选下没有试卷' : '还没有导入试卷'"
@@ -1204,15 +1273,20 @@ async function confirmPermanentDelete(): Promise<void> {
             :class="{ 'is-selected': isPaperSelected(paper.id), 'is-current': activePaperId === paper.id }"
           >
         <div class="paper-card__body">
+          <div v-if="paper.can_be_exam_reference || paper.is_exam_reference" class="paper-card__reference">
+            <AppButton variant="ghost" size="small" :aria-pressed="Boolean(paper.is_exam_reference)" :disabled="referenceBusy !== null" :aria-label="`${paper.is_exam_reference ? '取消参照' : '设为参照'}：${paper.title}`" @click.stop="toggleReference(paper)"><Star :size="16" :fill="paper.is_exam_reference ? 'currentColor' : 'none'" aria-hidden="true" />{{ paper.is_exam_reference ? '深圳参考卷' : '设为深圳参照' }}</AppButton>
+            <span :title="paper.exam_year?.reason">{{ paper.exam_year?.year ?? '年份待核对' }}</span>
+          </div>
           <div class="paper-card__row">
             <label class="paper-card__check" @click.stop><input type="checkbox" :checked="isPaperSelected(paper.id)" :aria-label="`选择${paper.title || `试卷 ${paper.id}`}`" @change="onPaperSelectChange(paper.id, $event)"></label>
             <div class="paper-card__text"><h2><button type="button" class="paper-card__title" :title="paper.title || `未命名试卷 #${paper.id}`" @click="emit('open', paper)">{{ paper.title || `未命名试卷 #${paper.id}` }}</button></h2>
-              <div class="paper-card__compact-meta"><span>{{ paper.question_count }} 题</span><span>{{ sourceLabel(paper.source_type) }}</span><span>{{ formatDate(paper.updated_at) }}</span><span class="paper-card__compact-progress" role="progressbar" aria-label="联合分析完整度" :aria-valuenow="progressFor(paper)" aria-valuemin="0" aria-valuemax="100"><i :style="{ width: `${progressFor(paper)}%` }" /></span></div>
+              <div class="paper-card__compact-meta"><span>{{ paper.question_count }} 题</span><span>{{ sourceLabel(paper.source_type) }}</span><span>{{ formatDate(paper.updated_at) }}</span><span v-if="paper.analysis_loaded !== false" class="paper-card__compact-progress" role="progressbar" aria-label="联合分析完整度" :aria-valuenow="progressFor(paper)" aria-valuemin="0" aria-valuemax="100"><i :style="{ width: `${progressFor(paper)}%` }" /></span></div>
             </div>
-            <div class="paper-card__statuses"><StatusBadge v-if="paper.criteria_needs_review_count" tone="warning" :label="`${paper.criteria_needs_review_count} 待审`" /><StatusBadge v-if="paper.skill_unlinked_question_count" tone="warning" :label="`${paper.skill_unlinked_question_count} 未挂`" /><span v-if="paper.question_count > 0 && paper.complete_analysis_count === paper.question_count && !paper.criteria_needs_review_count && !paper.skill_unlinked_question_count" class="paper-card__complete">✓ 完整</span><StatusBadge v-else-if="!paper.criteria_needs_review_count && !paper.skill_unlinked_question_count" tone="neutral" :label="paper.question_count ? `${paper.question_count - paper.complete_analysis_count} 未完成` : '暂无题'" /></div>
+            <span v-if="paper.analysis_loaded === false" class="paper-card__statuses">正在读取分析进度</span>
+            <div v-else class="paper-card__statuses"><StatusBadge v-if="paper.criteria_needs_review_count" tone="warning" :label="`${paper.criteria_needs_review_count} 待审`" /><StatusBadge v-if="paper.skill_unlinked_question_count" tone="warning" :label="`${paper.skill_unlinked_question_count} 未挂`" /><span v-if="paper.question_count > 0 && paper.complete_analysis_count === paper.question_count && !paper.criteria_needs_review_count && !paper.skill_unlinked_question_count" class="paper-card__complete">✓ 完整</span><StatusBadge v-else-if="!paper.criteria_needs_review_count && !paper.skill_unlinked_question_count" tone="neutral" :label="paper.question_count ? `${paper.question_count - paper.complete_analysis_count} 未完成` : '暂无题'" /></div>
           </div>
           <p v-if="paperStatusLines.get(paper.id)?.live" class="paper-card__live" role="status">{{ paperStatusLines.get(paper.id)?.live }}</p>
-          <ul v-if="paperStatusLines.get(paper.id)?.leftovers.length" class="paper-card__leftovers"><li v-for="line in paperStatusLines.get(paper.id)?.leftovers" :key="line">{{ line }}</li></ul>
+          <ul v-if="paper.analysis_loaded !== false && paperStatusLines.get(paper.id)?.leftovers.length" class="paper-card__leftovers"><li v-for="line in paperStatusLines.get(paper.id)?.leftovers" :key="line">{{ line }}</li></ul>
           <footer>
             <div class="paper-card__more">
               <button
@@ -1232,7 +1306,7 @@ async function confirmPermanentDelete(): Promise<void> {
                   role="menuitem"
                   variant="ghost" size="small" @click="closePaperMenu(); editPaper(paper)"
                 >编辑资料</AppButton>
-                <details class="paper-card__metadata"><summary>来源与分析资料</summary><p>{{ [paper.province, paper.city, paper.district, paper.grade, paper.semester, paper.textbook_version].filter(Boolean).join(' · ') || '来源信息待补充' }}</p><p>标签 {{ paper.tagged_question_count }}/{{ paper.question_count }} · 判定点 {{ paper.criteria_question_count }}/{{ paper.question_count }} · 完整 {{ paper.complete_analysis_count }}/{{ paper.question_count }}</p></details>
+                <details class="paper-card__metadata"><summary>来源与分析资料</summary><p>{{ [paper.province, paper.city, paper.district, paper.grade, paper.semester, paper.textbook_version].filter(Boolean).join(' · ') || '来源信息待补充' }}</p><p v-if="paper.analysis_loaded !== false">标签 {{ paper.tagged_question_count }}/{{ paper.question_count }} · 判定点 {{ paper.criteria_question_count }}/{{ paper.question_count }} · 完整 {{ paper.complete_analysis_count }}/{{ paper.question_count }}</p><p v-else>正在读取分析进度。</p></details>
 
                 <button role="menuitem" :disabled="batchActionsDisabled && retagAllBusy" @click="closePaperMenu(); continuePaper(paper)">继续分析</button>
                 <button role="menuitem" :disabled="answerDraftBusy" @click="closePaperMenu(); answerPaper(paper)">生成答案草稿</button>

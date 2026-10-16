@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import sqlite3
@@ -48,26 +47,9 @@ def _clean_session_name(value: object) -> str:
     return clean
 
 
-def session_deletion_revision(row: dict[str, Any]) -> str:
-    """Return the stable revision used by the delete preview/commit handshake."""
-
-    payload = {
-        str(key): (
-            value.hex()
-            if isinstance(value, bytes)
-            else value
-            if value is None or isinstance(value, (str, int, float, bool))
-            else str(value)
-        )
-        for key, value in sorted(row.items(), key=lambda item: str(item[0]))
-    }
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+def session_deletion_revision(row: dict[str, Any], connection: sqlite3.Connection) -> str:
+    version = connection.execute("SELECT version FROM data_versions WHERE domain='results'").fetchone()[0]
+    return f"session:{int(row['id'])}:{int(version)}"
 
 
 def _validated_source_binding(
@@ -262,7 +244,9 @@ class SessionRepository:
                    question_bank_sync_state, question_bank_sync_details_json,
                    question_bank_sync_error, question_bank_sync_updated_at,
                    curriculum_volume_id,
-                   created_at, updated_at
+                   created_at, updated_at,
+                   (EXISTS (SELECT 1 FROM session_results r WHERE r.session_id=grading_sessions.id)
+                    OR EXISTS (SELECT 1 FROM teacher_score_locks l WHERE l.session_id=grading_sessions.id)) AS has_results
             FROM grading_sessions
         """
         if not include_deleted:
@@ -543,9 +527,10 @@ class SessionRepositoryGateway:
                 permanent_counts = repository.session_permanent_deletion_counts(
                     int(session_id)
                 )
+                revision = session_deletion_revision(current, session.connection)
         return {
             "session": current,
-            "revision": session_deletion_revision(current),
+            "revision": revision,
             **active,
             "permanent_counts": permanent_counts,
         }
@@ -569,7 +554,7 @@ class SessionRepositoryGateway:
                     )
                 if bool(int(current.get("is_deleted") or 0)):
                     return current
-                if session_deletion_revision(current) != str(expected_revision):
+                if session_deletion_revision(current, session.connection) != str(expected_revision):
                     raise SessionDeletionRevisionConflict(
                         "Session changed after delete preview"
                     )
@@ -600,7 +585,7 @@ class SessionRepositoryGateway:
                     raise SessionDeletionConfirmationMismatch(
                         "Permanent deletion phrase does not match"
                     )
-                if session_deletion_revision(current) != str(expected_revision):
+                if session_deletion_revision(current, session.connection) != str(expected_revision):
                     raise SessionDeletionRevisionConflict(
                         "Session changed after permanent deletion preview"
                     )
@@ -1069,7 +1054,7 @@ class SessionRepositoryGateway:
                     raise ValueError(f"Session {session_id} does not exist.")
                 if (
                     expected_revision is not None
-                    and session_deletion_revision(current) != str(expected_revision)
+                    and session_deletion_revision(current, repository_session.connection) != str(expected_revision)
                 ):
                     raise SessionDeletionRevisionConflict(
                         "Session changed before permanent deletion"

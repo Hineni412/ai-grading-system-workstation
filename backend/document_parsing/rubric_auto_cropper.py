@@ -1,5 +1,6 @@
 import io
 import os
+import re
 
 import fitz  # PyMuPDF — module-level so helper functions can reference it
 from PIL import Image
@@ -117,6 +118,24 @@ _ANSWER_SECTION_HEADINGS = [
     "answer key",
     "Answer Key",
 ]
+
+# 带短前缀的答案区标题（与 batch_importer._ANSWER_HEADING 的前缀分支一致）：
+# 行尾以参考答案/答案与解析/评分标准收尾，前缀不含空白和句读标点。
+_PREFIXED_ANSWER_HEADING = re.compile(
+    r"^[^\s，。；：:,.!?？;、（）()【】\[\]<>《》]{1,30}"
+    r"(?:参考答案(?:[与和及]?(?:试题)?解析|及评分标准)?|答案[与和及]解析|评分标准)"
+    r"[ \t]*[:：]?[ \t]*$"
+)
+
+
+def _is_answer_section_heading(value: str) -> bool:
+    """裸标题或以短前缀收尾的答案区标题，如“八年级数学参考答案及评分标准”。"""
+    text = str(value or "").strip()
+    if not text or len(text) >= 45:
+        return False
+    if any(text.casefold().startswith(h.casefold()) for h in _ANSWER_SECTION_HEADINGS):
+        return True
+    return _PREFIXED_ANSWER_HEADING.match(text) is not None
 
 
 def _question_number_search_patterns(num: str) -> list[str]:
@@ -290,15 +309,22 @@ def extract_pdf_question_images(
     top_padding_pt: float = 6.0, bottom_padding_pt: float = 10.0,
     jpeg_quality: int = 88, include_answer: bool = True,
     layout_pages: dict | None = None,
+    whole_document_is_answer: bool = False,
+    answer_table_numbers: set[int] | None = None,
 ) -> dict[str, dict[str, bytes | None]]:
     """Crop in page/column reading order, using embedded or existing OCR boxes.
 
     OCR text locates regions only. Every returned semantic asset comes from the
     original page pixels. Missing/ambiguous markers are omitted for the caller
     to reject instead of silently analysing an incomplete question.
-    """
-    import re
 
+    ``whole_document_is_answer`` treats the entire document as the answer
+    region (a separately supplied answer file): every numbered marker anchors
+    an answer-region crop returned under ``"question"``. ``answer_table_numbers``
+    is an optional out-channel filled with every question number found in a
+    recognized 题号/答案 table row, so the caller can detect numbering
+    mismatches between paper and answer file.
+    """
     ids = {str(b.get("question_id") or "").lstrip("Qq"): str(b.get("question_id"))
            for b in question_blocks if b.get("question_id")}
     with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
@@ -354,10 +380,11 @@ def extract_pdf_question_images(
             return (pg, int(pg in splits and box[0] >= splits[pg]), box[1])
 
         headings = [position(pg, box) for pg, box, value in records
-                    if any(value.casefold().startswith(h.casefold())
-                           for h in _ANSWER_SECTION_HEADINGS)
-                    and len(value) < 45]
+                    if _is_answer_section_heading(value)]
         answer_start = min(headings) if headings else None
+        if whole_document_is_answer:
+            # 单独上传的答案文件整本都是答案区，标题不再当分界。
+            answer_start = None
         end = (len(doc)-1, int(len(doc)-1 in splits), doc[-1].rect.height)
         question_end = answer_start or end
         q_marks, a_marks = [], []
@@ -397,7 +424,111 @@ def extract_pdf_question_images(
             return {qid: crops(pos, marks[i+1][0] if i+1 < len(marks) else stop)
                     for i, (pos, qid) in enumerate(marks) if counts[qid] == 1}
 
+        def _clip_image(pg, rect):
+            page = doc[pg]
+            clip = fitz.Rect(
+                rect[0] - 4, rect[1] - top_padding_pt,
+                rect[2] + 4, rect[3] + 6,
+            ) & page.rect
+            if clip.is_empty or clip.height <= 1:
+                return None
+            pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), clip=clip, alpha=False)
+            picture = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+            from PIL import ImageChops
+            if not ImageChops.difference(picture, Image.new("RGB", picture.size, "white")).getbbox():
+                return None
+            output = io.BytesIO()
+            picture.save(output, format="JPEG", quality=jpeg_quality)
+            return output.getvalue()
+
+        def _answer_table_regions():
+            """答案区里的“题号/答案”表格：[(page_idx, clip_bbox, [numbers])]。
+
+            两种记录形态：MinerU 布局里整表是一条 markdown 记录；
+            文字层 PDF 里每个单元格是一条行记录，需按行高对齐拼行。
+            没有答案区且整篇不是答案文件时，题号表可能是试卷自带的
+            空白答题表，不能当答案裁图。
+            """
+            if answer_start is None and not whole_document_is_answer:
+                return
+            for pg, box, value in records:
+                if answer_start is not None and position(pg, box) < answer_start:
+                    continue
+                text = str(value or "").strip()
+                if "题号" not in text:
+                    continue
+                if "|" in text:
+                    row_line = next(
+                        (line for line in text.splitlines() if "题号" in line),
+                        "",
+                    )
+                    numbers = [
+                        int(cell) for cell in re.findall(r"\d{1,3}", row_line)
+                    ]
+                    if not numbers or "答案" not in text:
+                        continue
+                    regions_clip = box
+                else:
+                    if not re.match(r"^题\s*号", text):
+                        continue
+                    row_mates = [
+                        (b, v) for p, b, v in records
+                        if p == pg and b != box
+                        and box[1] <= (b[1] + b[3]) / 2 <= box[3]
+                    ]
+                    numbers = [
+                        int(found)
+                        for found in re.findall(
+                            r"\d{1,3}", re.sub(r"^题\s*号", "", text)
+                        )
+                    ]
+                    numbers += [
+                        int(v.strip())
+                        for _b, v in row_mates
+                        if re.fullmatch(r"\d{1,3}", v.strip())
+                    ]
+                    if not numbers:
+                        continue
+                    below = [
+                        b for p, b, v in records
+                        if p == pg and b[1] > box[3]
+                        and re.match(r"^答\s*案", str(v).strip())
+                    ]
+                    if not below:
+                        continue
+                    answer_box = min(below, key=lambda b: b[1])
+                    bottom = max(
+                        b[3] for p, b, v in records
+                        if p == pg
+                        and answer_box[1] <= (b[1] + b[3]) / 2 <= answer_box[3]
+                    )
+                    page = doc[pg]
+                    bounds = (
+                        (0, splits[pg], page.rect.width)
+                        if pg in splits
+                        else (0, page.rect.width)
+                    )
+                    x0, x1 = bounds[0], bounds[-1]
+                    for col in range(len(bounds) - 1):
+                        if bounds[col] <= box[0] < bounds[col + 1]:
+                            x0, x1 = bounds[col], bounds[col + 1]
+                            break
+                    regions_clip = (x0, box[1], x1, bottom)
+                yield pg, regions_clip, numbers
+
         questions = collect(q_marks, question_end)
         answers = collect(a_marks, end) if include_answer else {}
+        # 题号/答案表格里没有题号行首标记，整表裁图按行内题号补齐。
+        for pg, clip, numbers in _answer_table_regions():
+            if answer_table_numbers is not None:
+                answer_table_numbers.update(numbers)
+            image = _clip_image(pg, clip)
+            if image is None:
+                continue
+            target = questions if whole_document_is_answer else answers
+            for number in numbers:
+                qid = ids.get(str(number))
+                if qid and target.get(qid) is None:
+                    target[qid] = image
         return {qid: {"question": content, "answer": answers.get(qid)}
                 for qid, content in questions.items() if content}
